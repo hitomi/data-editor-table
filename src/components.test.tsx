@@ -4,6 +4,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { DataGridBulkEditor } from './bulk-editor'
+import { createDataGridImageCellTypeRenderer } from './cell-type-registry'
 import { DataGridImageCell, revokeDataGridStagedImagePreviews } from './image-cell'
 import type { DataGridFieldDefinition, DataGridStagedImage } from './field-definition'
 
@@ -25,6 +26,28 @@ describe('DataGridImageCell', () => {
     expect(onStage).toHaveBeenCalledWith({ file, previewUrl: 'blob:preview' })
     revokeDataGridStagedImagePreviews([onStage.mock.calls[0]![0]])
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:preview')
+  })
+
+  it('works as a registered renderer and revokes its temporary URL after upload', async () => {
+    const createObjectURL = vi.fn(() => 'blob:registered')
+    const revokeObjectURL = vi.fn()
+    Object.defineProperties(URL, {
+      createObjectURL: { configurable: true, value: createObjectURL },
+      revokeObjectURL: { configurable: true, value: revokeObjectURL },
+    })
+    type ImageRow = { id: string; image: string | null }
+    const upload = vi.fn(async (_input: { file: File; row: ImageRow; signal: AbortSignal }) => 'asset:new')
+    const update = vi.fn()
+    const renderer = createDataGridImageCellTypeRenderer<ImageRow, string>({
+      alt: () => 'Poster', label: () => 'Upload poster', resolveSrc: () => null, upload,
+    })
+    const field = { key: 'image', label: 'Image', type: 'image', getValue: (row: ImageRow) => row.image, setValue: (row: ImageRow, image: string | null) => ({ ...row, image }) }
+    const view = render(renderer.renderCell({ field, row: { id: 'one', image: null }, value: null, update }))
+    const file = new File(['png'], 'poster.png', { type: 'image/png' })
+    fireEvent.change(view.container.querySelector('input[type="file"]')!, { target: { files: [file] } })
+    await vi.waitFor(() => expect(update).toHaveBeenCalledWith('asset:new'))
+    expect(upload.mock.calls[0]![0].file).toBe(file)
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:registered')
   })
 })
 

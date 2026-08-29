@@ -1,7 +1,11 @@
 import './styles.css'
 
+export * from './actions'
 export * from './bulk-editor'
+export * from './cell-type-registry'
 export * from './clipboard'
+export * from './data-source'
+export * from './data-source-grid'
 export * from './dirty-store'
 export * from './dirty-store-react'
 export * from './field-definition'

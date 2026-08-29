@@ -92,6 +92,11 @@ export type DataGridImageField<Row> = DataGridFieldBase<
   maxBytes?: number
 }
 
+export type DataGridCustomField<Row, Value = unknown> = DataGridFieldBase<Row, Value> & {
+  kind: 'custom'
+  type: string
+}
+
 export type DataGridFieldDefinition<Row> =
   | DataGridReadonlyField<Row>
   | DataGridTextField<Row>
@@ -99,6 +104,7 @@ export type DataGridFieldDefinition<Row> =
   | DataGridSelectField<Row>
   | DataGridTagsField<Row>
   | DataGridImageField<Row>
+  | DataGridCustomField<Row>
 
 export function createDataGridFieldRegistry<Row>(fields: readonly DataGridFieldDefinition<Row>[]) {
   return new Map(fields.map((field) => [field.key, field]))

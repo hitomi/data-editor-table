@@ -1,0 +1,44 @@
+{
+  "name": "react-data-grid-ext",
+  "version": "0.1.0",
+  "description": "Operational editing, draft state, and range selection extensions for react-data-grid",
+  "type": "module",
+  "sideEffects": ["**/*.css"],
+  "files": ["dist", "README.md"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./styles.css": "./dist/styles.css"
+  },
+  "scripts": {
+    "build": "vite build && tsc -p tsconfig.build.json --emitDeclarationOnly",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "lint": "oxlint src --deny-warnings"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-data-grid": "7.0.0-beta.61",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "jsdom": "^30.0.0",
+    "oxlint": "^1.78.0",
+    "react": "^19.2.8",
+    "react-data-grid": "7.0.0-beta.61",
+    "react-dom": "^19.2.8",
+    "typescript": "~7.0.2",
+    "vite": "^8.2.1",
+    "vitest": "^4.1.10"
+  },
+  "packageManager": "pnpm@11.21.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "UNLICENSED"
+}

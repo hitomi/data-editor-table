@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": { "react-data-grid-ext": ["./src-legacy/index.ts"] },
+    "types": ["vite/client"]
+  },
+  "include": ["demo-legacy/src", "src-legacy", "src-legacy/styles.d.ts"]
+}

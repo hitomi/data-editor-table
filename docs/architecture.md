@@ -1,60 +1,40 @@
-# Extensibility contract
+# Legacy architecture archive
 
-## Design goal
+This page records only the archived `react-data-grid` implementation. It is
+not the architecture or API contract for the current package. New integrations
+must use the native v2 API in the [README](../README.md); the current design,
+milestones, and verification status live in the
+[native grid v2 plan](native-grid-v2-plan.md).
 
-An application should render a working editable table by supplying two stable objects:
+## Archived source tree
 
-1. a `DataGridDataSource`, which owns authoritative rows, persistence, and server-side capabilities;
-2. a `DataGridCellTypeRegistry`, which owns value-specific rendering, editing, clipboard behavior, clearing, and actions.
+The former implementation is isolated under `src-legacy/`:
 
-The Grid Engine remains internal draft infrastructure. Applications may still use its low-level exports, but the normal integration should not reconstruct dirty tracking, save orchestration, or `react-data-grid` columns.
+- `src-legacy/core/` — draft engine, fields, dirty state, ranges, clipboard,
+  transforms, and collection-state helpers;
+- `src-legacy/react/` — React subscriptions and the `react-data-grid` adapter;
+- `src-legacy/ui/` — the former editor, range overlay, bulk editor, image cell,
+  and operational grid surfaces;
+- `src-legacy/data-source/` — the former registry, data-source contract, actions,
+  filter panel, and turnkey `DataSourceDataGrid`;
+- `src-legacy/index.ts`, `engine.ts`, `styles.css`, and build entries — archived
+  package boundaries used only by the legacy demo.
 
-## Ownership boundaries
+Its runnable fixture is in `demo-legacy/`; its original unit and browser checks
+are in `src-legacy/**/*.test.*` and `tests-legacy/e2e/`. The dedicated legacy
+Vite, TypeScript, Vitest, and Playwright configs keep those imports out of the
+native v2 declaration and runtime graphs.
 
-### Data source
+## How to run the archive
 
-The data source publishes a stable external-store snapshot through `getSnapshot` and `subscribe`. It also declares exactly one persistence mode:
+```sh
+pnpm demo:legacy
+pnpm demo:legacy:build
+pnpm test:legacy
+pnpm demo:legacy:test
+```
 
-- `update`: every edit is handed to the data source immediately;
-- `save-dirty`: the Grid presents an explicit save action;
-- `auto-save`: the Grid sends a debounced dirty proposal.
-
-Persistence requests contain the complete proposed row order, accepted keys, deleted keys, field-level dirty originals, and an abort signal. A successful callback does not optimistically clear dirty state. The data source must publish its new authoritative snapshot, after which the engine rebases and clears only confirmed changes.
-
-`observeDraft` is a projection hook for devtools, patch previews, navigation guards, and other non-authoritative consumers. It must not become another writer.
-
-Server-controlled behaviors live under `capabilities`. Sorting currently follows this contract: the Grid reports `SortColumn[]`; the source performs local or remote ordering and publishes both rows and the accepted sort state. Filtering, pagination, grouping, and row commands should be added as sibling capabilities instead of unrelated top-level callbacks.
-
-### Cell type registry
-
-A field names a `type`. The matching registry entry supplies:
-
-- display renderer;
-- optional editor;
-- clipboard formatting/parsing;
-- clear semantics;
-- type-specific actions.
-
-Image upload is one registry entry created by `createDataGridImageCellTypeRenderer`. Its upload and URL resolution are injected by the application. The main Grid has no image branch.
-
-Registration is intentionally explicit and rejects duplicate names. Applications can create separate registries when different workspaces need different behavior for the same conceptual value.
-
-### Actions and surfaces
-
-An action describes capability, not placement. It receives the current typed cell context and can update the value. `DataGridActionSurfaces` decides presentation:
-
-- `renderCell` for hover or always-visible cell controls;
-- `renderContext` for right-click, long-press, or command-palette presentation;
-- `renderToolbar` for a top or floating toolbar tied to the active cell.
-
-The package supplies a small default context menu when type actions exist and no context presenter is injected. Hosts may replace it without reimplementing action eligibility or execution. Action errors are routed through `onActionError`.
-
-Selection-wide and column-wide actions should extend the same model with distinct typed contexts; they should not overload the cell context with nullable fields.
-
-## Extension rules
-
-- Add a new value behavior through the type registry, not a conditional in `DataSourceDataGrid`.
-- Add a new backend/view behavior through a data-source capability, not an uncontrolled Grid prop.
-- Add a new action placement through an action surface, not a duplicate action definition.
-- Keep authoritative state in the data source and transient edits in the engine.
-- Keep application storage, upload APIs, localization, dialogs, and business commands outside this package.
+The archive remains available for behavior comparison during M1–M6. It is not
+a compatibility promise and must not receive new product features. M7 removes
+it together with the `react-data-grid` development dependency after the v2 API
+and confirmed interactions have permanent regression coverage.

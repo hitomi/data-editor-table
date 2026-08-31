@@ -1,33 +1,53 @@
 {
   "name": "react-data-grid-ext",
   "version": "0.1.0",
-  "description": "Operational editing, draft state, and range selection extensions for react-data-grid",
+  "description": "Turnkey business-data bulk editor for React",
   "type": "module",
-  "sideEffects": ["**/*.css"],
-  "files": ["dist", "docs", "README.md"],
+  "sideEffects": [
+    "**/*.css"
+  ],
+  "files": [
+    "dist",
+    "docs",
+    "README.md"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./styles.css": "./dist/styles.css"
+    "./engine": {
+      "types": "./dist/engine.d.ts",
+      "import": "./dist/engine.js"
+    },
+    "./styles.css": {
+      "types": "./dist/styles-entry.d.ts",
+      "default": "./dist/styles.css"
+    }
   },
   "scripts": {
     "build": "vite build && tsc -p tsconfig.build.json --emitDeclarationOnly",
     "demo": "vite --config vite.demo.config.ts",
     "demo:build": "vite build --config vite.demo.config.ts",
-    "demo:test": "playwright test",
-    "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.demo.json --noEmit",
-    "test": "vitest run",
-    "lint": "oxlint src --deny-warnings"
+    "demo:legacy": "vite --config vite.legacy-demo.config.ts",
+    "demo:legacy:build": "vite build --config vite.legacy-demo.config.ts",
+    "demo:legacy:test": "playwright test --config playwright.legacy.config.ts",
+    "check": "pnpm check:boundaries && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.demo.json --noEmit",
+    "check:boundaries": "bash scripts/check-v2-import-boundary.sh",
+    "check:legacy": "tsc -p tsconfig.legacy-demo.json --noEmit",
+    "check:package": "bash scripts/check-package-consumer.sh",
+    "test": "vitest run --config vitest.legacy.config.ts",
+    "test:legacy": "vitest run --config vitest.legacy.config.ts",
+    "lint": "oxlint src --deny-warnings",
+    "lint:legacy": "oxlint src-legacy --deny-warnings"
   },
   "peerDependencies": {
     "react": "^19.0.0",
-    "react-data-grid": "7.0.0-beta.61",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
+    "@tanstack/react-router": "^1.170.32",
     "@testing-library/react": "^16.3.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",

@@ -1,8 +1,13 @@
-import path from 'node:path'
+import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      'react-data-grid-ext/styles.css': fileURLToPath(new URL('./src/styles.css', import.meta.url)),
+      'react-data-grid-ext': fileURLToPath(new URL('./src/index.ts', import.meta.url)),
+    },
+  },
   root: 'demo',
-  resolve: { alias: { 'react-data-grid-ext': path.resolve(import.meta.dirname, 'src/index.ts') } },
-  build: { outDir: '../demo-dist', emptyOutDir: true },
+  server: { host: '127.0.0.1', port: 4178 },
 })

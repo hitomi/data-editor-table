@@ -36,6 +36,10 @@ Import the complete default styles once:
 import 'data-editor-table/styles.css'
 ```
 
+Import the grid stylesheet after framework resets such as Tailwind Preflight. The package uses
+cascade layers so application overrides remain possible; importing a reset after the grid can
+otherwise replace its button, border, and form-control defaults.
+
 `styles.css` is the convenience entry point for `structure.css` plus the
 default `theme.css`. It is not loaded by the JavaScript entry point, so every
 application makes the styling choice explicitly.

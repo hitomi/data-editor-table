@@ -1,0 +1,1260 @@
+# data-editor-table: agent integration guide
+
+> Use this document when adding `data-editor-table` to an application. It describes the supported public API, the authority and persistence model, extension points, styling, and the mistakes an implementation agent must avoid.
+
+Package: `data-editor-table`
+
+Documented release: `0.3.1`
+
+Runtime: React 19, React DOM 19, modern browsers, ESM
+
+Package homepage: https://hitomi.github.io/data-editor-table/
+
+Source: https://github.com/hitomi/data-editor-table
+
+## 1. What the package does
+
+`data-editor-table` is a styled React bulk editor for business data. The application owns authoritative rows and persistence. The grid supplies:
+
+- cell, range, row, column, additive, and select-all selection;
+- keyboard navigation and typed cell editing;
+- matrix copy/paste, clear, and drag-to-fill;
+- validation, local filtering, local sorting, and bulk editing;
+- dirty markers, original-value preview, revert, undo, and redo;
+- conflict detection and recovery when authority changes;
+- row add, duplicate, protect, delete, and persistent reorder operations;
+- immediate, manual, and debounced automatic saving;
+- default toolbar, footer, dialogs, context menu, feedback, theme, and Simplified Chinese locale;
+- custom cell types, host actions, surface replacement, and a React-free controller.
+
+Use it when a user needs to edit one complete loaded business-data collection reliably. Do not choose it solely as a renderer for an arbitrary 100k-row client-side table.
+
+Current limits:
+
+- The data source supplies one complete loaded row set: `scope: { kind: 'complete' }`.
+- Rows have fixed height and the renderer is not virtualized.
+- Filtering and sorting are local over loaded rows.
+- There is no pagination/window protocol or server-side view protocol.
+- Interactive column resizing, arbitrary frozen data columns, and persisted column layout are not included.
+- Cross-grid Cut is two controller operations, not one global atomic transaction.
+- Select catalogs are static and column-scoped; asynchronous or row-dependent options are unsupported.
+
+## 2. Choose an integration level
+
+Prefer the simplest level that satisfies the application.
+
+1. Owned DataGrid with standard types
+   - Use `<DataGrid dataSource={dataSource} />`.
+   - Do not create a registry.
+   - This is the normal integration.
+
+2. Owned DataGrid with custom or replaced cell types
+   - Create one stable registry.
+   - Pass `registry={registry}` with the data source.
+
+3. React host with direct controller access
+   - Use `useDataGridBinding`.
+   - Render a preparing state while it returns `null`.
+   - Pass the resulting binding to `<DataGrid binding={binding} />`.
+
+4. Non-React or manually owned controller lifecycle
+   - Use `createDataGridBinding` or the React-free `data-editor-table/engine` entry.
+   - Destroy manually owned bindings/controllers after permanent disposal.
+
+Do not use the advanced controller API merely to implement ordinary grid features that DataGrid already owns.
+
+### DataGrid configuration
+
+Every DataGrid requires `ariaLabel` plus exactly one ownership form:
+
+- owned form: `dataSource` and optional `registry`, `locale`, `effects`, dimensions, and limits;
+- bound form: `binding`, with those static options already owned by the binding.
+
+Common props:
+
+| Prop | Meaning |
+| --- | --- |
+| `ariaLabel` | Required accessible name for the business collection. |
+| `className` | Class applied to the grid root for theme/application styling. |
+| `messages` | Partial DataGrid message overrides. |
+| `surfaceRenderers` | Optional replacements for toolbar, footer, context menu, filter dialog, bulk dialog, and feedback. |
+| `toolbarActions` | Host toolbar content receiving the controller. |
+| `rowHeaderActions` | Host actions associated with rows. |
+| `rowDropZone` | Host-owned row drag/drop integration. |
+| `rowHeight` | Fixed data-row height; default 36 pixels. |
+| `headerHeight` | Header height; default 36 pixels. |
+| `rowIndicatorWidth` | Sticky row-indicator width; default 48 pixels. |
+| `maxMutations` | Maximum cells/changes accepted by one operation; default 10,000. |
+| `maxClipboardBytes` | Maximum clipboard payload; default 2,000,000 bytes. |
+
+Dimensions and limits are static for one binding identity. Do not change them by mutating an existing data source; recreate the logical binding only when it is safe to preserve or settle current work.
+
+## 3. Install and load styles
+
+Install the package and React peers:
+
+```sh
+pnpm add data-editor-table react react-dom
+```
+
+Use the application's existing package manager; the package names are the same with npm, Yarn, or Bun. React and React DOM 19 are peer dependencies.
+
+In a React Server Components framework, render DataGrid and binding/data-source lifecycle inside a client component. A server loader/component may fetch and serialize the initial authoritative snapshot, but the interactive grid itself uses client hooks and DOM behavior.
+
+Import the complete default styles exactly once:
+
+```ts
+import 'data-editor-table/styles.css'
+```
+
+The JavaScript entry does not load CSS automatically.
+
+`styles.css` combines:
+
+- `data-editor-table/structure.css`: behavior-critical layout and interaction geometry;
+- `data-editor-table/theme.css`: default visual theme.
+
+Import the grid stylesheet after destructive framework resets such as Tailwind Preflight when using the complete default styles. Importing another reset after the grid can replace button, border, and form-control defaults despite the package's cascade layers.
+
+DataGrid fills its host. The host must provide a real height or a layout that supplies one:
+
+```tsx
+export function ProductEditor() {
+  return (
+    <div style={{ height: 480, minWidth: 0 }}>
+      <DataGrid ariaLabel="Products" dataSource={dataSource} />
+    </div>
+  )
+}
+```
+
+Common layout failure: the grid renders at zero height because its parent has no resolved height. In flex/grid containers, add `min-width: 0` and, where necessary, `min-height: 0` to the containing region.
+
+## 4. Minimal API-backed integration
+
+Use `createRemoteGridDataSource` for a normal API/database-backed grid. Create the returned object once for one logical data set; do not recreate it on every React render.
+
+```tsx
+import {
+  DataGrid,
+  GridCommitError,
+  createGridColumnHelper,
+  createGridIdempotencyHeaders,
+  createRemoteGridDataSource,
+} from 'data-editor-table'
+import 'data-editor-table/styles.css'
+
+type Product = {
+  id: string
+  name: string
+  quantity: number
+  status: 'draft' | 'ready'
+  active: boolean
+  locked: boolean
+}
+
+const column = createGridColumnHelper<Product>()
+
+const dataSource = createRemoteGridDataSource({
+  columns: [
+    column.field('name', {
+      label: 'Name',
+      type: 'string',
+      layout: { basis: 280, min: 180, flex: 1 },
+      sortable: true,
+      filterable: true,
+      bulkEditable: true,
+    }),
+    column.field('quantity', {
+      label: 'Quantity',
+      type: 'number',
+      typeOptions: {
+        minimum: 0,
+        format: { maximumFractionDigits: 0 },
+      },
+      layout: { basis: 140, min: 100, max: 220, flex: 1 },
+      sortable: true,
+      filterable: true,
+      bulkEditable: true,
+    }),
+    column.field('status', {
+      label: 'Status',
+      type: 'singleSelect',
+      options: [
+        { value: 'draft', label: 'Draft' },
+        { value: 'ready', label: 'Ready' },
+      ],
+      filterable: true,
+      bulkEditable: true,
+    }),
+    column.field('active', {
+      label: 'Active',
+      type: 'boolean',
+      filterable: true,
+      bulkEditable: true,
+    }),
+  ],
+  getRowKey: (row) => row.id,
+  initialSnapshot: {
+    rows: [
+      { id: 'product-1', name: 'Amber poster', quantity: 12, status: 'ready', active: true, locked: false },
+      { id: 'product-2', name: 'Blue card', quantity: 24, status: 'draft', active: false, locked: false },
+    ],
+    status: 'ready',
+    version: 'products:41',
+    scope: { kind: 'complete' },
+  },
+  async load({ signal }) {
+    const response = await fetch('/api/products', { signal })
+    if (!response.ok) throw new Error('Products could not be loaded.')
+    return response.json() as Promise<{
+      rows: readonly Product[]
+      version: string
+    }>
+  },
+  persistence: {
+    mode: 'auto-save',
+    debounceMs: 500,
+    async mutate(request) {
+      let response: Response
+      try {
+        response = await fetch('/api/products/grid-changes', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...createGridIdempotencyHeaders(request.operationId),
+          },
+          body: JSON.stringify({
+            operationId: request.operationId,
+            sourceVersion: request.sourceVersion,
+            changes: request.changes,
+          }),
+        })
+      } catch {
+        throw new GridCommitError(
+          'unknown-outcome',
+          'The connection was lost while saving. Retry the same operation.',
+        )
+      }
+
+      if (response.status === 409) {
+        throw new GridCommitError(
+          'source-version-conflict',
+          'Products changed on the server. Refresh and review the conflicts.',
+        )
+      }
+      if (!response.ok) {
+        throw new GridCommitError(
+          'unknown-outcome',
+          'The server did not confirm whether the changes were saved.',
+        )
+      }
+
+      const result = await response.json() as {
+        rows: readonly Product[]
+        version: string
+        keyRemap?: readonly { from: string; to: string }[]
+      }
+
+      return {
+        kind: 'applied',
+        authority: { rows: result.rows, version: result.version },
+        ...(result.keyRemap ? { keyRemap: result.keyRemap } : {}),
+      }
+    },
+  },
+})
+
+export function ProductEditor() {
+  return (
+    <div style={{ height: 480, minWidth: 0 }}>
+      <DataGrid ariaLabel="Products" dataSource={dataSource} />
+    </div>
+  )
+}
+```
+
+`ariaLabel` is required and should name the business collection, such as `Products` or `Inventory items`.
+
+The example creates the data source at module scope. If one component can switch between logical data sets, create one data-source identity per data set and preserve that identity for as long as its local edits or asynchronous work may exist.
+
+## 5. The authority and draft model
+
+Use this mental model:
+
+```text
+authoritative snapshot
+  -> local draft
+  -> validated proposal
+  -> commit request
+  -> authoritative server write
+  -> exact applied snapshot
+  -> publish and reconcile
+```
+
+The data source owns authority. The grid owns a local draft derived from that authority. A successful write is not complete until the data source provides the exact applied authority or reloads it.
+
+Important rules:
+
+1. Keep the data-source object identity stable for one logical data set.
+2. Return the complete currently loaded rows from `getSnapshot`.
+3. Notify subscribers for every snapshot publication.
+4. Treat snapshots, row arrays, and row values as immutable.
+5. Column setters return new row values; never mutate a row in place.
+6. `getRowKey` returns a unique, stable string or number.
+7. `version` is opaque. Compare only with equality; never sort or increment it in client logic unless the client is the real authority.
+8. Change `version` whenever authoritative row values or persistent order change.
+9. Never reuse one version for different authoritative rows.
+10. A rejected write preserves the draft for correction, retry, refresh, or conflict recovery.
+
+Provide `cloneRow(row)` when rows are class instances or contain values that cannot be correctly cloned with structured cloning.
+
+## 6. Snapshot states
+
+A data-source snapshot contains:
+
+```ts
+type SnapshotBase<Row> = {
+  rows: readonly Row[]
+  version: string | number
+  scope: { kind: 'complete' }
+}
+
+type Snapshot<Row> = SnapshotBase<Row> & (
+  | { status: 'loading' | 'refreshing' | 'ready'; error?: never }
+  | { status: 'error'; error: string }
+)
+```
+
+An `error` snapshot must include a user-facing error string. It may retain previously loaded rows.
+
+Publish states accurately:
+
+- Initial request with no usable data: `loading`.
+- Background or user-requested refresh with usable rows retained: `refreshing`.
+- Successful load: `ready`.
+- Failed load/refresh: `error` with a recoverable message.
+
+Do not report `ready` before the authority is known. Do not represent loading, permission failure, or request failure as an empty successful collection. Preserve old rows during refresh wherever practical.
+
+`createRemoteGridDataSource` handles Refresh state transitions when `load` is configured. Its `publish(snapshot)` method is for route loaders, server components, or query-cache integrations that receive authority externally.
+
+Providing `load` does not automatically fetch on mount. Supply bootstrapped/cache state in `initialSnapshot`, publish external query results, or explicitly trigger Refresh. Do not leave an initial `loading` snapshot waiting for an automatic request that the adapter never starts.
+
+## 7. Defining columns
+
+### Field-backed columns
+
+Prefer `createGridColumnHelper<Row>()` for direct object fields:
+
+```ts
+const column = createGridColumnHelper<Product>()
+
+const name = column.field('name', {
+  label: 'Name',
+  type: 'string',
+  editable: (row) => !row.locked,
+  sortable: true,
+  filterable: true,
+  bulkEditable: true,
+})
+```
+
+Helper fields are editable by default and use immutable object spread to update the field.
+
+Use `editable: false` for a read-only field or an `editable(row)` predicate for row-specific editing.
+
+Use `columnKey` only when the stable column identity must differ from the field name.
+
+### Explicit columns
+
+Use an explicit column for derived values, custom setters, or non-object rows:
+
+```ts
+const quantityColumn = {
+  key: 'quantity',
+  label: 'Quantity',
+  type: 'number',
+  typeOptions: {
+    minimum: 0,
+    format: { maximumFractionDigits: 0 },
+  },
+  layout: { basis: 140, min: 100, max: 220, flex: 1 },
+  getValue: (row: Product) => row.quantity,
+  setValue: (row: Product, quantity: number) => ({ ...row, quantity }),
+  isEditable: (row: Product) => !row.locked,
+  validate: (quantity: number) => quantity <= 10_000
+    ? { ok: true, value: quantity } as const
+    : {
+        ok: false,
+        issue: { code: 'quantity-too-large', message: 'Quantity cannot exceed 10,000.' },
+      } as const,
+  sortable: true,
+  filterable: true,
+  bulkEditable: true,
+} as const
+```
+
+Omit `setValue` to make the entire column read-only. `isEditable` cannot make a column editable if there is no setter.
+
+Domain validation messages should explain how to correct the value in user language.
+
+### Column capability validation
+
+Flags expose capabilities provided by the registered cell type:
+
+- `sortable: true` requires `behavior.compare`.
+- `filterable: true` requires `behavior.filter`.
+- `bulkEditable: true` requires `behavior.bulk`.
+
+The grid rejects invalid configuration rather than silently displaying broken controls.
+
+### Column layout
+
+Layout supports:
+
+```ts
+layout: {
+  basis?: number
+  min?: number
+  max?: number
+  flex?: number
+}
+```
+
+`basis`, `min`, and `max` must be positive finite numbers. `flex` must be finite and non-negative. `min` cannot exceed `max`.
+
+Use fluid layouts that take advantage of wide desktop displays. Constrain prose or forms separately; do not wrap the entire grid in an approximately 1000-pixel page maximum.
+
+## 8. Built-in cell types
+
+The default registry is created automatically by `DataGrid`, `createDataGridBinding`, and `useDataGridBinding` when `registry` is omitted.
+
+| Type name | Row value | Column options and behavior |
+| --- | --- | --- |
+| `string` | `string` | Optional input mode/placeholder; edit, clipboard, clear, sort, text filters, repeat fill, bulk set/affix/replace. |
+| `number` | `number` | Optional minimum, maximum, placeholder, and `Intl.NumberFormatOptions`; numeric edit/filter/sort/fill/bulk. |
+| `date` | ISO `YYYY-MM-DD` string | Optional placeholder, locale, and display format; date validation/edit/filter/sort/fill/bulk. |
+| `boolean` | `boolean` | Checkbox editing, clipboard, filter, sort, and bulk set. Clear skips boolean cells unless a replacement factory supplies `clearValue`. |
+| `singleSelect` | column-specific `string` or `number`, optionally `null` | Static `options`, optional `nullable` and `emptyLabel`; explicit-choice editing, filter, sort, fill, and bulk. |
+| `multiSelect` | readonly array of column-specific `string` or `number` values | Static `options` and optional `emptyLabel`; choice editing, CSV clipboard, filters, and bulk replace/add/remove. |
+
+The standard registry intentionally does not include `image`; the package exports an image factory because upload and storage are application-owned.
+
+### Column-scoped select catalogs
+
+Use one `singleSelect` or `multiSelect` type name across columns. Put each catalog on its column:
+
+```ts
+const columns = [
+  column.field('status', {
+    label: 'Status',
+    type: 'singleSelect',
+    options: [
+      { value: 'draft', label: 'Draft' },
+      { value: 'ready', label: 'Ready' },
+      { value: 'archived', label: 'Archived', disabled: true },
+    ],
+    filterable: true,
+  }),
+  column.field('tags', {
+    label: 'Tags',
+    type: 'multiSelect',
+    options: [
+      { value: 'featured', label: 'Featured' },
+      { value: 'wholesale', label: 'Wholesale' },
+    ],
+    bulkEditable: true,
+  }),
+]
+```
+
+Disabled options remain valid for an existing value but cannot normally be newly selected. Do not invent type names such as `status` or `tags` merely to attach different catalogs.
+
+Option values must be strings or numbers. Catalogs must be static for the lifetime of the binding configuration.
+
+## 9. Persistence modes
+
+Choose one mode on `dataSource.persistence`:
+
+| Mode | Behavior |
+| --- | --- |
+| `immediate` | Schedule a commit as soon as an accepted change is saveable. |
+| `manual-save` | Retain the draft until the user chooses Save changes. |
+| `auto-save` | Commit after `debounceMs` without a newer change. |
+
+If `auto-save` does not supply `debounceMs`, the controller default is 800 milliseconds.
+
+The controller can change mode at runtime with the `persistence/set-mode` intent when advanced host UI needs it.
+
+Rows with unresolved validation errors or conflicts are excluded from a proposal. Other clean changed rows may still save. If no changed row or order operation is saveable, Save is blocked. Do not bypass affected-row protection with a second write path.
+
+## 10. Commit request and database writes
+
+Every `GridCommitRequest` contains two representations of one accepted proposal:
+
+```ts
+type GridCommitRequest<Row, RowKey> = {
+  rows: readonly Row[]
+  changes: {
+    inserted: readonly { rowKey: RowKey; row: Row }[]
+    updated: readonly {
+      rowKey: RowKey
+      before: Row
+      after: Row
+      cells: readonly {
+        rowKey: RowKey
+        columnKey: string
+        before: unknown
+        after: unknown
+      }[]
+    }[]
+    deleted: readonly { rowKey: RowKey; row: Row }[]
+    order: { before: readonly RowKey[]; after: readonly RowKey[] } | null
+  }
+  acceptedRowKeys: readonly RowKey[]
+  deletedRowKeys: readonly RowKey[]
+  orderChanged: boolean
+  dirtyOriginals: readonly {
+    rowKey: RowKey
+    columnKey: string
+    originalValue: unknown
+  }[]
+  draftRevision: number
+  sourceVersion: string | number
+  operationId: string
+}
+```
+
+Use `rows` for a document-replacement API. Use `changes` for transactional CRUD writes. Do not apply both independently.
+
+### Required server algorithm
+
+Implement the mutation as one authoritative operation:
+
+```text
+begin database transaction
+
+look up operationId in an idempotency ledger
+if it exists:
+  return the first stored result without applying writes again
+
+read and lock the current collection version
+if sourceVersion is stale:
+  reject as source-version-conflict without applying changes
+
+validate authorization and domain invariants
+apply inserted, updated, deleted, and ordering changes
+read the exact stored rows in persistent order
+create a new opaque collection version
+store operationId and its exact result in the idempotency ledger
+
+commit database transaction
+return exact rows, version, and any temporary-key remap
+```
+
+Forward `operationId` through HTTP, services, jobs, and the database boundary. `createGridIdempotencyHeaders(operationId)` returns the conventional `Idempotency-Key` header.
+
+Idempotency must be enforced where writes become authoritative. A client-only de-duplication map is insufficient.
+
+If the connection is lost after the server applies the transaction, the client retries the same operation ID. The server must return the original result instead of creating duplicate rows or applying updates twice.
+
+## 11. Successful mutation results
+
+The remote adapter accepts two success forms.
+
+### Applied authority returned by the mutation
+
+```ts
+return {
+  kind: 'applied',
+  authority: {
+    rows: exactStoredRows,
+    version: nextVersion,
+  },
+  keyRemap,
+}
+```
+
+Use this when the write endpoint returns exact stored rows and their new version.
+
+### Reload after confirmed mutation
+
+```ts
+return {
+  kind: 'reload',
+  keyRemap,
+}
+```
+
+Use this when the mutation confirms success but the adapter must call `load` to obtain exact authority. `load` is required for this result.
+
+Do not return `request.rows` as applied authority when the server may add defaults, normalize values, run triggers, calculate fields, filter by permissions, assign IDs, or choose persistent order.
+
+### Server-assigned keys
+
+When the server replaces a temporary inserted key, return:
+
+```ts
+keyRemap: [
+  { from: 'temporary-client-key', to: 'server-key' },
+]
+```
+
+Each remap must:
+
+- refer to a row inserted by this request;
+- change the key;
+- use unique `from` and `to` values;
+- point to a row present in the applied authority;
+- leave no temporary key in applied authority.
+
+The grid reconciles selection, active editing, dirty state, queued edits, conflicts, and history onto the authoritative key.
+
+## 12. Save failures and recovery
+
+Use `GridCommitError` to tell the grid whether an old proposal can be retried:
+
+```ts
+throw new GridCommitError(
+  'transient',
+  'The service is temporarily unavailable.',
+)
+```
+
+Failure kinds:
+
+- `transient`: retryable transport or service failure. Retry reuses the original operation ID.
+- `unknown-outcome`: the client cannot know whether the write applied. Retry reuses the original operation ID.
+- `source-version-conflict`: the server guarantees the write did not apply because the source version is stale. The old proposal is not retried.
+- `not-applied`: another definitive authoritative rejection. The old proposal is not retried.
+
+An ordinary thrown error is treated as uncertain and remains retryable with the same operation ID. Prefer explicit classification at protocol boundaries.
+
+Only use `source-version-conflict` or `not-applied` if the server guarantees that no part of the operation applied.
+
+If a commit receipt confirms application but local reconciliation fails, refresh authority. Never resubmit an operation already confirmed as applied.
+
+Error messages cross into the UI. Return user-facing recovery text, not raw database errors, stack traces, internal IDs, or protocol dumps.
+
+## 13. Publishing query or route state
+
+`createRemoteGridDataSource` is not tied to a query library. Keep the returned object stable and publish external cache state:
+
+```ts
+if (query.isError) {
+  dataSource.publish({
+    rows: previousRows,
+    version: previousVersion,
+    scope: { kind: 'complete' },
+    status: 'error',
+    error: 'Products could not be loaded.',
+  })
+} else {
+  dataSource.publish({
+    rows: query.data?.rows ?? previousRows,
+    version: query.data?.version ?? previousVersion,
+    scope: { kind: 'complete' },
+    status: query.isFetching
+      ? previousRows.length > 0 ? 'refreshing' : 'loading'
+      : 'ready',
+  })
+}
+```
+
+The example is conceptual: derive state from the actual query library without inventing a successful version before data exists.
+
+Do not recreate the data source whenever the cache emits a new array. Call `publish` instead.
+
+If authentication, permissions, or the route key is unresolved, publish an honest loading or error state, or wait before constructing the logical data-set binding. Do not show a false empty state.
+
+## 14. Row operations
+
+Declare only the operations the host supports:
+
+```ts
+rows: {
+  create: () => ({
+    id: crypto.randomUUID(),
+    name: 'Untitled',
+    quantity: 0,
+    status: 'draft',
+    active: true,
+    locked: false,
+  }),
+  duplicate: (row) => ({
+    ...row,
+    id: crypto.randomUUID(),
+    name: `${row.name} copy`,
+  }),
+  canDelete: (row) => !row.locked,
+  ordering: 'mutable',
+}
+```
+
+- `create` enables Add row.
+- `duplicate` enables single/multi-row duplication.
+- `canDelete` protects rows.
+- `ordering: 'mutable'` states that `commit` persists the exact `request.rows` order and enables non-append placement/movement.
+
+Generate unique client keys synchronously. If the server assigns final keys, return `keyRemap` after commit.
+
+Duplicate the complete business row, not only visible cells. Preserve hidden host-owned fields while changing fields that must be unique.
+
+Multi-row operations are atomic. If any selected target is ineligible, do not partially delete or duplicate a subset unless a separate user workflow explicitly chooses eligible rows first.
+
+Use `column.isEditable` together with `canDelete` to create protected read-only rows.
+
+## 15. Built-in user interactions
+
+An integration agent should preserve these semantics rather than layering conflicting handlers on top:
+
+- Drag cells to select a rectangle.
+- Shift extends selection.
+- Ctrl/Command adds ranges.
+- Row indicators select rows; headers select columns; the corner selects all visible cells.
+- Clicking an already-active single cell, Enter, F2, or printable input starts editing when supported by the type.
+- Copy/paste, clear, bulk edit, and fill validate every destination through its type.
+- Fill repeats the source sequence unless the type supplies series behavior.
+- Header controls filter and sort; clicking the header itself selects the column.
+- Filtering and sorting change only the local view, not persistent row order.
+- Dirty markers expose original values and Revert.
+- Context menus include only applicable row, selection, persistence, type, revert, and conflict actions.
+
+Do not add a second selection or keyboard system around DataGrid. Use controller intents or documented host extension points.
+
+## 16. Custom cell types
+
+Use a custom cell type for a domain-specific value or interaction not covered by the standard types.
+
+Every definition contains:
+
+- React-free `behavior`;
+- React `view`.
+
+Required members:
+
+- `behavior.value.validate`;
+- `behavior.text.display`;
+- `view.Cell`;
+- `view.presentation`.
+
+Optional behavior capabilities:
+
+- `text.search` and `text.original`;
+- `equals`;
+- clipboard `format` and `parse`;
+- `edit`;
+- `clear`;
+- `fill`;
+- `compare`;
+- `filter`;
+- `bulk`;
+- cell `actions`;
+- cancellable cell `effects`.
+
+Pair requirements:
+
+- `behavior.edit` and `view.Editor` appear together.
+- `behavior.bulk` and `view.BulkEditor` appear together.
+
+Minimal editable rating:
+
+```tsx
+import {
+  createStandardCellTypeRegistry,
+  defineCellType,
+} from 'data-editor-table'
+
+type RatedProduct = {
+  id: string
+  rating: number
+}
+
+const ratingType = defineCellType<RatedProduct, number, string>({
+  behavior: {
+    value: {
+      validate: (value) =>
+        typeof value === 'number' && value >= 1 && value <= 5
+          ? { ok: true, value }
+          : {
+              ok: false,
+              issue: {
+                code: 'invalid-rating',
+                message: 'Rating must be from 1 to 5.',
+              },
+            },
+    },
+    text: {
+      display: (value) => `${value} / 5`,
+      original: String,
+    },
+    edit: {
+      begin: String,
+      commit: (draft) => {
+        const value = Number(draft)
+        return Number.isInteger(value) && value >= 1 && value <= 5
+          ? { ok: true, value }
+          : {
+              ok: false,
+              issue: {
+                code: 'invalid-rating',
+                message: 'Rating must be from 1 to 5.',
+              },
+            }
+      },
+    },
+    clipboard: { format: String },
+    compare: (left, right) => left - right,
+  },
+  view: {
+    Cell: ({ displayText }) => <span>{displayText}</span>,
+    Editor: ({ draft, setDraft, commit, cancel }) => (
+      <input
+        aria-label="Rating"
+        autoFocus
+        inputMode="numeric"
+        value={draft}
+        onChange={(event) => setDraft(event.currentTarget.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') commit()
+          if (event.key === 'Escape') cancel()
+        }}
+      />
+    ),
+    presentation: {
+      content: 'padded',
+      align: 'end',
+      editActivation: ['active-cell-click', 'enter', 'f2', 'printable'],
+    },
+  },
+})
+
+const registry = createStandardCellTypeRegistry<RatedProduct>()
+  .register('rating', ratingType)
+```
+
+Pass the same stable registry to the grid and use `GridCellTypeSchemaOf<typeof registry>` for typed data-source or column-helper generics when inference needs help.
+
+Registry operations are immutable:
+
+- `register(name, definitionOrFactory)` adds a new name.
+- `replace(name, definitionOrFactory)` replaces an existing name.
+- `withLocale(locale)` creates a localized registry projection.
+
+To preserve all standard types and customize one:
+
+```ts
+const registry = createStandardCellTypeRegistry<Product>()
+  .replace('boolean', createBooleanCellType({
+    trueLabel: 'Active',
+    falseLabel: 'Inactive',
+  }))
+```
+
+Do not fork DataGrid or add generic grid branches for the new type. The registry is the extension boundary.
+
+## 17. Image cells
+
+Image storage is application-owned. The cell value may be a URL, asset ID, or domain object. The factory requires functions that validate values, resolve a display URL, and upload with cancellation.
+
+```tsx
+import {
+  createImageCellType,
+  createStandardCellTypeRegistry,
+} from 'data-editor-table'
+
+type ImageProduct = {
+  id: string
+  name: string
+  imageUrl: string | null
+}
+
+const imageType = createImageCellType<ImageProduct, string>({
+  accept: 'image/png,image/jpeg,image/webp',
+  maxBytes: 5 * 1024 * 1024,
+  alt: (row) => `${row.name} image`,
+  label: () => 'Choose image',
+  resolveSrc: (value) => value,
+  validate: (value) =>
+    typeof value === 'string' && /^https?:\/\//.test(value)
+      ? { ok: true, value }
+      : {
+          ok: false,
+          issue: {
+            code: 'invalid-image-url',
+            message: 'Choose a valid uploaded image.',
+          },
+        },
+  async upload({ file, signal }) {
+    const body = new FormData()
+    body.append('file', file)
+    const response = await fetch('/api/uploads', {
+      method: 'POST',
+      body,
+      signal,
+    })
+    if (!response.ok) throw new Error('Upload failed')
+    return (await response.json() as { url: string }).url
+  },
+  parseClipboard: (text) =>
+    /^https?:\/\//.test(text)
+      ? { ok: true, value: text }
+      : {
+          ok: false,
+          issue: {
+            code: 'invalid-image-url',
+            message: 'Paste a valid image URL.',
+          },
+        },
+})
+
+const imageColumn = {
+  key: 'image',
+  label: 'Image',
+  type: 'image',
+  getValue: (row: ImageProduct) => row.imageUrl,
+  setValue: (row: ImageProduct, imageUrl: string | null) => ({
+    ...row,
+    imageUrl,
+  }),
+  filterable: true,
+} as const
+
+const registry = createStandardCellTypeRegistry<ImageProduct>()
+  .register('image', imageType)
+```
+
+Pass `imageColumn` in the data source and `registry` to DataGrid. If TypeScript cannot infer the custom schema at a generic boundary, derive it with `GridCellTypeSchemaOf<typeof registry>`.
+
+`accept`, `maxBytes`, `alt`, and `label` can be overridden per column through `typeOptions`. Upload receives an `AbortSignal`; pass it to the network request. Do not store a temporary object URL as authoritative application data unless that is the intentional durable value.
+
+The image factory is application-registered rather than part of the standard localized registry. For a localized image type, pass its message overrides explicitly, for example `messages: zhCN.cellTypes.image`, and localize application-owned labels/upload errors as well.
+
+## 18. Localization and messages
+
+The package includes complete English defaults and Simplified Chinese:
+
+```tsx
+import { zhCN } from 'data-editor-table/locales/zh-CN'
+
+<DataGrid
+  ariaLabel="商品"
+  dataSource={dataSource}
+  locale={zhCN}
+/>
+```
+
+Locale applies to the grid shell and standard cell types, including `Intl` formatting/collation. Set it when the binding is created; do not switch the static locale on an existing data-source binding identity.
+
+Override individual DataGrid messages with `messages`. Cell-type factories also accept typed partial message overrides. Explicit overrides take precedence over the locale pack.
+
+Application-owned text is not translated by the package:
+
+- column labels;
+- select option labels;
+- domain validation messages;
+- data-source error messages;
+- image labels and upload errors;
+- custom cell-type copy.
+
+Translate those with the application's i18n system.
+
+## 19. Theme and custom styling
+
+Override semantic variables on the DataGrid root:
+
+```css
+.inventory-grid {
+  --grid-surface: #fff;
+  --grid-subtle-surface: #f8fafc;
+  --grid-text: #172033;
+  --grid-muted: #68758a;
+  --grid-border: #d8deea;
+  --grid-accent: #2563eb;
+  --grid-accent-soft: #dbeafe;
+  --grid-dirty: #f59e0b;
+  --grid-invalid: #dc2626;
+  --grid-conflict: #c2410c;
+  --grid-radius: 8px;
+}
+```
+
+```tsx
+<DataGrid
+  ariaLabel="Inventory"
+  className="inventory-grid"
+  dataSource={dataSource}
+/>
+```
+
+Menus, dialogs, and editor popovers render in a body portal. DataGrid bridges resolved root theme variables to its portals. If application CSS targets grid elements from outside, use selectors with enough specificity to override component defaults rather than relying only on ordinary ancestor inheritance.
+
+### Tailwind or a fully custom theme
+
+Import only the structural contract before Tailwind/application layers:
+
+```css
+@import 'data-editor-table/structure.css';
+@import 'tailwindcss';
+```
+
+Then style `.business-grid__*` and `data-grid-*` classes in application layers. Portal classes such as `.business-grid-menu`, `.business-grid-dialog`, `.business-grid-cell-editor-popover`, and `.business-grid-dirty-popover` need global component styling because they render under `body`.
+
+Do not omit `structure.css`; it provides scrolling, sticky geometry, editor placement, hit targets, overlays, and accessibility utilities, not merely appearance.
+
+## 20. Surface and action customization
+
+Use extension props before replacing or wrapping DataGrid internals:
+
+- `toolbarActions(controller)` adds host toolbar content.
+- `rowHeaderActions` adds row-level host actions.
+- `surfaceRenderers` can replace toolbar, footer, context menu, filter dialog, bulk dialog, or feedback.
+- `messages` overrides DataGrid-owned copy.
+- `className` scopes theme and application styles.
+- `rowDropZone` integrates host-owned drag/drop.
+
+Surface renderers receive resolved state and safe callbacks. Preserve accessibility, loading/error distinctions, validation recovery, and controller command semantics when replacing a default surface.
+
+Do not create a second persistence banner or success state that contradicts `snapshot.persistence`.
+
+## 21. Advanced binding ownership
+
+Use the hook when React host UI needs controller access:
+
+```tsx
+import {
+  DataGrid,
+  useDataGridBinding,
+} from 'data-editor-table'
+
+function ProductGrid() {
+  const binding = useDataGridBinding({ dataSource })
+
+  if (!binding) {
+    return <div role="status">Preparing products…</div>
+  }
+
+  return <DataGrid ariaLabel="Products" binding={binding} />
+}
+```
+
+`useDataGridBinding` creates/destroys after React commits, including development StrictMode setup/cleanup. It returns `null` on the first render and when a static binding option changes.
+
+Use `createDataGridBinding({ dataSource })` only outside React lifecycle ownership, and call `binding.destroy()` after permanent disposal.
+
+One binding drives one mounted viewport. Do not mount the same binding in two DataGrid instances.
+
+When `binding` is passed to DataGrid, registry, locale, effects, sizes, and limits belong to the binding and cannot also be passed as DataGrid-owned options.
+
+Use `useGridSelector` to subscribe host components to a small derived controller slice.
+
+## 22. Atomic host transactions
+
+Use `controller.applyTransaction` for synchronous host workflows such as imports:
+
+```ts
+const result = binding.controller.applyTransaction((transaction) => {
+  const rowKey = transaction.createRow()
+  transaction.set(dataSource.columns[0]!, rowKey, 'Imported product')
+}, { label: 'Import products' })
+
+if (!result.accepted) {
+  showIssues(result.issues)
+}
+```
+
+Transaction operations include:
+
+- `createRow({ beforeRowKey? })`;
+- `duplicateRow(sourceRowKey, { beforeRowKey? })`;
+- `moveRows(rowKeys, { beforeRowKey? })`;
+- `deleteRows(rowKeys)`;
+- typed `set(column, rowKey, value)`;
+- `abort(issue)`.
+
+Transactions are all-or-nothing. Placement uses `{ beforeRowKey }` in complete draft order, never a filtered/sorted visible index.
+
+Do not catch the internal abort and continue staging. Report the returned issues to the user in domain language.
+
+## 23. Row drag/drop
+
+Pass:
+
+```tsx
+<DataGrid
+  ariaLabel="Products"
+  binding={binding}
+  rowDropZone={{ active, onTargetChange }}
+/>
+```
+
+Drop targets contain canonical `{ beforeRowKey }` placement. The grid owns hit testing, insertion marker, and optional auto-scroll. The host owns:
+
+- `DataTransfer` payloads;
+- source validation;
+- Copy/Cut meaning;
+- whether the drop is accepted;
+- the atomic destination transaction;
+- any source deletion after a successful Cut.
+
+Use `selectGridNaturalRowOrder(snapshot).eligible` before enabling positional gestures. Filtering or sorting can make the visible position differ from persistent order.
+
+## 24. React-free engine
+
+Import headless contracts from:
+
+```ts
+import {
+  createGridController,
+  selectGridToolbar,
+  type GridDataSource,
+} from 'data-editor-table/engine'
+```
+
+The engine entry exports controller, selector, data-source, resolver, model, and persistence contracts without React runtime views, registries, hooks, or CSS.
+
+Use the root entry when a task needs React cell definitions or the typed registry. Do not import internal `src/` paths; only published package subpaths are supported.
+
+## 25. Public entry points
+
+- `data-editor-table`: React DataGrid, cell types, registry, controller, selectors, data sources, and public contracts.
+- `data-editor-table/engine`: React-free engine and type-only cell contracts.
+- `data-editor-table/locales/zh-CN`: complete Simplified Chinese locale.
+- `data-editor-table/styles.css`: required structure plus default theme.
+- `data-editor-table/structure.css`: behavior-critical layout without default theme.
+- `data-editor-table/theme.css`: default theme, intended to follow structure.
+
+Do not depend on unexported files or generated DOM structure beyond documented styling hooks.
+
+## 26. Common integration mistakes
+
+### Data source recreated during render
+
+Symptom: edits appear detached, configuration-change feedback appears, or controller lifecycle churns.
+
+Fix: create one stable data-source object per logical data set and call `publish` when authority changes.
+
+### Rows mutated in place
+
+Symptom: dirty detection, history, rebase, or rendering becomes inconsistent.
+
+Fix: treat all published and draft values as immutable; setters return new rows.
+
+### Source version reused
+
+Symptom: the remote adapter throws because different authority is published with the same version, or stale changes cannot be detected.
+
+Fix: issue a new opaque version for every authoritative value/order change.
+
+### Commit returns proposed rows instead of stored rows
+
+Symptom: server defaults, normalization, calculated values, permissions, IDs, or ordering are lost locally.
+
+Fix: return exact authority or use `{ kind: 'reload' }`.
+
+### Unknown save outcome is retried with a new ID
+
+Symptom: duplicate inserts or repeated side effects.
+
+Fix: let the grid retry the retained proposal and enforce `operationId` uniqueness at the database boundary.
+
+### Temporary inserted key is not remapped
+
+Symptom: selection/history remains attached to a key absent from authority or later edits target the wrong row.
+
+Fix: return a valid `keyRemap` with the applied authority.
+
+### Grid has no height
+
+Symptom: blank or collapsed component.
+
+Fix: give the host an explicit/resolved height and correct flex/grid minimum sizes.
+
+### Styles are missing or reset
+
+Symptom: broken geometry, unstyled controls, or portal surfaces.
+
+Fix: import `styles.css`, or import `structure.css` before the complete custom theme; check reset order and body portal styles.
+
+### Registry and columns disagree
+
+Symptom: configuration error for an unknown type or missing capability.
+
+Fix: pass the registry that owns every column type and only enable supported sort/filter/bulk capabilities.
+
+### Select catalogs fetched per row
+
+Symptom: type options cannot represent the data or change under an active binding.
+
+Fix: use static column-scoped catalogs; build a custom type or redesign the workflow if options truly require asynchronous domain behavior.
+
+### Visible index used as persistent placement
+
+Symptom: reorder/import lands in the wrong place under filters or sorting.
+
+Fix: use canonical row keys and `{ beforeRowKey }` in natural draft order.
+
+### Same binding mounted twice
+
+Symptom: focus, selection, viewport geometry, and DOM effects compete.
+
+Fix: create one binding per mounted viewport.
+
+## 27. Agent implementation checklist
+
+Before implementing:
+
+- Confirm the application uses React 19 and can load package CSS.
+- Confirm the collection fits the complete-loaded-set model.
+- Identify the authoritative backend, stable row key, and version token.
+- Decide how operation IDs are enforced idempotently at the database boundary.
+- Decide whether the mutation returns exact authority or reloads it.
+- Identify server-assigned keys and required remaps.
+- Choose a persistence mode.
+- List column value types, editability, validation, layout, and capabilities.
+- Use standard types where possible; define custom types only for real domain behavior.
+- Decide whether row create/duplicate/delete/order operations are supported.
+- Choose default styles, CSS-variable theming, or structure-only custom styling.
+- Identify application-owned translations and error messages.
+
+Before declaring integration complete:
+
+- The grid host has a real height and no accidental page-level overflow.
+- Initial loading does not flash an empty state.
+- Refresh preserves old data when practical.
+- Errors do not appear as empty success.
+- Row keys are unique and stable.
+- Authority versions change with values and order.
+- Save success uses exact stored authority.
+- Unknown outcomes reuse the original operation ID.
+- Validation retains input and explains recovery.
+- Conflicts can be resolved without losing local work.
+- Temporary keys reconcile to server keys.
+- Read-only and protected rows reject disallowed operations.
+- Sorting/filtering does not mutate persistent order.
+- Clipboard, bulk edit, fill, undo/redo, and revert work for enabled types.
+- Locale and application-owned copy are consistent.
+- Portal menus/dialogs/editors inherit or receive the intended theme.
+- The relevant user workflow is exercised in a real browser, including console and network errors.
+
+## 28. Integration recipes in the source repository
+
+Use the shipped demos as working recipes, not as additional API contracts:
+
+- `demo/src/quick-start.tsx`: shortest API-backed grid with standard types and auto-save.
+- `demo/src/playground.tsx`: built-in types, selection, row operations, save modes, failures, remote changes, dirty state, and conflicts.
+- `demo/src/multi-image-import.tsx`: multiple image drop, image/filename population, and atomic row creation.
+- `demo/src/cross-grid-drag.tsx`: Copy/Cut between grids and reorder within one grid.
+
+Run the repository demo with `pnpm demo`, then use its routed pages to exercise the integration behavior an agent is implementing.
+
+## 29. Further reference
+
+- README: https://github.com/hitomi/data-editor-table/blob/main/README.md
+- Live demo: https://hitomi.github.io/data-editor-table/
+- npm: https://www.npmjs.com/package/data-editor-table
+- Source: https://github.com/hitomi/data-editor-table
+- Detailed concurrency and design rationale: https://github.com/hitomi/data-editor-table/blob/main/docs/native-grid-v2-plan.md
+
+When this guide and the installed package version differ, prefer the installed TypeScript declarations and the README for that exact package version. Do not assume APIs from a newer release exist in an older installation.

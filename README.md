@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/data-editor-table.svg)](https://www.npmjs.com/package/data-editor-table)
 [![license](https://img.shields.io/npm/l/data-editor-table.svg)](./LICENSE)
 
-A styled React bulk editor for business data. Applications provide an authoritative data source, explicitly register cell types, and define columns; the grid supplies selection, typed editing, validation, clipboard and fill operations, filtering, sorting, dirty/conflict handling, row operations, history, and persistence.
+A styled React bulk editor for business data. Applications provide an authoritative data source and define columns; the grid supplies standard cell types, selection, typed editing, validation, clipboard and fill operations, filtering, sorting, dirty/conflict handling, row operations, history, and persistence.
 
 [Try the live demo](https://hitomi.github.io/data-editor-table/) or browse the
 [source on GitHub](https://github.com/hitomi/data-editor-table).
@@ -13,7 +13,7 @@ A styled React bulk editor for business data. Applications provide an authoritat
 - Cell, range, row, column, additive, and select-all selection
 - Keyboard navigation, matrix copy/paste, clear, and drag-to-fill
 - Typed editing, filtering, sorting, validation, and bulk editing
-- Seven built-in factories: string, number, ISO date, image, single-select, multi-select tags, and boolean
+- Six default cell types plus an image factory: string, number, ISO date, single-select, multi-select, boolean, and application-owned image upload
 - Dirty markers, original-value preview, revert, undo, redo, and conflict recovery
 - Add, duplicate, protect, delete, and reorder rows
 - Immediate, manual, or debounced automatic saving
@@ -28,7 +28,7 @@ The initial release renders the complete row set supplied by the data source, us
 pnpm add data-editor-table react react-dom
 ```
 
-This source release is `0.2.0`.
+This source release is `0.3.0`.
 
 Import the complete default styles once:
 
@@ -56,32 +56,26 @@ the server's actual result back to the grid.
 import {
   DataGrid,
   GridCommitError,
-  createCellTypeRegistry,
+  createGridColumnHelper,
   createGridIdempotencyHeaders,
   createRemoteGridDataSource,
-  createStringCellType,
-  type GridCellTypeSchemaOf,
+  type StandardGridCellTypeSchema,
 } from 'data-editor-table'
 import 'data-editor-table/styles.css'
 
 type Product = { id: string; name: string }
 
-const registry = createCellTypeRegistry<Product>()
-  .register('string', createStringCellType())
-type CellTypes = GridCellTypeSchemaOf<typeof registry>
+const column = createGridColumnHelper<Product>()
 
-const dataSource = createRemoteGridDataSource<Product, string, CellTypes>({
-  columns: [{
-    key: 'name',
+const dataSource = createRemoteGridDataSource<Product, string, StandardGridCellTypeSchema>({
+  columns: [column.field('name', {
     label: 'Name',
     type: 'string',
     layout: { basis: 280, min: 180, flex: 1 },
     sortable: true,
     filterable: true,
     bulkEditable: true,
-    getValue: (row) => row.name,
-    setValue: (row, name) => ({ ...row, name }),
-  }],
+  })],
   getRowKey: (row) => row.id,
   // Usually supplied by a route loader, server component, or query cache.
   initialSnapshot: {
@@ -153,7 +147,7 @@ const dataSource = createRemoteGridDataSource<Product, string, CellTypes>({
 
 export function ProductEditor() {
   return <div style={{ height: 480, minWidth: 0 }}>
-    <DataGrid ariaLabel="Products" dataSource={dataSource} registry={registry} />
+    <DataGrid ariaLabel="Products" dataSource={dataSource} />
   </div>
 }
 ```
@@ -167,7 +161,7 @@ The data source is an external-store boundary: authoritative snapshot → local 
 Practical rules:
 
 1. Return the complete currently loaded rows from `getSnapshot`; notify subscribers for every publication.
-2. Keep the `dataSource` object identity stable for one logical data set. Its registry and sizing options remain fixed for that identity. The owned `DataGrid` preserves bindings that still have edits or in-progress work when the identity changes, and releases inactive clean bindings.
+2. Keep the `dataSource` object identity stable for one logical data set. Its registry, locale, and sizing options remain fixed for that identity. The owned `DataGrid` preserves bindings that still have edits or in-progress work when the identity changes, and releases inactive clean bindings.
 3. `getRowKey` must produce a unique, stable string or number.
 4. Treat every published snapshot, rows array, and row value as immutable. Setters return new rows.
 5. `version` is an opaque token. Change it whenever authoritative values or persistent order change; never compare versions by magnitude.
@@ -222,30 +216,53 @@ A column maps a registered type to business data:
 
 Omit `setValue` for a read-only column. `isEditable` is a per-row gate. Optional `validate` adds domain validation. A flag such as `sortable` only exposes a capability implemented by that type. `typeOptions` are type-checked against the registered type.
 
+For direct fields, `createGridColumnHelper` removes `key`, `getValue`, and `setValue`. Helper fields
+are editable by default; pass `editable: false` or a predicate to restrict editing. Derived columns
+can continue to use the explicit form above.
+
 ## Built-in cell types
 
-There are no implicit defaults; register every type used by the grid.
+`DataGrid`, `createDataGridBinding`, and `useDataGridBinding` use
+`createStandardCellTypeRegistry()` when `registry` is omitted. It contains `string`, `number`,
+`date`, `boolean`, `singleSelect`, and `multiSelect`. Select catalogs belong to columns, so one type
+supports every select field without creating names such as `status`, `category`, or `tags`.
 
 ```tsx
-const standardRegistry = createCellTypeRegistry<Product>()
-  .register('string', createStringCellType())
-  .register('number', createNumberCellType({ emptyValue: null }))
-  .register('date', createDateCellType({ storage: 'iso-date', emptyValue: '' }))
-  .register('status', createSingleSelectCellType({
+const column = createGridColumnHelper<Product>()
+
+const columns = [
+  column.field('status', {
+    label: 'Status',
+    type: 'singleSelect',
     options: [
       { value: 'draft', label: 'Draft' },
       { value: 'ready', label: 'Ready' },
       { value: 'archived', label: 'Archived', disabled: true },
-    ] as const,
-  }))
-  .register('tags', createMultiSelectCellType({
+    ],
+    sortable: true,
+    filterable: true,
+  }),
+  column.field('tags', {
+    label: 'Tags',
+    type: 'multiSelect',
     options: [
       { value: 'featured', label: 'Featured' },
       { value: 'wholesale', label: 'Wholesale' },
-    ] as const,
+    ],
+    bulkEditable: true,
+  }),
+]
+
+const registry = createStandardCellTypeRegistry<Product>()
+  .replace('boolean', createBooleanCellType({
+    trueLabel: 'Active',
+    falseLabel: 'Inactive',
   }))
-  .register('boolean', createBooleanCellType({ trueLabel: 'Active', falseLabel: 'Inactive' }))
 ```
+
+You normally do not create `registry` at all. Pass the customized registry only when adding a type
+or replacing a standard implementation. `register` rejects an existing name; `replace` requires an
+existing name, which makes accidental overrides explicit.
 
 | Factory | Value | Included behavior |
 | --- | --- | --- |
@@ -257,8 +274,9 @@ const standardRegistry = createCellTypeRegistry<Product>()
 | `createMultiSelectCellType` | `readonly (string \| number)[]` | Responsive tags, checklist editing, CSV clipboard, set-style equality, choice filters, replace/add/remove bulk edit |
 | `createBooleanCellType` | `boolean` | Checkbox display, keyboard toggle, TRUE/FALSE clipboard, filters and mixed-state bulk edit |
 
-Choice factories receive a static option catalog. Values store option IDs rather than display
-objects. Multi-select values are canonicalized to catalog order, so selecting the same tags in a
+Choice columns receive a static option catalog. Values store option IDs rather than display objects.
+The helper infers the exact option value union from the row field, so a status column cannot list an
+option that its field cannot store. Multi-select values are canonicalized to catalog order, so selecting the same tags in a
 different order does not create a change. A disabled option remains valid and filterable for
 existing data, but cannot be newly selected or pasted; an existing disabled tag can still be
 removed. Pass `emptyValue: null` to make a single-select nullable. Boolean cells expose Clear only
@@ -271,9 +289,8 @@ when `clearValue` is explicitly configured.
 - Boolean stores a strict `boolean`, displays a checkbox, accepts `TRUE`/`FALSE` clipboard values,
   and represents mixed bulk selections only in the editor draft—not in row data.
 
-Option catalogs are intentionally synchronous and registration-scoped. If options differ by
-business field, register separate cell types such as `status` and `category`. Loading, caching,
-and invalidation for asynchronous or row-dependent options belong in a custom registered type.
+Option catalogs are intentionally synchronous and column-scoped. Loading, caching, and invalidation
+for asynchronous or row-dependent options belong in application state or a custom registered type.
 
 Image storage and upload belong to the application:
 
@@ -297,7 +314,8 @@ const imageType = createImageCellType<Product, string>({
     : { ok: false, issue: { code: 'invalid-image-url', message: 'Paste a valid image URL.' } },
 })
 
-const registry = standardRegistry.register('image', imageType)
+const registry = createStandardCellTypeRegistry<Product>()
+  .register('image', imageType)
 ```
 
 `accept` and `maxBytes` may be set on the factory or column. Upload receives an abort signal.
@@ -402,31 +420,24 @@ Import `defineCellType` from the package root. Every definition needs `behavior.
 ## Messages, surfaces, and theme
 
 The package is i18n-library agnostic and includes complete English defaults plus the exported
-`zhCN` locale. `DataGrid.messages` accepts typed partial overrides for the grid shell, and every
-built-in cell-type factory accepts its own typed partial `messages` object. Function-valued messages
-receive values such as row, cell, or byte counts, so the host can apply its own pluralization and
-number formatting.
+`zhCN` locale. Set the locale once on `DataGrid` or a binding; it applies to the grid shell and every
+standard cell type, including `Intl` collation and formatting. Function-valued messages receive
+values such as row, cell, or byte counts.
 
 ```tsx
 import { zhCN } from 'data-editor-table/locales/zh-CN'
 
-const registry = createCellTypeRegistry<Product>()
-  .register('string', createStringCellType({
-    locale: zhCN.code,
-    messages: zhCN.cellTypes.string,
-  }))
-
 <DataGrid
   ariaLabel="商品"
   dataSource={dataSource}
-  registry={registry}
-  messages={zhCN.dataGrid}
+  locale={zhCN}
 />
 ```
 
-Use `zhCN.cellTypes.number`, `isoDate`, `singleSelect`, `multiSelect`, `boolean`,
-and `image` with their corresponding factories. These are ordinary typed message objects, so an
-application can spread and override individual strings without adopting a particular i18n runtime.
+For advanced binding ownership, pass the same value to
+`useDataGridBinding({ dataSource, locale: zhCN })`; `<DataGrid binding={binding} />` then inherits it.
+`DataGrid.messages` and each factory's `messages` remain typed escape hatches for partial overrides,
+with explicit overrides taking precedence over the locale pack.
 
 The exported `DataGridMessages`, `GridStringCellTypeMessages`,
 `GridNumberCellTypeMessages`, `GridIsoDateCellTypeMessages`,
@@ -434,8 +445,7 @@ The exported `DataGridMessages`, `GridStringCellTypeMessages`,
 `GridMultiSelectCellTypeMessages`, and `GridBooleanCellTypeMessages` types can be used to author
 shared locale packs. Column labels, choice labels, image labels, application validation messages,
 data-source errors, and custom cell-type copy remain application-owned and should use the same
-locale. `locale` on string/number/date factories controls collation and `Intl` formatting; it does
-not translate interface copy.
+locale.
 
 `surfaceRenderers` can replace toolbar, footer, context menu, filter dialog, bulk dialog, or
 feedback while receiving resolved state and safe callbacks. `toolbarActions` and
@@ -536,16 +546,17 @@ is returned until the binding is ready.
 
 ```tsx
 function ProductGrid() {
-  const binding = useDataGridBinding({ dataSource, registry })
+  const binding = useDataGridBinding({ dataSource })
   if (!binding) return <div role="status">Preparing products…</div>
   return <DataGrid ariaLabel="Products" binding={binding} />
 }
 ```
 
-Use `createDataGridBinding({ dataSource, registry })` only outside React lifecycle ownership and call
+Use `createDataGridBinding({ dataSource })` only outside React lifecycle ownership and call
 `binding.destroy()` after permanent disposal. One binding drives only one mounted viewport.
 `useGridSelector` subscribes host components to controller state. The simpler
-`<DataGrid dataSource={dataSource} registry={registry} />` form owns this lifecycle automatically.
+`<DataGrid dataSource={dataSource} />` form owns this lifecycle automatically. Add `registry` to any
+of these forms only when the data source uses a custom or replaced type.
 
 Import React-free data-source, resolver, selection, controller, and persistence contracts from `data-editor-table/engine`; that subpath does not export React views, registries, or hooks.
 
@@ -584,7 +595,7 @@ Demos are integration recipes, not additional API contracts.
 
 ## Limits and status
 
-`0.2.0` is an early public test release. It is suitable for integration testing, but its API may
+`0.3.0` is an early public test release. It is suitable for integration testing, but its API may
 still change before `1.0` as real applications exercise the data-source and editing contracts.
 
 - Snapshots currently contain one complete loaded set; there is no pagination/window protocol or row virtualization.

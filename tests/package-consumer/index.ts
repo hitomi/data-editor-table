@@ -1,6 +1,7 @@
 import {
   DataGrid,
   createCellTypeRegistry,
+  createGridColumnHelper,
   createRemoteGridDataSource,
   createStringCellType,
   useDataGridBinding,
@@ -81,3 +82,41 @@ const invalidDataSource: GridDataSource<Row, number, Schema> = {
   }],
 }
 void invalidDataSource
+
+type ChoiceRow = {
+  status: 'draft' | 'ready'
+  nullableStatus: 'draft' | 'ready' | null
+  tags: readonly ('featured' | 'seasonal')[]
+}
+
+const choiceColumn = createGridColumnHelper<ChoiceRow>()
+choiceColumn.field('status', {
+  label: 'Status',
+  type: 'singleSelect',
+  options: [
+    { value: 'draft', label: 'Draft' },
+    { value: 'ready', label: 'Ready' },
+  ],
+})
+choiceColumn.field('tags', {
+  label: 'Tags',
+  type: 'multiSelect',
+  options: [
+    { value: 'featured', label: 'Featured' },
+    { value: 'seasonal', label: 'Seasonal' },
+  ],
+})
+choiceColumn.field('status', {
+  label: 'Invalid status',
+  type: 'singleSelect',
+  options: [
+    // @ts-expect-error Column options must fit the exact field value union.
+    { value: 'archived', label: 'Archived' },
+  ],
+})
+// @ts-expect-error Nullable select fields must opt in explicitly.
+choiceColumn.field('nullableStatus', {
+  label: 'Nullable status',
+  type: 'singleSelect',
+  options: [{ value: 'draft', label: 'Draft' }],
+})

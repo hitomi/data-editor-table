@@ -11,3 +11,4 @@ export type {
   GridToolbarState,
 } from './react/grid-surfaces.js'
 export type { GridContextMenuProps, GridMenuAction } from './react/grid-layers.js'
+export type { DataEditorTableLocale } from './locales/contracts.js'

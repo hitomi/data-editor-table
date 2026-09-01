@@ -423,7 +423,7 @@ export type GridRuntimeCellEffect<Row> = Readonly<{
 }>
 
 export type GridCellBehaviorPort<Row> = Readonly<{
-  resolve: (type: string) => GridRuntimeCellBehavior<Row> | undefined
+  resolve: (type: string, typeOptions?: unknown) => GridRuntimeCellBehavior<Row> | undefined
 }>
 
 export type GridCompiledColumn<Row> = Readonly<{

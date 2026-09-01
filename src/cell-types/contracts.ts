@@ -13,30 +13,105 @@ export type {
   GridRuntimeCellEffect,
 } from '../model/grid-model.js'
 
-export type GridCellTypeSignature<Value, ColumnOptions = undefined> = Readonly<{
+export type GridCellTypeKind = 'fixed' | 'single-select' | 'multi-select'
+
+export type GridCellTypeSignature<
+  Value,
+  ColumnOptions = undefined,
+  Kind extends GridCellTypeKind = 'fixed',
+> = Readonly<{
   value: Value
   columnOptions: ColumnOptions
+  kind: Kind
 }>
 
-export type GridCellTypeSchema = Record<string, GridCellTypeSignature<unknown, unknown>>
+export type GridCellTypeSchema = Record<
+  string,
+  GridCellTypeSignature<unknown, unknown, GridCellTypeKind>
+>
 
 export type GridCellTypeValue<Entry> =
-  Entry extends GridCellTypeSignature<infer Value, unknown> ? Value : never
+  Entry extends GridCellTypeSignature<infer Value, unknown, GridCellTypeKind> ? Value : never
 
 export type GridCellTypeColumnOptions<Entry> =
-  Entry extends GridCellTypeSignature<unknown, infer ColumnOptions> ? ColumnOptions : never
+  Entry extends GridCellTypeSignature<unknown, infer ColumnOptions, GridCellTypeKind> ? ColumnOptions : never
+
+export type GridCellTypeKindOf<Entry> =
+  Entry extends GridCellTypeSignature<unknown, unknown, infer Kind> ? Kind : never
 
 export type GridColumnForCellTypes<
   Row,
   Schema extends GridCellTypeSchema,
 > = {
-  [Name in Extract<keyof Schema, string>]: GridColumn<
+  [Name in Extract<keyof Schema, string>]: GridColumnForCellType<
     Row,
-    GridCellTypeValue<Schema[Name]>,
     Name,
-    GridCellTypeColumnOptions<Schema[Name]>
+    Schema[Name]
   >
 }[Extract<keyof Schema, string>]
+
+type GridColumnForCellType<
+  Row,
+  Name extends string,
+  Entry,
+> = GridCellTypeKindOf<Entry> extends 'single-select'
+  ? GridSingleSelectColumnForRow<Row, Name, GridCellTypeColumnOptions<Entry>>
+  : GridCellTypeKindOf<Entry> extends 'multi-select'
+    ? GridMultiSelectColumnForRow<Row, Name, GridCellTypeColumnOptions<Entry>>
+    : GridColumn<
+        Row,
+        GridCellTypeValue<Entry>,
+        Name,
+        GridCellTypeColumnOptions<Entry>
+      >
+
+type GridSingleSelectColumnForRow<
+  Row,
+  Name extends string,
+  ColumnOptions,
+> = {
+  [Key in keyof Row]: Row[Key] extends GridChoiceValue | null
+    ? GridColumn<
+        Row,
+        Row[Key],
+        Name,
+        GridSingleSelectOptionsForValue<ColumnOptions, Row[Key]>
+      >
+    : never
+}[keyof Row]
+
+type GridSingleSelectOptionsForValue<ColumnOptions, Value> =
+  ColumnOptions extends Readonly<{ options: readonly GridChoiceOption<GridChoiceValue>[] }>
+    ? Omit<ColumnOptions, 'options' | 'nullable'> & Readonly<{
+        options: readonly GridChoiceOption<Extract<NonNullable<Value>, GridChoiceValue>>[]
+      }> & (null extends Value
+        ? Readonly<{ nullable: true }>
+        : Readonly<{ nullable?: false }>)
+    : never
+
+type GridMultiSelectColumnForRow<
+  Row,
+  Name extends string,
+  ColumnOptions,
+> = {
+  [Key in keyof Row]: Row[Key] extends readonly (infer Value)[]
+    ? [Value] extends [GridChoiceValue]
+      ? GridColumn<
+          Row,
+          Row[Key],
+          Name,
+          GridMultiSelectOptionsForValue<ColumnOptions, Extract<Value, GridChoiceValue>>
+        >
+      : never
+    : never
+}[keyof Row]
+
+type GridMultiSelectOptionsForValue<ColumnOptions, Value extends GridChoiceValue> =
+  [ColumnOptions] extends [Readonly<{ options: readonly GridChoiceOption<GridChoiceValue>[] }>]
+    ? Omit<ColumnOptions, 'options'> & Readonly<{
+        options: readonly GridChoiceOption<Value>[]
+      }>
+    : never
 
 export type GridCellValueIssue = Readonly<{
   code: string
@@ -264,5 +339,8 @@ export type GridRuntimeFillContext<Row> = Parameters<
 export type GridRegisteredRuntimeCellBehavior<Row> = GridRuntimeCellBehavior<Row>
 
 export type GridCellBehaviorProjection<Row> = Readonly<{
-  resolve: (type: string) => GridRegisteredRuntimeCellBehavior<Row> | undefined
+  resolve: (
+    type: string,
+    typeOptions?: unknown,
+  ) => GridRegisteredRuntimeCellBehavior<Row> | undefined
 }>

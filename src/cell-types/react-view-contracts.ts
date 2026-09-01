@@ -4,7 +4,9 @@ import type {
   GridCellBehavior,
   GridCellEffectInput,
   GridCellEffectSchema,
+  GridCellTypeKind,
 } from './contracts.js'
+import type { DataEditorTableLocale } from '../locales/contracts.js'
 
 export type GridCellEditActivation = 'active-cell-click' | 'enter' | 'f2' | 'printable' | 'space'
 
@@ -62,10 +64,15 @@ export type GridCellEditorProps<
   requestEffect: GridCellEffectRequester<Effects>
 }>
 
-export type GridCellBulkEditorProps<BulkDraft> = Readonly<{
+export type GridCellBulkEditorProps<
+  BulkDraft,
+  ColumnOptions = undefined,
+> = Readonly<{
   draft: BulkDraft
   cellCount: number
+  columnKey: string
   error: string | null
+  typeOptions: ColumnOptions
   setDraft: (draft: BulkDraft) => void
   apply: () => void
   cancel: () => void
@@ -81,7 +88,7 @@ export type GridCellReactView<
 > = Readonly<{
   Cell: ComponentType<GridCellViewProps<Row, Value, ColumnOptions, Effects>>
   Editor?: ComponentType<GridCellEditorProps<Row, Value, EditDraft, ColumnOptions, Effects>>
-  BulkEditor?: ComponentType<GridCellBulkEditorProps<BulkDraft>>
+  BulkEditor?: ComponentType<GridCellBulkEditorProps<BulkDraft, ColumnOptions>>
   presentation: GridCellViewPresentation
 }>
 
@@ -105,7 +112,37 @@ export type GridCellTypeFactory<
   Effects extends GridCellEffectSchema = {},
 > = Readonly<{
   readonly kind: 'grid-cell-type-factory'
-  create: <Row>() => GridCellTypeDefinition<
+  create: <Row>(context?: GridCellTypeFactoryContext) => GridCellTypeDefinition<
+    Row,
+    Value,
+    EditDraft,
+    BulkDraft,
+    ColumnOptions,
+    Effects
+  >
+}>
+
+export type GridCellTypeFactoryContext = Readonly<{
+  locale?: DataEditorTableLocale
+}>
+
+export type GridCellTypeFamily<
+  Value,
+  EditDraft = Value,
+  BulkDraft = never,
+  ColumnOptions = undefined,
+  Effects extends GridCellEffectSchema = {},
+  Kind extends Exclude<GridCellTypeKind, 'fixed'> = Exclude<
+    GridCellTypeKind,
+    'fixed'
+  >,
+> = Readonly<{
+  readonly kind: 'grid-cell-type-family'
+  readonly signatureKind: Kind
+  create: <Row>(
+    typeOptions: ColumnOptions,
+    context?: GridCellTypeFactoryContext,
+  ) => GridCellTypeDefinition<
     Row,
     Value,
     EditDraft,
@@ -118,10 +155,10 @@ export type GridCellTypeFactory<
 export type GridRuntimeReactView<Row> = Readonly<{
   Cell: ComponentType<GridCellViewProps<Row, unknown, unknown, GridCellEffectSchema>>
   Editor?: ComponentType<GridCellEditorProps<Row, unknown, unknown, unknown, GridCellEffectSchema>>
-  BulkEditor?: ComponentType<GridCellBulkEditorProps<unknown>>
+  BulkEditor?: ComponentType<GridCellBulkEditorProps<unknown, unknown>>
   presentation: GridCellViewPresentation
 }>
 
 export type GridCellViewPort<Row> = Readonly<{
-  resolve: (type: string) => GridRuntimeReactView<Row> | undefined
+  resolve: (type: string, typeOptions?: unknown) => GridRuntimeReactView<Row> | undefined
 }>

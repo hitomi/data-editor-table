@@ -1,6 +1,6 @@
 {
   "name": "data-editor-table",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Turnkey business-data bulk editor for React",
   "homepage": "https://hitomi.github.io/data-editor-table/",
   "repository": {
@@ -54,6 +54,7 @@
     "check:boundaries": "bash scripts/check-v2-import-boundary.sh",
     "check:package": "bash scripts/check-package-consumer.sh",
     "test": "vitest run",
+    "test:browser": "playwright test",
     "lint": "oxlint src --deny-warnings",
     "prepublishOnly": "pnpm check && pnpm test && pnpm lint && pnpm demo:build && pnpm check:package"
   },

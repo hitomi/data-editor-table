@@ -3,14 +3,10 @@ import {
   DataGrid,
   GridCommitError,
   createBooleanCellType,
-  createCellTypeRegistry,
-  createDateCellType,
   createDataGridBinding,
+  createGridColumnHelper,
   createImageCellType,
-  createNumberCellType,
-  createMultiSelectCellType,
-  createSingleSelectCellType,
-  createStringCellType,
+  createStandardCellTypeRegistry,
   useGridSelector,
   type GridCellTypeSchemaOf,
   type GridController,
@@ -57,7 +53,8 @@ const initialRows: readonly DemoRow[] = [
   })),
 ]
 
-const registry = createCellTypeRegistry<DemoRow>()
+const registry = createStandardCellTypeRegistry<DemoRow>()
+  .replace('boolean', createBooleanCellType({ trueLabel: 'Active', falseLabel: 'Inactive' }))
   .register('image', createImageCellType<DemoRow, string>({
     alt: (row) => row.name,
     label: (row) => row.image ? 'Replace image' : 'Add image',
@@ -82,27 +79,9 @@ const registry = createCellTypeRegistry<DemoRow>()
           },
         },
   }))
-  .register('string', createStringCellType())
-  .register('number', createNumberCellType())
-  .register('date', createDateCellType({ storage: 'iso-date', emptyValue: '' }))
-  .register('status', createSingleSelectCellType<DemoRow['status']>({
-    options: [
-      { value: 'draft', label: 'Draft' },
-      { value: 'ready', label: 'Ready' },
-      { value: 'archived', label: 'Archived', disabled: true },
-    ],
-  }))
-  .register('tags', createMultiSelectCellType<DemoRow['tags'][number]>({
-    options: [
-      { value: 'featured', label: 'Featured' },
-      { value: 'seasonal', label: 'Seasonal' },
-      { value: 'wholesale', label: 'Wholesale' },
-      { value: 'legacy', label: 'Legacy', disabled: true },
-    ],
-  }))
-  .register('boolean', createBooleanCellType({ trueLabel: 'Active', falseLabel: 'Inactive' }))
 
 type DemoSchema = GridCellTypeSchemaOf<typeof registry>
+const column = createGridColumnHelper<DemoRow, DemoSchema>()
 
 class DemoStore {
   readonly listeners = new Set<() => void>()
@@ -131,28 +110,21 @@ const store = new DemoStore()
 
 const dataSource: GridDataSource<DemoRow, string, DemoSchema> = {
   columns: [
-    {
-      key: 'image',
+    column.field('image', {
       label: 'Image',
       type: 'image',
       layout: { basis: 116, min: 96 },
       filterable: true,
-      getValue: (row) => row.image,
-      setValue: (row, image) => ({ ...row, image }),
-    },
-    {
-      key: 'name',
+    }),
+    column.field('name', {
       label: 'Name',
       type: 'string',
       layout: { basis: 260, min: 180, flex: 2 },
       sortable: true,
       filterable: true,
       bulkEditable: true,
-      getValue: (row) => row.name,
-      setValue: (row, name) => ({ ...row, name }),
-    },
-    {
-      key: 'quantity',
+    }),
+    column.field('quantity', {
       label: 'Quantity',
       type: 'number',
       typeOptions: { minimum: 0 },
@@ -160,53 +132,50 @@ const dataSource: GridDataSource<DemoRow, string, DemoSchema> = {
       sortable: true,
       filterable: true,
       bulkEditable: true,
-      getValue: (row) => row.quantity,
-      setValue: (row, quantity) => ({ ...row, quantity }),
-    },
-    {
-      key: 'deliveryDate',
+    }),
+    column.field('deliveryDate', {
       label: 'Delivery date',
       type: 'date',
       layout: { basis: 190, min: 160, flex: 1 },
       sortable: true,
       filterable: true,
       bulkEditable: true,
-      getValue: (row) => row.deliveryDate,
-      setValue: (row, deliveryDate) => ({ ...row, deliveryDate }),
-    },
-    {
-      key: 'status',
+    }),
+    column.field('status', {
       label: 'Status',
-      type: 'status',
+      type: 'singleSelect',
+      options: [
+        { value: 'draft', label: 'Draft' },
+        { value: 'ready', label: 'Ready' },
+        { value: 'archived', label: 'Archived', disabled: true },
+      ],
       layout: { basis: 150, min: 120, flex: 1 },
       sortable: true,
       filterable: true,
       bulkEditable: true,
-      getValue: (row) => row.status,
-      setValue: (row, status) => ({ ...row, status }),
-    },
-    {
-      key: 'tags',
+    }),
+    column.field('tags', {
       label: 'Tags',
-      type: 'tags',
+      type: 'multiSelect',
+      options: [
+        { value: 'featured', label: 'Featured' },
+        { value: 'seasonal', label: 'Seasonal' },
+        { value: 'wholesale', label: 'Wholesale' },
+        { value: 'legacy', label: 'Legacy', disabled: true },
+      ],
       layout: { basis: 250, min: 180, flex: 2 },
       sortable: true,
       filterable: true,
       bulkEditable: true,
-      getValue: (row) => row.tags,
-      setValue: (row, tags) => ({ ...row, tags }),
-    },
-    {
-      key: 'active',
+    }),
+    column.field('active', {
       label: 'Active',
       type: 'boolean',
       layout: { basis: 110, min: 90 },
       sortable: true,
       filterable: true,
       bulkEditable: true,
-      getValue: (row) => row.active,
-      setValue: (row, active) => ({ ...row, active }),
-    },
+    }),
   ],
   getRowKey: (row) => row.id,
   getSnapshot: () => store.snapshot,

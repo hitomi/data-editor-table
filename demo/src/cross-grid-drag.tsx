@@ -10,12 +10,9 @@ import {
 import {
   DataGrid,
   GridCommitError,
-  createCellTypeRegistry,
   createDataGridBinding,
-  createDateCellType,
   createImageCellType,
-  createNumberCellType,
-  createStringCellType,
+  createStandardCellTypeRegistry,
   selectGridFullySelectedRows,
   selectGridNaturalRowOrder,
   selectGridRowDeleteAvailability,
@@ -79,7 +76,7 @@ const MAX_TEXT_LENGTH = 200
 const CUT_DELETE_BLOCKED_MESSAGE = 'One or more selected rows cannot be deleted. Use Copy or reorder them within the source grid.'
 
 function createRegistry() {
-  return createCellTypeRegistry<CrossGridRow>()
+  return createStandardCellTypeRegistry<CrossGridRow>()
     .register('image', createImageCellType<CrossGridRow, string>({
       alt: (row) => row.name,
       label: (row) => row.image ? 'Replace image' : 'Add image',
@@ -92,9 +89,6 @@ function createRegistry() {
         ? { ok: true, value: text || null }
         : { ok: false, issue: { code: 'invalid-image-source', message: 'Paste an image URL or data URL.' } },
     }))
-    .register('string', createStringCellType())
-    .register('number', createNumberCellType())
-    .register('date', createDateCellType({ storage: 'iso-date', emptyValue: '' }))
 }
 
 const leftRegistry = createRegistry()

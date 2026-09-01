@@ -1,8 +1,8 @@
 export function resolveCellTypeMessages<Messages extends object>(
   defaults: Messages,
-  overrides: Partial<Messages> | undefined,
+  ...overrides: readonly (Partial<Messages> | undefined)[]
 ): Readonly<Messages> {
-  return Object.freeze({ ...defaults, ...overrides })
+  return Object.freeze(Object.assign({}, defaults, ...overrides.filter(Boolean)))
 }
 
 export function formatDefaultApplyToCells(count: number): string {

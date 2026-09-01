@@ -28,6 +28,8 @@ export type GridBooleanCellTypeOptions = Readonly<{
 
 export type GridBooleanCellTypeMessages = Readonly<{
   invalidValue: string
+  trueLabel: string
+  falseLabel: string
   equals: string
   notEquals: string
   choiceRequired: string
@@ -41,6 +43,8 @@ export type GridBooleanCellTypeMessages = Readonly<{
 
 const DEFAULT_BOOLEAN_MESSAGES: GridBooleanCellTypeMessages = Object.freeze({
   invalidValue: 'The value must be true or false.',
+  trueLabel: 'True',
+  falseLabel: 'False',
   equals: 'Equals',
   notEquals: 'Does not equal',
   choiceRequired: 'Choose true or false before applying.',
@@ -55,56 +59,62 @@ const DEFAULT_BOOLEAN_MESSAGES: GridBooleanCellTypeMessages = Object.freeze({
 export function createBooleanCellType(
   options: GridBooleanCellTypeOptions = {},
 ): GridCellTypeFactory<boolean, boolean, GridBooleanBulkDraft> {
-  const messages = resolveCellTypeMessages(DEFAULT_BOOLEAN_MESSAGES, options.messages)
-  const trueLabel = options.trueLabel ?? 'True'
-  const falseLabel = options.falseLabel ?? 'False'
   const clearValue = options.clearValue
-  assertBooleanLabels(trueLabel, falseLabel)
-  return defineCellTypeFactory<boolean, boolean, GridBooleanBulkDraft>(() => ({
-    behavior: {
-      value: {
-        validate: (value) => typeof value === 'boolean'
-          ? success(value)
-          : failure('invalid-boolean-value', messages.invalidValue),
+  return defineCellTypeFactory<boolean, boolean, GridBooleanBulkDraft>((context) => {
+    const messages = resolveCellTypeMessages(
+      DEFAULT_BOOLEAN_MESSAGES,
+      context?.locale?.cellTypes.boolean,
+      options.messages,
+    )
+    const trueLabel = options.trueLabel ?? messages.trueLabel
+    const falseLabel = options.falseLabel ?? messages.falseLabel
+    assertBooleanLabels(trueLabel, falseLabel)
+    return {
+      behavior: {
+        value: {
+          validate: (value) => typeof value === 'boolean'
+            ? success(value)
+            : failure('invalid-boolean-value', messages.invalidValue),
+        },
+        text: {
+          display: (value) => value ? trueLabel : falseLabel,
+          search: (value) => value ? `${trueLabel} TRUE` : `${falseLabel} FALSE`,
+          original: (value) => value ? trueLabel : falseLabel,
+        },
+        equals: Object.is,
+        clipboard: {
+          format: (value) => value ? 'TRUE' : 'FALSE',
+          parse: (raw) => parseBoolean(raw, trueLabel, falseLabel, messages),
+        },
+        edit: { begin: (value) => !value, commit: success },
+        ...(typeof clearValue === 'boolean' ? { clear: () => success(clearValue) } : {}),
+        compare: (left, right) => Number(left) - Number(right),
+        filter: {
+          defaultOperator: 'equals',
+          operators: [
+            booleanFilter('equals', messages.equals, trueLabel, falseLabel, messages.filterChoiceRequired, (value, operand) => value === operand),
+            booleanFilter('not-equals', messages.notEquals, trueLabel, falseLabel, messages.filterChoiceRequired, (value, operand) => value !== operand),
+          ],
+        },
+        bulk: {
+          begin: ({ values }) => ({ value: allEqual(values) ? values[0] ?? 'mixed' : 'mixed' }),
+          apply: (_current, draft) => draft.value === 'mixed'
+            ? failure('boolean-bulk-choice-required', messages.choiceRequired)
+            : success(draft.value),
+        },
       },
-      text: {
-        display: (value) => value ? trueLabel : falseLabel,
-        search: (value) => value ? `${trueLabel} TRUE` : `${falseLabel} FALSE`,
-        original: (value) => value ? trueLabel : falseLabel,
+      view: {
+        Cell: (props) => <BooleanCell {...props} falseLabel={falseLabel} trueLabel={trueLabel} />,
+        Editor: BooleanEditor,
+        BulkEditor: (props) => <BooleanBulkEditor {...props} falseLabel={falseLabel} messages={messages} trueLabel={trueLabel} />,
+        presentation: {
+          content: 'padded',
+          align: 'center',
+          editActivation: ['enter', 'f2', 'space'],
+        },
       },
-      equals: Object.is,
-      clipboard: {
-        format: (value) => value ? 'TRUE' : 'FALSE',
-        parse: (raw) => parseBoolean(raw, trueLabel, falseLabel, messages),
-      },
-      edit: { begin: (value) => !value, commit: success },
-      ...(typeof clearValue === 'boolean' ? { clear: () => success(clearValue) } : {}),
-      compare: (left, right) => Number(left) - Number(right),
-      filter: {
-        defaultOperator: 'equals',
-        operators: [
-          booleanFilter('equals', messages.equals, trueLabel, falseLabel, messages.filterChoiceRequired, (value, operand) => value === operand),
-          booleanFilter('not-equals', messages.notEquals, trueLabel, falseLabel, messages.filterChoiceRequired, (value, operand) => value !== operand),
-        ],
-      },
-      bulk: {
-        begin: ({ values }) => ({ value: allEqual(values) ? values[0] ?? 'mixed' : 'mixed' }),
-        apply: (_current, draft) => draft.value === 'mixed'
-          ? failure('boolean-bulk-choice-required', messages.choiceRequired)
-          : success(draft.value),
-      },
-    },
-    view: {
-      Cell: (props) => <BooleanCell {...props} falseLabel={falseLabel} trueLabel={trueLabel} />,
-      Editor: BooleanEditor,
-      BulkEditor: (props) => <BooleanBulkEditor {...props} falseLabel={falseLabel} messages={messages} trueLabel={trueLabel} />,
-      presentation: {
-        content: 'padded',
-        align: 'center',
-        editActivation: ['enter', 'f2', 'space'],
-      },
-    },
-  }))
+    }
+  })
 }
 
 function BooleanCell<Row>({

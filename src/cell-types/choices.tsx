@@ -17,11 +17,14 @@ import type {
 import type {
   GridCellBulkEditorProps,
   GridCellEditorProps,
+  GridCellTypeDefinition,
   GridCellTypeFactory,
+  GridCellTypeFactoryContext,
+  GridCellTypeFamily,
   GridCellViewProps,
 } from './react-view-contracts.js'
 import { formatDefaultApplyToCells, resolveCellTypeMessages } from './messages.js'
-import { defineCellTypeFactory } from './registry.js'
+import { defineCellTypeFactory, defineCellTypeFamily } from './registry.js'
 import { GridCellEditorPopover } from '../react/grid-layers.js'
 
 type ChoiceCatalog<Value extends GridChoiceValue> = ReturnType<typeof createChoiceCatalog<Value>>
@@ -32,6 +35,13 @@ export type GridSingleSelectCellTypeOptions<Value extends GridChoiceValue> = Rea
   emptyValue?: null
   emptyLabel?: string
   messages?: Partial<GridSingleSelectCellTypeMessages>
+}>
+
+export type GridSingleSelectColumnOptions<Value extends GridChoiceValue = GridChoiceValue> = Readonly<{
+  /** Static options shared by editing, filtering, validation, clipboard, and bulk editing. */
+  options: readonly GridChoiceOption<Value>[]
+  nullable?: boolean
+  emptyLabel?: string
 }>
 
 export type GridSingleSelectCellTypeMessages = Readonly<{
@@ -47,6 +57,7 @@ export type GridSingleSelectCellTypeMessages = Readonly<{
   filterValueRequired: string
   chooseValue: string
   chooseValuePlaceholder: string
+  emptyLabel: string
   value: string
   keepExistingValues: string
   cancel: string
@@ -66,6 +77,7 @@ const DEFAULT_SINGLE_SELECT_MESSAGES: GridSingleSelectCellTypeMessages = Object.
   filterValueRequired: 'Choose a value to filter by.',
   chooseValue: 'Choose value',
   chooseValuePlaceholder: 'Choose a value',
+  emptyLabel: 'None',
   value: 'Value',
   keepExistingValues: 'Keep existing values',
   cancel: 'Cancel',
@@ -111,16 +123,69 @@ export function createSingleSelectCellType<Value extends GridChoiceValue>(
   GridSingleSelectEditDraft<Value>,
   GridSingleSelectBulkDraft<Value>
 > {
-  const messages = resolveCellTypeMessages(DEFAULT_SINGLE_SELECT_MESSAGES, options.messages)
   const catalog = createChoiceCatalog(options.options)
   const nullable = options.emptyValue === null
-  const emptyLabel = options.emptyLabel ?? 'None'
   return defineCellTypeFactory<
     Value | null,
     GridSingleSelectEditDraft<Value>,
     GridSingleSelectBulkDraft<Value>
-  >(() => ({
-    behavior: createSingleSelectBehavior(catalog, nullable, messages),
+  >((context) => createSingleSelectDefinition(
+    catalog,
+    nullable,
+    options.emptyLabel,
+    context?.locale?.cellTypes.singleSelect,
+    options.messages,
+  ))
+}
+
+export function createSingleSelectCellTypeFamily(): GridCellTypeFamily<
+  GridChoiceValue | null,
+  GridSingleSelectEditDraft<GridChoiceValue>,
+  GridSingleSelectBulkDraft<GridChoiceValue>,
+  GridSingleSelectColumnOptions,
+  {},
+  'single-select'
+> {
+  const create = <Row,>(
+    options: GridSingleSelectColumnOptions,
+    context?: GridCellTypeFactoryContext,
+  ) => {
+    assertChoiceColumnOptions('singleSelect', options)
+    return createSingleSelectDefinition<Row, GridChoiceValue, GridSingleSelectColumnOptions>(
+      createChoiceCatalog(options.options),
+      options.nullable ?? false,
+      options.emptyLabel,
+      context?.locale?.cellTypes.singleSelect,
+    )
+  }
+  return defineCellTypeFamily('single-select', create)
+}
+
+function createSingleSelectDefinition<
+  Row,
+  Value extends GridChoiceValue,
+  ColumnOptions = undefined,
+>(
+  catalog: ChoiceCatalog<Value>,
+  nullable: boolean,
+  emptyLabelOverride: string | undefined,
+  localeMessages?: Partial<GridSingleSelectCellTypeMessages>,
+  messageOverrides?: Partial<GridSingleSelectCellTypeMessages>,
+): GridCellTypeDefinition<
+  Row,
+  Value | null,
+  GridSingleSelectEditDraft<Value>,
+  GridSingleSelectBulkDraft<Value>,
+  ColumnOptions
+> {
+  const messages = resolveCellTypeMessages(
+    DEFAULT_SINGLE_SELECT_MESSAGES,
+    localeMessages,
+    messageOverrides,
+  )
+  const emptyLabel = emptyLabelOverride ?? messages.emptyLabel
+  return {
+    behavior: createSingleSelectBehavior<Row, Value, ColumnOptions>(catalog, nullable, messages),
     view: {
       Cell: ChoiceTextCell,
       Editor: (props) => <SingleSelectEditor {...props} catalog={catalog} emptyLabel={emptyLabel} messages={messages} nullable={nullable} />,
@@ -131,10 +196,14 @@ export function createSingleSelectCellType<Value extends GridChoiceValue>(
         editActivation: ['active-cell-click', 'enter', 'f2', 'space'],
       },
     },
-  }))
+  }
 }
 
-function createSingleSelectBehavior<Row, Value extends GridChoiceValue>(
+function createSingleSelectBehavior<
+  Row,
+  Value extends GridChoiceValue,
+  ColumnOptions = undefined,
+>(
   catalog: ChoiceCatalog<Value>,
   nullable: boolean,
   messages: GridSingleSelectCellTypeMessages,
@@ -142,7 +211,8 @@ function createSingleSelectBehavior<Row, Value extends GridChoiceValue>(
   Row,
   Value | null,
   GridSingleSelectEditDraft<Value>,
-  GridSingleSelectBulkDraft<Value>
+  GridSingleSelectBulkDraft<Value>,
+  ColumnOptions
 > {
   const validate = (value: unknown, allowDisabled = true): GridValueResult<Value | null> => {
     if (value === null) return nullable
@@ -221,6 +291,12 @@ export type GridMultiSelectCellTypeOptions<Value extends GridChoiceValue> = Read
   messages?: Partial<GridMultiSelectCellTypeMessages>
 }>
 
+export type GridMultiSelectColumnOptions<Value extends GridChoiceValue = GridChoiceValue> = Readonly<{
+  /** Static options shared by editing, filtering, validation, clipboard, and bulk editing. */
+  options: readonly GridChoiceOption<Value>[]
+  emptyLabel?: string
+}>
+
 export type GridMultiSelectCellTypeMessages = Readonly<{
   invalidValue: string
   unknownValue: string
@@ -235,6 +311,7 @@ export type GridMultiSelectCellTypeMessages = Readonly<{
   isNotEmpty: string
   filterValueRequired: string
   chooseValues: string
+  emptyLabel: string
   cancel: string
   apply: string
   operation: string
@@ -260,6 +337,7 @@ const DEFAULT_MULTI_SELECT_MESSAGES: GridMultiSelectCellTypeMessages = Object.fr
   isNotEmpty: 'Is not empty',
   filterValueRequired: 'Choose a tag to filter by.',
   chooseValues: 'Choose values',
+  emptyLabel: 'None',
   cancel: 'Cancel',
   apply: 'Apply',
   operation: 'Operation',
@@ -274,11 +352,62 @@ const DEFAULT_MULTI_SELECT_MESSAGES: GridMultiSelectCellTypeMessages = Object.fr
 export function createMultiSelectCellType<Value extends GridChoiceValue>(
   options: GridMultiSelectCellTypeOptions<Value>,
 ): GridCellTypeFactory<readonly Value[], readonly Value[], GridMultiSelectBulkDraft<Value>> {
-  const messages = resolveCellTypeMessages(DEFAULT_MULTI_SELECT_MESSAGES, options.messages)
   const catalog = createChoiceCatalog(options.options)
-  const emptyLabel = options.emptyLabel ?? 'None'
-  return defineCellTypeFactory<readonly Value[], readonly Value[], GridMultiSelectBulkDraft<Value>>(() => ({
-    behavior: createMultiSelectBehavior(catalog, emptyLabel, messages),
+  return defineCellTypeFactory<readonly Value[], readonly Value[], GridMultiSelectBulkDraft<Value>>((context) =>
+    createMultiSelectDefinition(
+      catalog,
+      options.emptyLabel,
+      context?.locale?.cellTypes.multiSelect,
+      options.messages,
+    ))
+}
+
+export function createMultiSelectCellTypeFamily(): GridCellTypeFamily<
+  readonly GridChoiceValue[],
+  readonly GridChoiceValue[],
+  GridMultiSelectBulkDraft<GridChoiceValue>,
+  GridMultiSelectColumnOptions,
+  {},
+  'multi-select'
+> {
+  const create = <Row,>(
+    options: GridMultiSelectColumnOptions,
+    context?: GridCellTypeFactoryContext,
+  ) => {
+    assertChoiceColumnOptions('multiSelect', options)
+    return createMultiSelectDefinition<Row, GridChoiceValue, GridMultiSelectColumnOptions>(
+      createChoiceCatalog(options.options),
+      options.emptyLabel,
+      context?.locale?.cellTypes.multiSelect,
+    )
+  }
+  return defineCellTypeFamily('multi-select', create)
+}
+
+function createMultiSelectDefinition<
+  Row,
+  Value extends GridChoiceValue,
+  ColumnOptions = undefined,
+>(
+  catalog: ChoiceCatalog<Value>,
+  emptyLabelOverride: string | undefined,
+  localeMessages?: Partial<GridMultiSelectCellTypeMessages>,
+  messageOverrides?: Partial<GridMultiSelectCellTypeMessages>,
+): GridCellTypeDefinition<
+  Row,
+  readonly Value[],
+  readonly Value[],
+  GridMultiSelectBulkDraft<Value>,
+  ColumnOptions
+> {
+  const messages = resolveCellTypeMessages(
+    DEFAULT_MULTI_SELECT_MESSAGES,
+    localeMessages,
+    messageOverrides,
+  )
+  const emptyLabel = emptyLabelOverride ?? messages.emptyLabel
+  return {
+    behavior: createMultiSelectBehavior<Row, Value, ColumnOptions>(catalog, emptyLabel, messages),
     view: {
       Cell: (props) => <MultiSelectCell {...props} catalog={catalog} emptyLabel={emptyLabel} />,
       Editor: (props) => <MultiSelectEditor {...props} catalog={catalog} messages={messages} />,
@@ -289,14 +418,24 @@ export function createMultiSelectCellType<Value extends GridChoiceValue>(
         editActivation: ['active-cell-click', 'enter', 'f2', 'space'],
       },
     },
-  }))
+  }
 }
 
-function createMultiSelectBehavior<Row, Value extends GridChoiceValue>(
+function createMultiSelectBehavior<
+  Row,
+  Value extends GridChoiceValue,
+  ColumnOptions = undefined,
+>(
   catalog: ChoiceCatalog<Value>,
   emptyLabel: string,
   messages: GridMultiSelectCellTypeMessages,
-): GridCellBehavior<Row, readonly Value[], readonly Value[], GridMultiSelectBulkDraft<Value>> {
+): GridCellBehavior<
+  Row,
+  readonly Value[],
+  readonly Value[],
+  GridMultiSelectBulkDraft<Value>,
+  ColumnOptions
+> {
   const validate = (value: unknown, allowDisabled = true): GridValueResult<readonly Value[]> => {
     if (!Array.isArray(value)) return failure('invalid-multi-select-value', messages.invalidValue)
     const seen = new Set<number>()
@@ -377,11 +516,11 @@ function createMultiSelectBehavior<Row, Value extends GridChoiceValue>(
   }
 }
 
-function ChoiceTextCell<Row, Value>({ displayText }: GridCellViewProps<Row, Value>) {
+function ChoiceTextCell<Row, Value, ColumnOptions>({ displayText }: GridCellViewProps<Row, Value, ColumnOptions>) {
   return <span className="data-grid-cell-text">{displayText}</span>
 }
 
-function SingleSelectEditor<Row, Value extends GridChoiceValue>({
+function SingleSelectEditor<Row, Value extends GridChoiceValue, ColumnOptions>({
   cancel,
   catalog,
   commit,
@@ -391,7 +530,7 @@ function SingleSelectEditor<Row, Value extends GridChoiceValue>({
   messages,
   nullable,
   setDraft,
-}: GridCellEditorProps<Row, Value | null, GridSingleSelectEditDraft<Value>> & Readonly<{
+}: GridCellEditorProps<Row, Value | null, GridSingleSelectEditDraft<Value>, ColumnOptions> & Readonly<{
   catalog: ChoiceCatalog<Value>
   emptyLabel: string
   messages: GridSingleSelectCellTypeMessages
@@ -469,7 +608,7 @@ function SingleSelectEditor<Row, Value extends GridChoiceValue>({
   </>
 }
 
-function SingleSelectBulkEditor<Value extends GridChoiceValue>({
+function SingleSelectBulkEditor<Value extends GridChoiceValue, ColumnOptions>({
   apply,
   cancel,
   catalog,
@@ -480,7 +619,7 @@ function SingleSelectBulkEditor<Value extends GridChoiceValue>({
   messages,
   nullable,
   setDraft,
-}: GridCellBulkEditorProps<GridSingleSelectBulkDraft<Value>> & Readonly<{
+}: GridCellBulkEditorProps<GridSingleSelectBulkDraft<Value>, ColumnOptions> & Readonly<{
   catalog: ChoiceCatalog<Value>
   emptyLabel: string
   messages: GridSingleSelectCellTypeMessages
@@ -500,7 +639,7 @@ function SingleSelectBulkEditor<Value extends GridChoiceValue>({
   </form>
 }
 
-function MultiSelectCell<Row, Value extends GridChoiceValue>({ catalog, emptyLabel, value }: GridCellViewProps<Row, readonly Value[]> & Readonly<{
+function MultiSelectCell<Row, Value extends GridChoiceValue, ColumnOptions>({ catalog, emptyLabel, value }: GridCellViewProps<Row, readonly Value[], ColumnOptions> & Readonly<{
   catalog: ChoiceCatalog<Value>
   emptyLabel: string
 }>) {
@@ -548,7 +687,7 @@ function MultiSelectCell<Row, Value extends GridChoiceValue>({ catalog, emptyLab
   </span>
 }
 
-function MultiSelectEditor<Row, Value extends GridChoiceValue>(props: GridCellEditorProps<Row, readonly Value[], readonly Value[]> & Readonly<{
+function MultiSelectEditor<Row, Value extends GridChoiceValue, ColumnOptions>(props: GridCellEditorProps<Row, readonly Value[], readonly Value[], ColumnOptions> & Readonly<{
   catalog: ChoiceCatalog<Value>
   messages: GridMultiSelectCellTypeMessages
 }>) {
@@ -628,7 +767,7 @@ function MultiSelectEditor<Row, Value extends GridChoiceValue>(props: GridCellEd
   </>
 }
 
-function MultiSelectBulkEditor<Value extends GridChoiceValue>(props: GridCellBulkEditorProps<GridMultiSelectBulkDraft<Value>> & Readonly<{
+function MultiSelectBulkEditor<Value extends GridChoiceValue, ColumnOptions>(props: GridCellBulkEditorProps<GridMultiSelectBulkDraft<Value>, ColumnOptions> & Readonly<{
   catalog: ChoiceCatalog<Value>
   messages: GridMultiSelectCellTypeMessages
 }>) {
@@ -707,6 +846,15 @@ function createChoiceCatalog<Value extends GridChoiceValue>(source: readonly Gri
       const option = options[indexOfValue(value)]
       return option ? `${option.label} ${String(option.value)}` : String(value)
     },
+  }
+}
+
+function assertChoiceColumnOptions(
+  type: 'singleSelect' | 'multiSelect',
+  options: unknown,
+): asserts options is GridSingleSelectColumnOptions | GridMultiSelectColumnOptions {
+  if (!options || typeof options !== 'object' || !Array.isArray(Reflect.get(options, 'options'))) {
+    throw new Error(`Cell type "${type}" requires an options array on the column.`)
   }
 }
 

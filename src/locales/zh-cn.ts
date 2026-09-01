@@ -1,29 +1,6 @@
-import type { GridBooleanCellTypeMessages } from '../cell-types/boolean.js'
-import type {
-  GridMultiSelectCellTypeMessages,
-  GridSingleSelectCellTypeMessages,
-} from '../cell-types/choices.js'
-import type { GridImageCellTypeMessages } from '../cell-types/image.js'
-import type {
-  GridIsoDateCellTypeMessages,
-  GridNumberCellTypeMessages,
-  GridStringCellTypeMessages,
-} from '../cell-types/standard.js'
-import type { DataGridMessages } from '../react/data-grid.js'
+import type { DataEditorTableLocale } from './contracts.js'
 
-export type DataEditorTableLocale = Readonly<{
-  code: string
-  dataGrid: DataGridMessages
-  cellTypes: Readonly<{
-    string: GridStringCellTypeMessages
-    number: GridNumberCellTypeMessages
-    isoDate: GridIsoDateCellTypeMessages
-    singleSelect: GridSingleSelectCellTypeMessages
-    multiSelect: GridMultiSelectCellTypeMessages
-    boolean: GridBooleanCellTypeMessages
-    image: GridImageCellTypeMessages
-  }>
-}>
+export type { DataEditorTableLocale } from './contracts.js'
 
 const applyToCells = (count: number) => `应用到 ${count} 个单元格`
 
@@ -196,6 +173,7 @@ export const zhCN: DataEditorTableLocale = {
       filterValueRequired: '选择筛选值。',
       chooseValue: '选择值',
       chooseValuePlaceholder: '选择一个值',
+      emptyLabel: '无',
       value: '值',
       keepExistingValues: '保留原值',
       cancel: '取消',
@@ -215,6 +193,7 @@ export const zhCN: DataEditorTableLocale = {
       isNotEmpty: '不为空',
       filterValueRequired: '选择用于筛选的标签。',
       chooseValues: '选择值',
+      emptyLabel: '无',
       cancel: '取消',
       apply: '应用',
       operation: '操作',
@@ -227,6 +206,8 @@ export const zhCN: DataEditorTableLocale = {
     },
     boolean: {
       invalidValue: '选择是或否。',
+      trueLabel: '是',
+      falseLabel: '否',
       equals: '等于',
       notEquals: '不等于',
       choiceRequired: '选择一个布尔值后再应用。',

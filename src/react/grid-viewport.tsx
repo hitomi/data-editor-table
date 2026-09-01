@@ -285,7 +285,7 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
     const point = target.kind === 'cell' ? target : null
     const column = point && snapshot.columns.find((candidate) => candidate.key === point.columnKey)
     const row = point && snapshot.draft.rows.find((candidate) => gridRowKeysEqual(snapshot.getRowKey(candidate), point.rowKey))
-    const supportsActiveCellClick = Boolean(column && views.resolve(column.type)?.presentation.editActivation.includes('active-cell-click'))
+    const supportsActiveCellClick = Boolean(column && views.resolve(column.type, column.typeOptions)?.presentation.editActivation.includes('active-cell-click'))
     activeCellClick.current = point
       && event.isPrimary
       && !event.altKey
@@ -389,7 +389,7 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
       const snapshot = controller.getSnapshot()
       const point = snapshot.interaction.activeCell
       const column = point && snapshot.columns.find((candidate) => candidate.key === point.columnKey)
-      const view = column && views.resolve(column.type)
+      const view = column && views.resolve(column.type, column.typeOptions)
       const activation = event.key === ' ' ? 'space' : 'printable'
       if (view?.presentation.editActivation.includes(activation)) {
         event.preventDefault()
@@ -516,7 +516,7 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
           rowKey={rowKey}
           {...(rowHeaderActions === undefined ? {} : { rowHeaderActions })}
           cells={structure.columns.map((column, columnIndex) => {
-            const view = views.resolve(column.type)
+            const view = views.resolve(column.type, column.typeOptions)
             if (!view) return <div className="business-grid__cell" key={column.key} role="gridcell">{messages.unknownCellType(column.type)}</div>
             return <GridCell
               column={column}
@@ -689,7 +689,7 @@ function GridEditorBoundary<
     const reason = editor.rowIndex === null
       ? messages.editedRowHidden
       : messages.editedCellOutsideViewport
-    const view = editor.resolved?.valid ? views.resolve(editor.column.type) : undefined
+    const view = editor.resolved?.valid ? views.resolve(editor.column.type, editor.column.typeOptions) : undefined
     const remoteConflict = editor.session.status === 'invalid'
       && editor.session.sourceRevision !== editor.sourceRevision
     if (
@@ -743,7 +743,7 @@ function GridEditorBoundary<
     session={editor.session}
     sourceValueLabel={messages.currentInvalidSourceValue(editor.resolved?.fallbackText ?? '')}
   />
-  const view = views.resolve(editor.column.type)
+  const view = views.resolve(editor.column.type, editor.column.typeOptions)
   if (!view?.Editor) return <GridDetachedEditorPortal
     cancelLabel={messages.cancelInvalidEdit}
     dom={dom}

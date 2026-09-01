@@ -1,6 +1,7 @@
 import type {
   GridCellBehaviorProjection,
   GridCellEffectSchema,
+  GridCellTypeKind,
   GridCellTypeSchema,
   GridCellTypeSignature,
   GridRegisteredRuntimeCellBehavior,
@@ -11,9 +12,12 @@ import type {
 import type {
   GridCellTypeDefinition,
   GridCellTypeFactory,
+  GridCellTypeFactoryContext,
+  GridCellTypeFamily,
   GridCellViewPort,
   GridRuntimeReactView,
 } from './react-view-contracts.js'
+import type { DataEditorTableLocale } from '../locales/contracts.js'
 import type {
   GridRuntimeColumnContext,
   GridRuntimeValueContext,
@@ -24,7 +28,10 @@ export const gridCellTypeSchema = Symbol('grid-cell-type-schema')
 type RegistrationName<Schema extends GridCellTypeSchema, Name extends string> =
   string extends Name ? never : Name extends keyof Schema ? never : Name
 
-type CellTypeRegistration<
+type ExistingRegistrationName<Schema extends GridCellTypeSchema, Name extends string> =
+  string extends Name ? never : Name extends keyof Schema ? Name : never
+
+type FixedCellTypeRegistration<
   Row,
   Value,
   EditDraft,
@@ -44,10 +51,121 @@ type AnyCellTypeDefinition<Row> = GridCellTypeDefinition<
   GridCellEffectSchema
 >
 
+type RuntimeCellTypeFactory = Readonly<{
+  kind: 'grid-cell-type-factory'
+  create: <Row>(context?: GridCellTypeFactoryContext) => AnyCellTypeDefinition<Row>
+}>
+
+type RuntimeCellTypeFamily = Readonly<{
+  kind: 'grid-cell-type-family'
+  signatureKind: Exclude<GridCellTypeKind, 'fixed'>
+  create: <Row>(
+    typeOptions: unknown,
+    context?: GridCellTypeFactoryContext,
+  ) => AnyCellTypeDefinition<Row>
+}>
+
+type RuntimeCellTypeRegistration<Row> =
+  | AnyCellTypeDefinition<Row>
+  | RuntimeCellTypeFactory
+  | RuntimeCellTypeFamily
+
 type RegisteredCellType<Row> = Readonly<{
   behavior: GridRegisteredRuntimeCellBehavior<Row>
   view: GridRuntimeReactView<Row>
 }>
+
+type RegisterCellType<Row, Schema extends GridCellTypeSchema> = {
+  <
+    const Name extends string,
+    Value,
+    EditDraft = Value,
+    BulkDraft = never,
+    ColumnOptions = undefined,
+    Effects extends GridCellEffectSchema = {},
+  >(
+    type: RegistrationName<Schema, Name>,
+    registration: FixedCellTypeRegistration<
+      Row,
+      Value,
+      EditDraft,
+      BulkDraft,
+      ColumnOptions,
+      Effects
+    >,
+  ): GridCellTypeRegistry<
+    Row,
+    Schema & Record<Name, GridCellTypeSignature<Value, ColumnOptions>>
+  >
+  <
+    const Name extends string,
+    Value,
+    EditDraft = Value,
+    BulkDraft = never,
+    ColumnOptions = undefined,
+    Effects extends GridCellEffectSchema = {},
+    Kind extends Exclude<GridCellTypeKind, 'fixed'> = Exclude<GridCellTypeKind, 'fixed'>,
+  >(
+    type: RegistrationName<Schema, Name>,
+    registration: GridCellTypeFamily<
+      Value,
+      EditDraft,
+      BulkDraft,
+      ColumnOptions,
+      Effects,
+      Kind
+    >,
+  ): GridCellTypeRegistry<
+    Row,
+    Schema & Record<Name, GridCellTypeSignature<Value, ColumnOptions, Kind>>
+  >
+}
+
+type ReplaceCellType<Row, Schema extends GridCellTypeSchema> = {
+  <
+    const Name extends string,
+    Value,
+    EditDraft = Value,
+    BulkDraft = never,
+    ColumnOptions = undefined,
+    Effects extends GridCellEffectSchema = {},
+  >(
+    type: ExistingRegistrationName<Schema, Name>,
+    registration: FixedCellTypeRegistration<
+      Row,
+      Value,
+      EditDraft,
+      BulkDraft,
+      ColumnOptions,
+      Effects
+    >,
+  ): GridCellTypeRegistry<
+    Row,
+    Omit<Schema, Name> & Record<Name, GridCellTypeSignature<Value, ColumnOptions>>
+  >
+  <
+    const Name extends string,
+    Value,
+    EditDraft = Value,
+    BulkDraft = never,
+    ColumnOptions = undefined,
+    Effects extends GridCellEffectSchema = {},
+    Kind extends Exclude<GridCellTypeKind, 'fixed'> = Exclude<GridCellTypeKind, 'fixed'>,
+  >(
+    type: ExistingRegistrationName<Schema, Name>,
+    registration: GridCellTypeFamily<
+      Value,
+      EditDraft,
+      BulkDraft,
+      ColumnOptions,
+      Effects,
+      Kind
+    >,
+  ): GridCellTypeRegistry<
+    Row,
+    Omit<Schema, Name> & Record<Name, GridCellTypeSignature<Value, ColumnOptions, Kind>>
+  >
+}
 
 export type GridCellTypeSchemaOf<Registry> =
   Registry extends Readonly<{ readonly [gridCellTypeSchema]: infer Schema extends GridCellTypeSchema }>
@@ -59,31 +177,14 @@ export type GridCellTypeRegistry<
   Schema extends GridCellTypeSchema = {},
 > = Readonly<{
   readonly [gridCellTypeSchema]: Schema
+  locale?: DataEditorTableLocale
   behaviors: GridCellBehaviorProjection<Row>
   views: GridCellViewPort<Row>
   has: (type: string) => boolean
   names: () => readonly Extract<keyof Schema, string>[]
-  register: <
-    const Name extends string,
-    Value,
-    EditDraft = Value,
-    BulkDraft = never,
-    ColumnOptions = undefined,
-    Effects extends GridCellEffectSchema = {},
-  >(
-    type: RegistrationName<Schema, Name>,
-    registration: CellTypeRegistration<
-      Row,
-      Value,
-      EditDraft,
-      BulkDraft,
-      ColumnOptions,
-      Effects
-    >,
-  ) => GridCellTypeRegistry<
-    Row,
-    Schema & Record<Name, GridCellTypeSignature<Value, ColumnOptions>>
-  >
+  register: RegisterCellType<Row, Schema>
+  replace: ReplaceCellType<Row, Schema>
+  withLocale: (locale?: DataEditorTableLocale) => GridCellTypeRegistry<Row, Schema>
 }>
 
 export function createCellTypeRegistry<Row>(): GridCellTypeRegistry<Row, {}> {
@@ -114,7 +215,7 @@ export function defineCellTypeFactory<
   BulkDraft = never,
   ColumnOptions = undefined,
   Effects extends GridCellEffectSchema = {},
->(create: <Row>() => GridCellTypeDefinition<
+>(create: <Row>(context?: GridCellTypeFactoryContext) => GridCellTypeDefinition<
   Row,
   Value,
   EditDraft,
@@ -125,53 +226,116 @@ export function defineCellTypeFactory<
   return Object.freeze({ kind: 'grid-cell-type-factory' as const, create })
 }
 
+export function defineCellTypeFamily<
+  Value,
+  EditDraft = Value,
+  BulkDraft = never,
+  ColumnOptions = undefined,
+  Effects extends GridCellEffectSchema = {},
+  Kind extends Exclude<GridCellTypeKind, 'fixed'> = Exclude<GridCellTypeKind, 'fixed'>,
+>(
+  signatureKind: Kind,
+  create: <Row>(
+    typeOptions: ColumnOptions,
+    context?: GridCellTypeFactoryContext,
+  ) => GridCellTypeDefinition<
+    Row,
+    Value,
+    EditDraft,
+    BulkDraft,
+    ColumnOptions,
+    Effects
+  >,
+): GridCellTypeFamily<Value, EditDraft, BulkDraft, ColumnOptions, Effects, Kind> {
+  return Object.freeze({ kind: 'grid-cell-type-family' as const, signatureKind, create })
+}
+
 function createRegistry<Row, Schema extends GridCellTypeSchema>(
-  entries: ReadonlyMap<string, RegisteredCellType<Row>>,
+  entries: ReadonlyMap<string, RuntimeCellTypeRegistration<Row>>,
+  locale?: DataEditorTableLocale,
 ): GridCellTypeRegistry<Row, Schema> {
+  const fixedCache = new Map<string, RegisteredCellType<Row>>()
+  const familyCache = new Map<string, Map<unknown, RegisteredCellType<Row>>>()
+  const context = locale === undefined ? undefined : Object.freeze({ locale })
+
+  const resolve = (type: string, typeOptions?: unknown) => {
+    const registration = entries.get(type)
+    if (!registration) return undefined
+    if (isCellTypeFamily(registration)) {
+      let instances = familyCache.get(type)
+      if (!instances) {
+        instances = new Map()
+        familyCache.set(type, instances)
+      }
+      const cached = instances.get(typeOptions)
+      if (cached) return cached
+      const created = materialize(type, registration.create<Row>(typeOptions, context))
+      instances.set(typeOptions, created)
+      return created
+    }
+    const cached = fixedCache.get(type)
+    if (cached) return cached
+    const definition = isCellTypeFactory(registration)
+      ? registration.create<Row>(context)
+      : registration
+    const created = materialize(type, definition)
+    fixedCache.set(type, created)
+    return created
+  }
   const behaviors = Object.freeze({
-    resolve: (type: string) => entries.get(type)?.behavior,
+    resolve: (type: string, typeOptions?: unknown) => resolve(type, typeOptions)?.behavior,
   })
   const views = Object.freeze({
-    resolve: (type: string) => entries.get(type)?.view,
+    resolve: (type: string, typeOptions?: unknown) => resolve(type, typeOptions)?.view,
   })
+  const changeRegistration = (
+    type: string,
+    registration: RuntimeCellTypeRegistration<Row>,
+    replacing: boolean,
+  ) => {
+    assertTypeName(type)
+    if (!replacing && entries.has(type)) {
+      throw new Error(`Cell type "${type}" is already registered.`)
+    }
+    if (replacing && !entries.has(type)) {
+      throw new Error(`Cell type "${type}" is not registered and cannot be replaced.`)
+    }
+    const nextEntries = new Map(entries)
+    nextEntries.set(type, registration)
+    return createRegistry(nextEntries, locale)
+  }
   const registry = {
     [gridCellTypeSchema]: undefined as unknown as Schema,
+    ...(locale === undefined ? {} : { locale }),
     behaviors,
     views,
     has: (type: string) => entries.has(type),
     names: () => Object.freeze([...entries.keys()]) as readonly Extract<keyof Schema, string>[],
-    register: (
-      type: string,
-      registration: CellTypeRegistration<
-        Row,
-        unknown,
-        unknown,
-        unknown,
-        unknown,
-        GridCellEffectSchema
-      >,
-    ) => {
-      assertTypeName(type)
-      if (entries.has(type)) throw new Error(`Cell type "${type}" is already registered.`)
-      const definition = isCellTypeFactory(registration)
-        ? registration.create<Row>()
-        : registration
-      validateDefinition(type, definition)
-      const nextEntries = new Map(entries)
-      nextEntries.set(type, Object.freeze({
-        behavior: eraseBehavior(definition.behavior),
-        view: Object.freeze({
-          ...definition.view,
-          presentation: Object.freeze({
-            ...definition.view.presentation,
-            editActivation: Object.freeze([...definition.view.presentation.editActivation]),
-          }),
-        }) as GridRuntimeReactView<Row>,
-      }))
-      return createRegistry(nextEntries)
-    },
+    register: (type: string, registration: RuntimeCellTypeRegistration<Row>) =>
+      changeRegistration(type, registration, false),
+    replace: (type: string, registration: RuntimeCellTypeRegistration<Row>) =>
+      changeRegistration(type, registration, true),
+    withLocale: (nextLocale?: DataEditorTableLocale) =>
+      nextLocale === locale ? registry : createRegistry(entries, nextLocale),
   }
   return Object.freeze(registry) as unknown as GridCellTypeRegistry<Row, Schema>
+}
+
+function materialize<Row>(
+  type: string,
+  definition: AnyCellTypeDefinition<Row>,
+): RegisteredCellType<Row> {
+  validateDefinition(type, definition)
+  return Object.freeze({
+    behavior: eraseBehavior(definition.behavior),
+    view: Object.freeze({
+      ...definition.view,
+      presentation: Object.freeze({
+        ...definition.view.presentation,
+        editActivation: Object.freeze([...definition.view.presentation.editActivation]),
+      }),
+    }) as GridRuntimeReactView<Row>,
+  })
 }
 
 function assertTypeName(type: string): void {
@@ -179,22 +343,16 @@ function assertTypeName(type: string): void {
   if (type !== type.trim()) throw new Error(`Cell type name "${type}" cannot start or end with whitespace.`)
 }
 
-function isCellTypeFactory<
-  Row,
-  Value,
-  EditDraft,
-  BulkDraft,
-  ColumnOptions,
-  Effects extends GridCellEffectSchema,
->(registration: CellTypeRegistration<
-  Row,
-  Value,
-  EditDraft,
-  BulkDraft,
-  ColumnOptions,
-  Effects
->): registration is GridCellTypeFactory<Value, EditDraft, BulkDraft, ColumnOptions, Effects> {
+function isCellTypeFactory<Row>(
+  registration: RuntimeCellTypeRegistration<Row>,
+): registration is RuntimeCellTypeFactory {
   return 'kind' in registration && registration.kind === 'grid-cell-type-factory'
+}
+
+function isCellTypeFamily<Row>(
+  registration: RuntimeCellTypeRegistration<Row>,
+): registration is RuntimeCellTypeFamily {
+  return 'kind' in registration && registration.kind === 'grid-cell-type-family'
 }
 
 function validateDefinition<Row>(type: string, definition: AnyCellTypeDefinition<Row>): void {

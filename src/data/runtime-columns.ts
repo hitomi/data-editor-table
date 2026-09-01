@@ -13,11 +13,13 @@ export function compileGridColumns<Row, Schema extends GridCellTypeSchema>(
   const compiled: GridCompiledColumn<Row>[] = []
 
   for (const definition of columns) {
-    const column = eraseGridColumn(definition)
+    const column = eraseGridColumn(
+      definition as unknown as GridColumn<Row, unknown, string, unknown>,
+    )
     if (column.key.trim().length === 0) issues.push('Column keys cannot be empty or whitespace.')
     if (keys.has(column.key)) issues.push(`Column key "${column.key}" is registered more than once.`)
     keys.add(column.key)
-    const behavior = behaviors.resolve(column.type)
+    const behavior = behaviors.resolve(column.type, column.typeOptions)
     if (!behavior) {
       issues.push(`Column "${column.key}" uses unregistered cell type "${column.type}".`)
       continue

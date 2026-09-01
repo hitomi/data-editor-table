@@ -9,10 +9,9 @@ import {
 import {
   DataGrid,
   GridCommitError,
-  createCellTypeRegistry,
   createDataGridBinding,
   createImageCellType,
-  createStringCellType,
+  createStandardCellTypeRegistry,
   useGridSelector,
   type GridCellTypeSchemaOf,
   type GridColumn,
@@ -59,7 +58,7 @@ const initialRows: readonly ImportRow[] = [
   { id: 'import-row-3', image: null, name: '' },
 ]
 
-const registry = createCellTypeRegistry<ImportRow>()
+const registry = createStandardCellTypeRegistry<ImportRow>()
   .register('image', createImageCellType<ImportRow, string>({
     alt: (row) => row.name || 'Imported image',
     label: (row) => row.image ? 'Replace image' : 'Add image',
@@ -84,7 +83,6 @@ const registry = createCellTypeRegistry<ImportRow>()
           },
         },
   }))
-  .register('string', createStringCellType())
 
 type ImportSchema = GridCellTypeSchemaOf<typeof registry>
 

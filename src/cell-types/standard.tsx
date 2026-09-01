@@ -85,29 +85,35 @@ export function createStringCellType(
   GridStringBulkDraft,
   GridStringColumnOptions | undefined
 > {
-  const messages = resolveCellTypeMessages(DEFAULT_STRING_MESSAGES, options.messages)
-  const collator = new Intl.Collator(options.locale, {
-    numeric: true,
-    sensitivity: options.sensitivity ?? 'base',
-  })
   return defineCellTypeFactory<
     string,
     string,
     GridStringBulkDraft,
     GridStringColumnOptions | undefined
-  >(() => ({
-    behavior: createStringBehavior(collator, messages),
-    view: {
-      Cell: StandardTextCell,
-      Editor: StringEditor,
-      BulkEditor: (props) => <StringBulkEditor {...props} messages={messages} />,
-      presentation: {
-        content: 'padded',
-        align: 'start',
-        editActivation: ['active-cell-click', 'enter', 'f2', 'printable'],
+  >((context) => {
+    const messages = resolveCellTypeMessages(
+      DEFAULT_STRING_MESSAGES,
+      context?.locale?.cellTypes.string,
+      options.messages,
+    )
+    const collator = new Intl.Collator(options.locale ?? context?.locale?.code, {
+      numeric: true,
+      sensitivity: options.sensitivity ?? 'base',
+    })
+    return {
+      behavior: createStringBehavior(collator, messages),
+      view: {
+        Cell: StandardTextCell,
+        Editor: StringEditor,
+        BulkEditor: (props) => <StringBulkEditor {...props} messages={messages} />,
+        presentation: {
+          content: 'padded',
+          align: 'start',
+          editActivation: ['active-cell-click', 'enter', 'f2', 'printable'],
+        },
       },
-    },
-  }))
+    }
+  })
 }
 
 function createStringBehavior<Row>(
@@ -260,30 +266,37 @@ export function createNumberCellType<Empty extends number | null = number>(
   GridNumberBulkDraft,
   GridNumberColumnOptions | undefined
 > {
-  const messages = resolveCellTypeMessages(DEFAULT_NUMBER_MESSAGES, options.messages)
   const emptyValue = options.emptyValue === undefined ? 0 : options.emptyValue
   if (emptyValue !== null && !Number.isFinite(emptyValue)) {
     throw new Error('Number emptyValue must be null or a finite number.')
   }
-  const defaultFormatter = new Intl.NumberFormat(options.locale, options.format)
   return defineCellTypeFactory<
     number | null,
     string,
     GridNumberBulkDraft,
     GridNumberColumnOptions | undefined
-  >(() => ({
-    behavior: createNumberBehavior(emptyValue, defaultFormatter, options.locale, options.format, messages),
-    view: {
-      Cell: StandardTextCell,
-      Editor: NumberEditor,
-      BulkEditor: (props) => <NumberBulkEditor {...props} messages={messages} />,
-      presentation: {
-        content: 'padded',
-        align: 'end',
-        editActivation: ['active-cell-click', 'enter', 'f2', 'printable'],
+  >((context) => {
+    const messages = resolveCellTypeMessages(
+      DEFAULT_NUMBER_MESSAGES,
+      context?.locale?.cellTypes.number,
+      options.messages,
+    )
+    const locale = options.locale ?? context?.locale?.code
+    const defaultFormatter = new Intl.NumberFormat(locale, options.format)
+    return {
+      behavior: createNumberBehavior(emptyValue, defaultFormatter, locale, options.format, messages),
+      view: {
+        Cell: StandardTextCell,
+        Editor: NumberEditor,
+        BulkEditor: (props) => <NumberBulkEditor {...props} messages={messages} />,
+        presentation: {
+          content: 'padded',
+          align: 'end',
+          editActivation: ['active-cell-click', 'enter', 'f2', 'printable'],
+        },
       },
-    },
-  })) as GridCellTypeFactory<
+    }
+  }) as GridCellTypeFactory<
     GridNumberValue<Empty>,
     string,
     GridNumberBulkDraft,
@@ -506,35 +519,42 @@ export function createDateCellType<Empty extends '' | null>(
   GridDateBulkDraft,
   GridIsoDateColumnOptions | undefined
 > {
-  const messages = resolveCellTypeMessages(DEFAULT_ISO_DATE_MESSAGES, options.messages)
   if (options.storage !== 'iso-date') {
     throw new Error('Date storage must be "iso-date".')
   }
   if (options.emptyValue !== '' && options.emptyValue !== null) {
     throw new Error('ISO date emptyValue must be an empty string or null.')
   }
-  const defaultFormatter = options.display
-    ? new Intl.DateTimeFormat(options.locale, { ...options.display, timeZone: 'UTC' })
-    : null
-  const parse = (raw: string) => parseIsoDate(raw, options.emptyValue, messages)
   return defineCellTypeFactory<
     string | null,
     string,
     GridDateBulkDraft,
     GridIsoDateColumnOptions | undefined
-  >(() => ({
-    behavior: createDateBehavior(options.emptyValue, defaultFormatter),
-    view: {
-      Cell: StandardTextCell,
-      Editor: DateEditor,
-      BulkEditor: (props) => <DateBulkEditor {...props} messages={messages} />,
-      presentation: {
-        content: 'padded',
-        align: 'start',
-        editActivation: ['active-cell-click', 'enter', 'f2', 'printable'],
+  >((context) => {
+    const messages = resolveCellTypeMessages(
+      DEFAULT_ISO_DATE_MESSAGES,
+      context?.locale?.cellTypes.isoDate,
+      options.messages,
+    )
+    const locale = options.locale ?? context?.locale?.code
+    const defaultFormatter = options.display
+      ? new Intl.DateTimeFormat(locale, { ...options.display, timeZone: 'UTC' })
+      : null
+    const parse = (raw: string) => parseIsoDate(raw, options.emptyValue, messages)
+    return {
+      behavior: createDateBehavior(options.emptyValue, defaultFormatter, locale, messages, parse),
+      view: {
+        Cell: StandardTextCell,
+        Editor: DateEditor,
+        BulkEditor: (props) => <DateBulkEditor {...props} messages={messages} />,
+        presentation: {
+          content: 'padded',
+          align: 'start',
+          editActivation: ['active-cell-click', 'enter', 'f2', 'printable'],
+        },
       },
-    },
-  })) as GridCellTypeFactory<
+    }
+  }) as GridCellTypeFactory<
     GridIsoDateValue<Empty>,
     string,
     GridDateBulkDraft,
@@ -544,6 +564,9 @@ export function createDateCellType<Empty extends '' | null>(
   function createDateBehavior<Row>(
     emptyValue: '' | null,
     formatter: Intl.DateTimeFormat | null,
+    locale: string | readonly string[] | undefined,
+    messages: GridIsoDateCellTypeMessages,
+    parse: (raw: string) => GridValueResult<string | null>,
   ): GridCellBehavior<
     Row,
     string | null,
@@ -554,7 +577,7 @@ export function createDateCellType<Empty extends '' | null>(
     const format = (value: string | null, context: { typeOptions: GridIsoDateColumnOptions | undefined }) => {
       if (!value) return ''
       const localFormatter = context.typeOptions?.locale !== undefined || context.typeOptions?.display !== undefined
-        ? new Intl.DateTimeFormat(context.typeOptions.locale ?? options.locale, {
+        ? new Intl.DateTimeFormat(context.typeOptions.locale ?? locale, {
             ...options.display,
             ...context.typeOptions.display,
             timeZone: 'UTC',
@@ -772,7 +795,7 @@ function StringBulkEditor({
   error,
   messages,
   setDraft,
-}: GridCellBulkEditorProps<GridStringBulkDraft> & Readonly<{
+}: GridCellBulkEditorProps<GridStringBulkDraft, GridStringColumnOptions | undefined> & Readonly<{
   messages: GridStringCellTypeMessages
 }>) {
   const changeOperation = (event: ChangeEvent<HTMLSelectElement>) => {
@@ -796,19 +819,22 @@ function StringBulkEditor({
   </form>
 }
 
-function NumberBulkEditor(props: GridCellBulkEditorProps<GridNumberBulkDraft> & Readonly<{
+function NumberBulkEditor(props: GridCellBulkEditorProps<GridNumberBulkDraft, GridNumberColumnOptions | undefined> & Readonly<{
   messages: GridNumberCellTypeMessages
 }>) {
   return <SingleValueBulkEditor {...props} inputMode="decimal" type="text" />
 }
 
-function DateBulkEditor(props: GridCellBulkEditorProps<GridDateBulkDraft> & Readonly<{
+function DateBulkEditor(props: GridCellBulkEditorProps<GridDateBulkDraft, GridIsoDateColumnOptions | undefined> & Readonly<{
   messages: GridIsoDateCellTypeMessages
 }>) {
   return <SingleValueBulkEditor {...props} type="date" />
 }
 
-function SingleValueBulkEditor<Draft extends Readonly<{ value: string }>>({
+function SingleValueBulkEditor<
+  Draft extends Readonly<{ value: string }>,
+  ColumnOptions,
+>({
   apply,
   cancel,
   cellCount,
@@ -818,7 +844,7 @@ function SingleValueBulkEditor<Draft extends Readonly<{ value: string }>>({
   messages,
   setDraft,
   type,
-}: GridCellBulkEditorProps<Draft> & Readonly<{
+}: GridCellBulkEditorProps<Draft, ColumnOptions> & Readonly<{
   inputMode?: 'decimal'
   messages: GridNumberCellTypeMessages | GridIsoDateCellTypeMessages
   type: 'date' | 'text'

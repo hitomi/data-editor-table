@@ -1,7 +1,7 @@
 # 业务数据批量编辑器 v2 设计与实施方案
 
 > 状态：M5 test candidate ready（等待用户验收）
-> 最后更新：2026-08-31
+> 最后更新：2026-09-01
 > 当前阶段：M1–M4 技术完成；M5 实现与独立复核完成，等待用户体验验收；M6 永久 v2 回归测试尚未开始，并按用户要求推迟到功能确认后
 > 适用范围：用自有状态机和 React UI 实现完整替换 `react-data-grid` 的业务数据批量编辑器
 
@@ -12,7 +12,7 @@ v2 的目标不是把旧组件中的 `react-data-grid` 一层层拆掉，也不�
 最终用户应当只需要提供：
 
 1. 一个数据源，负责权威数据、行标识和持久化；
-2. 一个单元格类型注册表，负责所有值类型的显示、编辑和批量行为；
+2. 在扩展或替换标准类型时提供一个单元格类型注册表；
 3. 一组列定义。
 
 Grid 自己负责布局、焦点、选择、编辑、剪贴板、填充、筛选、排序、dirty 展示、行操作、错误恢复和基础样式。string、number、date、image 只是包提供的标准 type factory，必须和应用自定义 type 一样显式注册并走同一条能力链路。宿主不应重新拼装这些能力。
@@ -33,7 +33,7 @@ v2 只有同时满足以下条件才算完成：
 - 运行时代码、类型、CSS、测试和包依赖中不再包含 `react-data-grid`；
 - 首发功能清单中的所有 P0 能力完成并有对应验证；
 - 当前 demo 的核心工作流全部可以在 v2 中完成；
-- string、number、date、image 和自定义类型全部通过同一个显式 registry 注册，没有内核特殊分支；
+- string、number、date、boolean、choice 和自定义类型全部通过同一个 registry 协议，没有内核特殊分支；
 - 选择、编辑、草稿、view、history 和持久化语义由 React-free controller/state machine 持有；
 - 单元格、行、列和全表选择共享同一个交互状态机；
 - 编辑、粘贴、清除、填充、批量编辑和行操作都通过同一个原子变更入口；
@@ -209,12 +209,14 @@ selection、edit session、dirty、filter、sort、menu target 或 save status �
 
 | ID | 优先级 | 功能 | 验收结果 |
 | --- | --- | --- | --- |
-| T-01 | P0 | 空 registry 起步 | `DataGrid` 不自动安装任何 type，缺失注册在启动时产生明确配置错误 |
-| T-02 | P0 | 标准 type factory | 包提供 string、number、date、image factory，但它们和应用 type 使用同一个 `register` |
+| T-01 | P0 | 标准 registry 默认值 | `DataGrid` 和 binding 在省略 registry 时安装标准类型；自定义类型仍在启动时检查缺失注册 |
+| T-02 | P0 | 标准 type factory | 包提供标准 registry 与独立 factory；标准、替换和应用 type 使用同一 registry 协议 |
 | T-03 | P0 | behavior/view 分离 | controller 只消费 React-free behavior；React adapter 只消费对应 view |
 | T-04 | P0 | capability 驱动 | copy、paste、clear、fill、filter、sort、bulk、action 根据 behavior 能力判断，不根据 type name switch |
 | T-05 | P0 | 类型安全 schema | column type、getter/setter value、behavior 和 view 在 TypeScript 中绑定，运行时也检查缺失/重复 type |
 | T-06 | P0 | date 语义显式 | date factory 必须声明存储和解析约定，不隐含浏览器时区或 `Date`/string 转换 |
+| T-07 | P0 | choice 按列配置 | `singleSelect`/`multiSelect` 的静态 options 属于 column，同一 type 可服务不同业务字段 |
+| T-08 | P0 | grid 级 locale | 一个 locale 同时驱动 Grid shell、全部标准类型和 Intl 格式；factory override 只作高级覆盖 |
 
 ### 4.6 剪贴板、清除、填充与批量编辑
 
@@ -579,7 +581,7 @@ cells 0 < dirty 5 < selection 20 < fill target 25
 
 ## 10. 所有单元格类型都通过 registry
 
-Grid 内核不包含 string、number、date、image 枚举或 switch。包只导出这些标准 type 的 factory；应用必须像注册自定义 type 一样显式注册它们。registry 对 controller 暴露 React-free behavior projection，对 React adapter 暴露 view projection：
+Grid 内核不包含 string、number、date、choice、image 枚举或 switch。包提供由公开 factory 组成的 standard registry，并把它作为 `DataGrid`/binding 的默认值；应用只在扩展或替换时显式操作 registry。registry 对 controller 暴露 React-free behavior projection，对 React adapter 暴露 view projection：
 
 ```ts
 type GridCellBehavior<Row, Value> = {
@@ -617,7 +619,10 @@ type GridCellType<Row, Value> = {
 - clipboard、clear、fill、sort、filter、bulk 都从同一 adapter 获取类型规则；
 - 任意 mutation 在进入 column validator/setter 前都必须通过 adapter 的 `value.validate`，不能信任 React view、effect 或 action 已返回正确运行时类型；
 - registry 在 TypeScript 中绑定 type name 和 value type，运行时拒绝重复或缺失类型；
-- string、number、date、image factory 都调用公开的同一个 `register`，Grid 不自动安装任何默认 type；
+- standard registry 通过公开 `register` 组合 string、number、date、boolean 和 column-scoped choice family；Grid 仅在入口提供这个 registry 默认值，controller 仍然只按 capability 工作；
+- `singleSelect`/`multiSelect` 的 options 放在 column 上，编辑、筛选、校验、clipboard 和 bulk 共用同一 column catalog，不再为 status/category/tags 分别注册 type；
+- `replace` 只替换已有名称，`register` 只添加新名称，避免扩展代码意外覆盖标准行为；
+- locale 在 Grid/binding 层配置一次并作用于 shell 和标准类型；factory messages/Intl locale 只作为显式高级覆盖；
 - date factory 必须显式配置存储/解析约定，不能在 Grid 内核隐含 `Date`、timestamp 或 ISO string 假设；
 - image 的 upload 属于它自己的 view/effect adapter，clipboard、clear、fill 等仍属于同一个 behavior；
 - 标准 type 可以被换名、替换或组合，例如用 number factory 注册 `currency`；
@@ -706,32 +711,24 @@ P0 complete-scope persistence request 至少包含：
 首发 API 应优先暴露一个 turnkey 组件，低层能力通过独立 subpath 提供：
 
 ```tsx
-const registry = createCellTypeRegistry<ProductRow>()
-  .register('string', createStringCellType())
-  .register('number', createNumberCellType())
-  .register('date', createDateCellType({ storage: 'iso-date', emptyValue: null }))
-  .register('image', createImageCellType({ /* upload contract */ }))
+const column = createGridColumnHelper<ProductRow>()
 
 const dataSource = {
   columns: [
-    {
-      key: 'name',
+    column.field('name', {
       label: 'Name',
       type: 'string',
       layout: { basis: 220, min: 140, flex: 1 },
-      getValue: (row) => row.name,
-      setValue: (row, value) => ({ ...row, name: value }),
       sortable: true,
       filterable: true,
-    },
+    }),
   ],
   // snapshot, subscribe, persistence, row capabilities...
-} satisfies GridDataSource<ProductRow, string, GridCellTypeSchemaOf<typeof registry>>
+} satisfies GridDataSource<ProductRow, string, StandardGridCellTypeSchema>
 
 <DataGrid
   ariaLabel="Products"
   dataSource={dataSource}
-  registry={registry}
   rowHeight={36}
 />
 ```
@@ -744,7 +741,7 @@ const dataSource = {
 - 不创建或公开临时 v2 文件路径；
 - 不公开 DOM class 作为 API，测试使用 roles、labels 和稳定 `data-grid-*` 标识。
 
-Turnkey `DataGrid` 可以在内部为 `{ dataSource, registry }` 创建并管理 controller；高级消费者也可以显式调用 `createDataGridBinding` 并把 binding 交给 React view。两条路径使用同一个 controller，不存在“hook 版状态”和“headless 版状态”两套实现。
+Turnkey `DataGrid` 可以在内部为 `{ dataSource, registry?, locale? }` 创建并管理 controller；高级消费者也可以显式调用 `createDataGridBinding` 并把 binding 交给 React view。省略 registry 时两条路径都使用 standard registry；两条路径使用同一个 controller，不存在“hook 版状态”和“headless 版状态”两套实现。
 
 ## 13. 交互细则
 
@@ -919,15 +916,16 @@ M1–M4 的“技术完成”不反向把 M0 标成 `Approved`；breaking major 
 - [x] messages、theme tokens、action surface override；
 - [x] demo 自动/手动保存切换和失败模拟。
 
-退出条件：宿主只提供 data source、columns 和 registry 即可完成完整 demo，且整体功能由用户确认满足预期。
+退出条件：标准接入只提供 data source 和 columns；扩展接入再提供 registry，且完整 demo 功能由用户确认满足预期。
 
 ### M6 — 功能确认后固化回归测试与 API
 
-实施状态：**尚未开始**。按用户要求，永久 v2 unit/integration/E2E 回归测试推迟到 M5 功能获得确认之后；当前 disposable core/Playwright 探索和 package consumer checks 不能冒充该回归套件。
+实施状态：**进行中**。标准 registry、column choice family、locale、column helper 和默认 binding 已补 unit/package-consumer 覆盖；完整 controller/integration/Playwright 回归矩阵仍未完成。
 
 - [ ] 只为已经确认的交互和契约编写永久测试；仍有争议的功能回到 M1–M5 修改；
 - [ ] 旧版和 v2 对相同 fixture 运行行为对照；
-- [ ] 为 controller transition、command atomicity、registry schema 和 persistence 并发补 unit tests；
+- [ ] 为 controller transition、command atomicity和 persistence 并发补 unit tests；
+- [x] 为 standard registry、choice column specialization、replace、locale 和 field helper 补 unit tests；
 - [ ] 为 React adapter、editor lifecycle 和细粒度 subscription 补 integration tests；
 - [ ] 把已确认的用户工作流固化为 Playwright E2E；
 - [ ] packed consumer 的正向/负向类型测试；
@@ -1001,15 +999,17 @@ M1–M4 的“技术完成”不反向把 M0 标成 `Approved`；breaking major 
 | D-09 | 待评审 | 基础 ARIA | 保留最小 roles/index/roving tabindex | 成本低，同时让键盘模型和稳定测试更清楚 |
 | D-10 | 待评审 | CSS 加载 | 保留显式 `/styles.css` import | 对 SSR、CSP 和 bundler 更可预测；CSS 本身必须完整可用 |
 | D-11 | 已确认 | 产品规模定位 | P0 服务于已加载业务数据；大数据量由 P1 data-source window/server view/bulk 协作 | renderer 虚拟化不能独自解决取数和批量命令成本 |
-| D-12 | 已确认 | type 模型 | string、number、date、image 和应用类型全部显式注册 | 标准类型不能获得内核特殊路径 |
+| D-12 | 已确认 | type 模型 | standard registry 是入口默认值；扩展用 `register`，替换用 `replace`，所有类型仍走同一 projection | 减少接入代码，同时不让标准类型进入内核特殊路径 |
 | D-13 | 已确认 | 状态所有权 | 语义状态由 React-free controller/state machine 持有，React 只负责 UI adapter | 避免 hooks 形成多套互相补丁的状态机 |
 | D-14 | 已确认 | 测试顺序 | 先实现、探索验证并确认功能，再为确认后的契约编写永久测试 | 避免大量测试固化错误交互并产生无效返工 |
 | D-15 | 已确认 | 源码迁移 | 开发开始先把旧 `src/` 改名为 `src-legacy/`，新实现直接写入新的 `src/` | 使用最终路径开发，避免 `src/v2` 二次搬迁和隐式混合 |
 | D-16 | 已确认 | License | 使用 MIT License | 允许公开发布、使用、修改和分发，同时保留标准免责声明 |
-| D-17 | 已确认 | i18n | Grid shell 与所有内置类型都提供 typed partial messages override | 默认英文保持零配置使用；宿主可接入任意 i18n/pluralization 方案且无需全局状态 |
+| D-17 | 已确认 | i18n | Grid/binding 配置一个 locale；typed partial messages 作为高级覆盖 | 默认英文保持零配置使用；普通系统无需给每个 cell type 重复注入 locale |
+| D-18 | 已确认 | choice 配置 | standard `singleSelect`/`multiSelect` 的 options 属于 column | 同一类型覆盖所有业务字段，避免每套 options 注册一个 type |
 
 ## 20. 变更记录
 
+- 2026-09-01：standard registry 成为 `DataGrid`/binding 默认值；新增 `replace`、field column helper、column-scoped single/multi select family 和 grid-level locale。
 - 2026-09-01：确认包名 `data-editor-table` 与 MIT License；为 Grid shell 和全部内置 cell type 明确 typed i18n override 边界。
 - 2026-08-31：记录 M1–M4 技术完成、M5 test candidate ready 且等待用户验收；明确 M6 永久 v2 回归测试尚未开始，并补充 native/legacy 架构边界、独立 core、Chromium Playwright、packed consumer 证据和 Safari/Firefox/真实触屏未覆盖项。
 - 2026-08-30：创建提案，记录 v2 产品范围、架构、迁移阶段、验证矩阵与待评审决策。

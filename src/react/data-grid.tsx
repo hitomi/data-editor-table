@@ -3,6 +3,10 @@ import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, 
 import type { GridCellTypeSchema } from '../cell-types/contracts.js'
 import type { GridCellTypeRegistry } from '../cell-types/registry.js'
 import {
+  createStandardCellTypeRegistry,
+  type StandardGridCellTypeSchema,
+} from '../cell-types/standard-registry.js'
+import {
   createGridController,
   type GridController,
   type GridDispatchResult,
@@ -10,6 +14,7 @@ import {
 } from '../controller/grid-controller.js'
 import { selectedCells } from '../controller/selection-model.js'
 import type { GridDataSource } from '../data/data-source.js'
+import type { DataEditorTableLocale } from '../locales/contracts.js'
 import { resolveGridCellValue } from '../data/runtime-cell-resolver.js'
 import { invokeGridCallback } from '../data/safe-callback.js'
 import type {
@@ -68,11 +73,12 @@ export type {
 export type DataGridBinding<
   Row,
   RowKey extends GridRowKey,
-  Schema extends GridCellTypeSchema,
+  Schema extends GridCellTypeSchema = StandardGridCellTypeSchema,
   Effect = never,
 > = Readonly<{
   dataSource: GridDataSource<Row, RowKey, Schema>
   registry: GridCellTypeRegistry<Row, Schema>
+  locale?: DataEditorTableLocale
   controller: GridController<Row, RowKey, Schema, Effect>
   destroy: () => void
 }>
@@ -80,17 +86,22 @@ export type DataGridBinding<
 export type CreateDataGridBindingOptions<
   Row,
   RowKey extends GridRowKey,
-  Schema extends GridCellTypeSchema,
+  Schema extends GridCellTypeSchema = StandardGridCellTypeSchema,
   Effect = never,
 > = Readonly<{
   dataSource: GridDataSource<Row, RowKey, Schema>
-  registry: GridCellTypeRegistry<Row, Schema>
+  locale?: DataEditorTableLocale
   effects?: GridEffectPort<Row, RowKey, Effect>
   maxMutations?: number
   maxClipboardBytes?: number
   rowHeight?: number
   headerHeight?: number
   rowIndicatorWidth?: number
+}> & RegistryOption<Row, Schema>
+
+type RegistryOption<Row, Schema extends GridCellTypeSchema> = Readonly<{
+  /** Defaults to createStandardCellTypeRegistry(). Required for custom cell type names. */
+  registry?: GridCellTypeRegistry<Row, Schema>
 }>
 
 export function createDataGridBinding<
@@ -102,15 +113,19 @@ export function createDataGridBinding<
   dataSource,
   effects,
   headerHeight,
+  locale,
   maxClipboardBytes,
   maxMutations,
   registry,
   rowHeight,
   rowIndicatorWidth,
 }: CreateDataGridBindingOptions<Row, RowKey, Schema, Effect>): DataGridBinding<Row, RowKey, Schema, Effect> {
+  const baseRegistry = registry ?? createStandardCellTypeRegistry<Row>()
+  const resolvedLocale = locale ?? baseRegistry.locale
+  const resolvedRegistry = baseRegistry.withLocale(resolvedLocale) as unknown as GridCellTypeRegistry<Row, Schema>
   const controller = createGridController<Row, RowKey, Schema, Effect>({
     dataSource,
-    cellBehaviors: registry.behaviors,
+    cellBehaviors: resolvedRegistry.behaviors,
     ...(effects === undefined ? {} : { effects }),
     ...(maxMutations === undefined ? {} : { maxMutations }),
     ...(maxClipboardBytes === undefined ? {} : { maxClipboardBytes }),
@@ -118,7 +133,13 @@ export function createDataGridBinding<
     ...(headerHeight === undefined ? {} : { headerHeight }),
     ...(rowIndicatorWidth === undefined ? {} : { rowIndicatorWidth }),
   })
-  return Object.freeze({ dataSource, registry, controller, destroy: () => controller.destroy() })
+  return Object.freeze({
+    dataSource,
+    registry: resolvedRegistry,
+    ...(resolvedLocale === undefined ? {} : { locale: resolvedLocale }),
+    controller,
+    destroy: () => controller.destroy(),
+  })
 }
 
 type DataGridBindingHookEntry<
@@ -129,6 +150,7 @@ type DataGridBindingHookEntry<
 > = Readonly<{
   dataSource: GridDataSource<Row, RowKey, Schema>
   registry: GridCellTypeRegistry<Row, Schema>
+  locale: DataEditorTableLocale | undefined
   maxMutations: number | undefined
   maxClipboardBytes: number | undefined
   rowHeight: number | undefined
@@ -154,6 +176,7 @@ export function useDataGridBinding<
   const {
     dataSource,
     registry,
+    locale,
     effects,
     maxMutations,
     maxClipboardBytes,
@@ -161,6 +184,11 @@ export function useDataGridBinding<
     headerHeight,
     rowIndicatorWidth,
   } = options
+  const defaultRegistry = useMemo(
+    () => createStandardCellTypeRegistry<Row>() as unknown as GridCellTypeRegistry<Row, Schema>,
+    [],
+  )
+  const resolvedRegistry = registry ?? defaultRegistry
   const effectsRef = useRef(effects)
   effectsRef.current = effects
   const [entry, setEntry] = useState<DataGridBindingHookEntry<
@@ -182,7 +210,8 @@ export function useDataGridBinding<
     }
     const binding = createDataGridBinding({
       dataSource,
-      registry,
+      registry: resolvedRegistry,
+      ...(locale === undefined ? {} : { locale }),
       effects: effectPort,
       ...(maxMutations === undefined ? {} : { maxMutations }),
       ...(maxClipboardBytes === undefined ? {} : { maxClipboardBytes }),
@@ -192,7 +221,8 @@ export function useDataGridBinding<
     })
     setEntry(Object.freeze({
       dataSource,
-      registry,
+      registry: resolvedRegistry,
+      locale,
       maxMutations,
       maxClipboardBytes,
       rowHeight,
@@ -208,14 +238,16 @@ export function useDataGridBinding<
     headerHeight,
     maxClipboardBytes,
     maxMutations,
-    registry,
+    locale,
+    resolvedRegistry,
     rowHeight,
     rowIndicatorWidth,
   ])
 
   return entry
     && entry.dataSource === dataSource
-    && entry.registry === registry
+    && entry.registry === resolvedRegistry
+    && entry.locale === locale
     && entry.maxMutations === maxMutations
     && entry.maxClipboardBytes === maxClipboardBytes
     && entry.rowHeight === rowHeight
@@ -375,33 +407,33 @@ const DEFAULT_MESSAGES: DataGridMessages = Object.freeze({
 export type DataGridProps<
   Row,
   RowKey extends GridRowKey,
-  Schema extends GridCellTypeSchema,
+  Schema extends GridCellTypeSchema = StandardGridCellTypeSchema,
   Effect = never,
 > = DataGridCommonProps<Row, RowKey, Schema, Effect> & (
-  | Readonly<{ binding: DataGridBinding<Row, RowKey, Schema, Effect>; dataSource?: never; registry?: never; effects?: never; maxMutations?: never; maxClipboardBytes?: never; rowHeight?: never; headerHeight?: never; rowIndicatorWidth?: never }>
-  | Readonly<{
+  | Readonly<{ binding: DataGridBinding<Row, RowKey, Schema, Effect>; dataSource?: never; registry?: never; locale?: never; effects?: never; maxMutations?: never; maxClipboardBytes?: never; rowHeight?: never; headerHeight?: never; rowIndicatorWidth?: never }>
+  | (Readonly<{
     binding?: never
     dataSource: GridDataSource<Row, RowKey, Schema>
-    registry: GridCellTypeRegistry<Row, Schema>
+    locale?: DataEditorTableLocale
     effects?: GridEffectPort<Row, RowKey, Effect>
     maxMutations?: number
     maxClipboardBytes?: number
     rowHeight?: number
     headerHeight?: number
     rowIndicatorWidth?: number
-  }>
+  }> & RegistryOption<Row, Schema>)
 )
 
 /**
  * Turnkey business-data editor. The controller owns all semantic state while
  * React projects its immutable snapshot into one non-virtualized scrollport.
- * A data-source identity owns one controller; its registry and layout options
- * remain fixed for that identity, while the optional effect port stays live.
+ * A data-source identity owns one controller; its registry, locale, and layout
+ * options remain fixed for that identity, while the optional effect port stays live.
  */
 export function DataGrid<
   Row,
   RowKey extends GridRowKey,
-  Schema extends GridCellTypeSchema,
+  Schema extends GridCellTypeSchema = StandardGridCellTypeSchema,
   Effect = never,
 >(props: DataGridProps<Row, RowKey, Schema, Effect>) {
   if (props.binding) return <BoundDataGrid
@@ -420,7 +452,8 @@ export function DataGrid<
     {...(props.effects === undefined ? {} : { effects: props.effects })}
     {...(props.maxMutations === undefined ? {} : { maxMutations: props.maxMutations })}
     {...(props.maxClipboardBytes === undefined ? {} : { maxClipboardBytes: props.maxClipboardBytes })}
-    registry={props.registry}
+    {...(props.registry === undefined ? {} : { registry: props.registry })}
+    {...(props.locale === undefined ? {} : { locale: props.locale })}
     {...(props.className === undefined ? {} : { className: props.className })}
     {...(props.headerHeight === undefined ? {} : { headerHeight: props.headerHeight })}
     {...(props.rowHeight === undefined ? {} : { rowHeight: props.rowHeight })}
@@ -444,6 +477,7 @@ function OwnedDataGrid<
   dataSource,
   effects,
   headerHeight,
+  locale,
   maxClipboardBytes,
   maxMutations,
   messages: messageOverrides,
@@ -456,18 +490,25 @@ function OwnedDataGrid<
   toolbarActions,
 }: DataGridCommonProps<Row, RowKey, Schema, Effect> & Readonly<{
   dataSource: GridDataSource<Row, RowKey, Schema>
-  registry: GridCellTypeRegistry<Row, Schema>
+  locale?: DataEditorTableLocale
   effects?: GridEffectPort<Row, RowKey, Effect>
   maxMutations?: number
   maxClipboardBytes?: number
   rowHeight?: number
   headerHeight?: number
   rowIndicatorWidth?: number
-}>) {
-  const ownerMessages = { ...DEFAULT_MESSAGES, ...messageOverrides }
+}> & RegistryOption<Row, Schema>) {
+  const defaultRegistry = useMemo(
+    () => createStandardCellTypeRegistry<Row>() as unknown as GridCellTypeRegistry<Row, Schema>,
+    [],
+  )
+  const resolvedRegistry = registry ?? defaultRegistry
+  const resolvedLocale = locale ?? resolvedRegistry.locale
+  const ownerMessages = { ...DEFAULT_MESSAGES, ...resolvedLocale?.dataGrid, ...messageOverrides }
   type OwnedEntry = {
     readonly dataSource: GridDataSource<Row, RowKey, Schema>
     readonly registry: GridCellTypeRegistry<Row, Schema>
+    readonly locale: DataEditorTableLocale | undefined
     readonly effectsRef: { current: GridEffectPort<Row, RowKey, Effect> | undefined }
     readonly maxMutations: number | undefined
     readonly maxClipboardBytes: number | undefined
@@ -510,7 +551,8 @@ function OwnedDataGrid<
       }
       const binding = createDataGridBinding<Row, RowKey, Schema, Effect>({
         dataSource,
-        registry,
+        registry: resolvedRegistry,
+        ...(locale === undefined ? {} : { locale }),
         effects: effectPort,
         ...(maxMutations === undefined ? {} : { maxMutations }),
         ...(maxClipboardBytes === undefined ? {} : { maxClipboardBytes }),
@@ -518,14 +560,15 @@ function OwnedDataGrid<
         ...(headerHeight === undefined ? {} : { headerHeight }),
         ...(rowIndicatorWidth === undefined ? {} : { rowIndicatorWidth }),
       })
-      next = { dataSource, registry, effectsRef, maxMutations, maxClipboardBytes, rowHeight, headerHeight, rowIndicatorWidth, binding, releaseWhenClean: null }
+      next = { dataSource, registry: resolvedRegistry, locale: resolvedLocale, effectsRef, maxMutations, maxClipboardBytes, rowHeight, headerHeight, rowIndicatorWidth, binding, releaseWhenClean: null }
       pool.current.push(next)
     } else {
       next.releaseWhenClean?.()
       next.releaseWhenClean = null
       next.effectsRef.current = effects
     }
-    if (next.registry !== registry
+    if (next.registry !== resolvedRegistry
+      || next.locale !== resolvedLocale
       || next.maxMutations !== maxMutations
       || next.maxClipboardBytes !== maxClipboardBytes
       || next.rowHeight !== rowHeight
@@ -568,7 +611,9 @@ function OwnedDataGrid<
     maxMutations,
     ownerMessages.detachedSourceWork,
     ownerMessages.sourceConfigurationChanged,
-    registry,
+    locale,
+    resolvedLocale,
+    resolvedRegistry,
     retainPendingEntry,
     rowHeight,
     rowIndicatorWidth,
@@ -634,7 +679,10 @@ function BoundDataGridImpl<
   binding: DataGridBinding<Row, RowKey, Schema, Effect>
 }>) {
   const { controller, dataSource, registry } = binding
-  const messages = useMemo(() => ({ ...DEFAULT_MESSAGES, ...messageOverrides }), [messageOverrides])
+  const messages = useMemo(
+    () => ({ ...DEFAULT_MESSAGES, ...binding.locale?.dataGrid, ...messageOverrides }),
+    [binding.locale, messageOverrides],
+  )
   const dom = useMemo(() => new GridDomEffectAdapter(), [controller])
   const pointerOwner = useId()
   const root = useRef<HTMLDivElement>(null)
@@ -981,16 +1029,18 @@ function GridBulkDialogBoundary<
     ? { bulk: snapshot.bulk, column: snapshot.columns.find((column) => column.key === snapshot.bulk?.columnKey) }
     : null, (left, right) => left === right || Boolean(left && right && left.bulk === right.bulk && left.column === right.column))
   if (!slice?.column) return null
-  const view = registry.views.resolve(slice.column.type)
+  const view = registry.views.resolve(slice.column.type, slice.column.typeOptions)
   if (!view?.BulkEditor) return null
   const Editor = view.BulkEditor
   const editor = <Editor
     apply={() => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'bulk/apply' }))}
     cancel={() => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'bulk/cancel' }))}
     cellCount={slice.bulk.targetCells.length}
+    columnKey={slice.column.key}
     draft={slice.bulk.draft}
     error={slice.bulk.error}
     setDraft={(draft) => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'bulk/change', value: draft }))}
+    typeOptions={slice.column.typeOptions}
   />
   const props = {
     ariaLabel: messages.editCells(slice.bulk.targetCells.length),
@@ -1085,7 +1135,7 @@ function selectGridCommandState<
   const bulkColumn = selectedColumnKeys.length === 1
     ? snapshot.columns.find((column) => column.key === selectedColumnKeys[0])
     : undefined
-  const bulkView = bulkColumn ? registry.views.resolve(bulkColumn.type) : undefined
+  const bulkView = bulkColumn ? registry.views.resolve(bulkColumn.type, bulkColumn.typeOptions) : undefined
   const rowsByKey = new Map(snapshot.draft.rows.map((row) => [snapshot.getRowKey(row), row] as const))
   const hasBulkTarget = Boolean(bulkColumn && chosenCells.some((point) => {
     const row = rowsByKey.get(point.rowKey)
@@ -1109,7 +1159,7 @@ function selectGridCommandState<
     canRedo: snapshot.draft.redoStack.length > 0,
     canBulkEdit: Boolean(hasBulkTarget && bulkColumn?.bulkEditable && bulkView?.BulkEditor),
     canSave: savePlan.canSave || snapshot.edit !== null,
-    showBulkEdit: snapshot.columns.some((column) => Boolean(column.bulkEditable && registry.views.resolve(column.type)?.BulkEditor)),
+    showBulkEdit: snapshot.columns.some((column) => Boolean(column.bulkEditable && registry.views.resolve(column.type, column.typeOptions)?.BulkEditor)),
     persistenceMode: snapshot.persistence.mode,
     persistenceStatus: snapshot.persistence.status,
   }

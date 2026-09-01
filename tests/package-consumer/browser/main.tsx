@@ -2,11 +2,10 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
   DataGrid,
-  createCellTypeRegistry,
+  createGridColumnHelper,
   createRemoteGridDataSource,
-  createStringCellType,
   useDataGridBinding,
-  type GridCellTypeSchemaOf,
+  type StandardGridCellTypeSchema,
 } from 'data-editor-table'
 import { zhCN } from 'data-editor-table/locales/zh-CN'
 
@@ -20,21 +19,13 @@ const stylesReady = structureOnly
 
 type Row = Readonly<{ id: number; name: string }>
 
-const registry = createCellTypeRegistry<Row>()
-  .register('string', createStringCellType({
-    locale: zhCN.code,
-    messages: zhCN.cellTypes.string,
-  }))
-type Schema = GridCellTypeSchemaOf<typeof registry>
+const column = createGridColumnHelper<Row>()
 
-const dataSource = createRemoteGridDataSource<Row, number, Schema>({
-  columns: [{
-    key: 'name',
+const dataSource = createRemoteGridDataSource<Row, number, StandardGridCellTypeSchema>({
+  columns: [column.field('name', {
     label: 'Name',
     type: 'string',
-    getValue: (row) => row.name,
-    setValue: (row, name) => ({ ...row, name }),
-  }],
+  })],
   getRowKey: (row) => row.id,
   initialSnapshot: {
     rows: [{ id: 1, name: 'Packed row' }],
@@ -57,13 +48,12 @@ const dataSource = createRemoteGridDataSource<Row, number, Schema>({
 })
 
 function PackedGrid() {
-  const binding = useDataGridBinding({ dataSource, registry })
+  const binding = useDataGridBinding({ dataSource, locale: zhCN })
   if (!binding) return <div role="status">正在初始化表格…</div>
   return <DataGrid
     ariaLabel="打包产物表格"
     binding={binding}
     className={structureOnly ? 'packed-tailwind-grid' : undefined}
-    messages={zhCN.dataGrid}
   />
 }
 

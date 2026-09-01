@@ -3,17 +3,9 @@ import type { ChangeEvent, KeyboardEvent } from 'react'
 import type {
   GridCellBehavior,
   GridDateBulkDraft,
-  GridIsoDateColumnOptions,
   GridNumberBulkDraft,
-  GridNumberColumnOptions,
   GridStringBulkDraft,
-  GridStringColumnOptions,
   GridValueResult,
-} from './contracts.js'
-export type {
-  GridIsoDateColumnOptions,
-  GridNumberColumnOptions,
-  GridStringColumnOptions,
 } from './contracts.js'
 import type {
   GridCellBulkEditorProps,
@@ -23,6 +15,11 @@ import type {
 } from './react-view-contracts.js'
 import { formatDefaultApplyToCells, resolveCellTypeMessages } from './messages.js'
 import { defineCellTypeFactory } from './registry.js'
+
+export type GridStringColumnOptions = Readonly<{
+  inputMode?: 'text' | 'email' | 'search' | 'tel' | 'url'
+  placeholder?: string
+}>
 
 export type GridStringCellTypeOptions = Readonly<{
   locale?: string | readonly string[]
@@ -204,6 +201,13 @@ function applyStringBulkDraft(
     return failure('invalid-regular-expression', messages.invalidRegularExpression)
   }
 }
+
+export type GridNumberColumnOptions = Readonly<{
+  minimum?: number
+  maximum?: number
+  placeholder?: string
+  format?: Intl.NumberFormatOptions
+}>
 
 export type GridNumberCellTypeOptions<Empty extends number | null = number> = Readonly<{
   emptyValue?: Empty
@@ -458,6 +462,12 @@ function numberSeriesValue(
   })
   return arithmetic ? success(first + (targetIndex - sourceStartIndex) * step) : success(repeatedValue)
 }
+
+export type GridIsoDateColumnOptions = Readonly<{
+  placeholder?: string
+  locale?: string | readonly string[]
+  display?: Intl.DateTimeFormatOptions
+}>
 
 export type GridIsoDateCellTypeOptions<Empty extends '' | null> = Readonly<{
   storage: 'iso-date'

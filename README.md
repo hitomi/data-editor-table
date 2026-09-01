@@ -59,6 +59,7 @@ import {
   createGridColumnHelper,
   createGridIdempotencyHeaders,
   createRemoteGridDataSource,
+  type StandardGridCellTypeSchema,
 } from 'data-editor-table'
 import 'data-editor-table/styles.css'
 
@@ -66,7 +67,7 @@ type Product = { id: string; name: string }
 
 const column = createGridColumnHelper<Product>()
 
-const dataSource = createRemoteGridDataSource({
+const dataSource = createRemoteGridDataSource<Product, string, StandardGridCellTypeSchema>({
   columns: [column.field('name', {
     label: 'Name',
     type: 'string',

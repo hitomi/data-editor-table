@@ -5,8 +5,8 @@ import type {
   GridCellTypeValue,
   GridChoiceOption,
   GridChoiceValue,
+  StandardGridCellTypeSchema,
 } from './contracts.js'
-import type { StandardGridCellTypeSchema } from './standard-registry.js'
 import type {
   GridColumn,
   GridColumnLayout,

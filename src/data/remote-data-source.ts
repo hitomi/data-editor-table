@@ -1,4 +1,8 @@
-import type { GridCellTypeSchema, GridColumnForCellTypes } from '../cell-types/contracts.js'
+import type {
+  GridCellTypeSchema,
+  GridColumnForCellTypes,
+  StandardGridCellTypeSchema,
+} from '../cell-types/contracts.js'
 import type {
   GridPersistenceMode,
   GridRowKey,
@@ -87,9 +91,9 @@ export type RemoteGridDataSource<
 export function createRemoteGridDataSource<
   Row,
   RowKey extends GridRowKey,
-  Schema extends GridCellTypeSchema,
+  Schema extends GridCellTypeSchema = StandardGridCellTypeSchema,
 >(
-  options: CreateRemoteGridDataSourceOptions<Row, RowKey, Schema>,
+  options: CreateRemoteGridDataSourceOptions<Row, RowKey, NoInfer<Schema>>,
 ): RemoteGridDataSource<Row, RowKey, Schema> {
   const listeners = new Set<() => void>()
   let snapshot = freezeSnapshot(options.initialSnapshot)

@@ -10,9 +10,15 @@ import {
 
 const rootRoute = createRootRoute({ component: DemoLayout })
 
-const playgroundRoute = createRoute({
+const quickStartRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
+  component: lazyRouteComponent(() => import('./quick-start'), 'QuickStartPage'),
+})
+
+const playgroundRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/playground',
   component: lazyRouteComponent(() => import('./playground'), 'PlaygroundPage'),
 })
 
@@ -29,6 +35,7 @@ const crossGridDragRoute = createRoute({
 })
 
 const routeTree = rootRoute.addChildren([
+  quickStartRoute,
   playgroundRoute,
   multiImageImportRoute,
   crossGridDragRoute,
@@ -50,6 +57,9 @@ function DemoLayout() {
     <div className="demo-app-shell">
       <nav aria-label="Demo pages" className="demo-nav">
         <Link activeOptions={{ exact: true }} activeProps={{ 'aria-current': 'page' }} to="/">
+          Quick start
+        </Link>
+        <Link activeProps={{ 'aria-current': 'page' }} to="/playground">
           Playground
         </Link>
         <Link activeProps={{ 'aria-current': 'page' }} to="/multi-image-import">

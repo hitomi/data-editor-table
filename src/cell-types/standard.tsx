@@ -13,6 +13,7 @@ import type {
   GridCellTypeFactory,
   GridCellViewProps,
 } from './react-view-contracts.js'
+import { formatDefaultApplyToCells, resolveCellTypeMessages } from './messages.js'
 import { defineCellTypeFactory } from './registry.js'
 
 export type GridStringColumnOptions = Readonly<{
@@ -23,7 +24,58 @@ export type GridStringColumnOptions = Readonly<{
 export type GridStringCellTypeOptions = Readonly<{
   locale?: string | readonly string[]
   sensitivity?: Intl.CollatorOptions['sensitivity']
+  messages?: Partial<GridStringCellTypeMessages>
 }>
+
+export type GridStringCellTypeMessages = Readonly<{
+  invalidValue: string
+  contains: string
+  notContains: string
+  equals: string
+  notEquals: string
+  isEmpty: string
+  isNotEmpty: string
+  filterValueRequired: string
+  findRequired: string
+  invalidRegularExpression: string
+  operation: string
+  setValue: string
+  addPrefixOrSuffix: string
+  findAndReplace: string
+  value: string
+  prefix: string
+  suffix: string
+  find: string
+  replaceWith: string
+  regularExpression: string
+  cancel: string
+  applyToCells: (count: number) => string
+}>
+
+const DEFAULT_STRING_MESSAGES: GridStringCellTypeMessages = Object.freeze({
+  invalidValue: 'The value must be text.',
+  contains: 'Contains',
+  notContains: 'Does not contain',
+  equals: 'Equals',
+  notEquals: 'Does not equal',
+  isEmpty: 'Is empty',
+  isNotEmpty: 'Is not empty',
+  filterValueRequired: 'Enter text to filter by.',
+  findRequired: 'Enter text to find.',
+  invalidRegularExpression: 'Enter a valid regular expression.',
+  operation: 'Operation',
+  setValue: 'Set value',
+  addPrefixOrSuffix: 'Add prefix or suffix',
+  findAndReplace: 'Find and replace',
+  value: 'Value',
+  prefix: 'Prefix',
+  suffix: 'Suffix',
+  find: 'Find',
+  replaceWith: 'Replace with',
+  regularExpression: 'Regular expression',
+  cancel: 'Cancel',
+  applyToCells: formatDefaultApplyToCells,
+})
 
 export function createStringCellType(
   options: GridStringCellTypeOptions = {},
@@ -33,6 +85,7 @@ export function createStringCellType(
   GridStringBulkDraft,
   GridStringColumnOptions | undefined
 > {
+  const messages = resolveCellTypeMessages(DEFAULT_STRING_MESSAGES, options.messages)
   const collator = new Intl.Collator(options.locale, {
     numeric: true,
     sensitivity: options.sensitivity ?? 'base',
@@ -43,15 +96,15 @@ export function createStringCellType(
     GridStringBulkDraft,
     GridStringColumnOptions | undefined
   >(() => ({
-    behavior: createStringBehavior(collator),
+    behavior: createStringBehavior(collator, messages),
     view: {
       Cell: StandardTextCell,
       Editor: StringEditor,
-      BulkEditor: StringBulkEditor,
+      BulkEditor: (props) => <StringBulkEditor {...props} messages={messages} />,
       presentation: {
         content: 'padded',
         align: 'start',
-        editActivation: ['double-click', 'enter', 'f2', 'printable'],
+        editActivation: ['active-cell-click', 'enter', 'f2', 'printable'],
       },
     },
   }))
@@ -59,6 +112,7 @@ export function createStringCellType(
 
 function createStringBehavior<Row>(
   collator: Intl.Collator,
+  messages: GridStringCellTypeMessages,
 ): GridCellBehavior<
   Row,
   string,
@@ -70,7 +124,7 @@ function createStringBehavior<Row>(
     value: {
       validate: (value) => typeof value === 'string'
         ? success(value)
-        : failure('invalid-string-value', 'The value must be text.'),
+        : failure('invalid-string-value', messages.invalidValue),
     },
     text: {
       display: (value) => value,
@@ -91,17 +145,17 @@ function createStringBehavior<Row>(
     filter: {
       defaultOperator: 'contains',
       operators: [
-        textFilter('contains', 'Contains', true, (value, raw) => normalize(value).includes(normalize(raw))),
-        textFilter('not-contains', 'Does not contain', true, (value, raw) => !normalize(value).includes(normalize(raw))),
-        textFilter('equals', 'Equals', true, (value, raw) => collator.compare(value, raw) === 0),
-        textFilter('not-equals', 'Does not equal', true, (value, raw) => collator.compare(value, raw) !== 0),
-        textFilter('is-empty', 'Is empty', false, (value) => value.length === 0),
-        textFilter('is-not-empty', 'Is not empty', false, (value) => value.length > 0),
+        textFilter('contains', messages.contains, true, messages.filterValueRequired, (value, raw) => normalize(value).includes(normalize(raw))),
+        textFilter('not-contains', messages.notContains, true, messages.filterValueRequired, (value, raw) => !normalize(value).includes(normalize(raw))),
+        textFilter('equals', messages.equals, true, messages.filterValueRequired, (value, raw) => collator.compare(value, raw) === 0),
+        textFilter('not-equals', messages.notEquals, true, messages.filterValueRequired, (value, raw) => collator.compare(value, raw) !== 0),
+        textFilter('is-empty', messages.isEmpty, false, messages.filterValueRequired, (value) => value.length === 0),
+        textFilter('is-not-empty', messages.isNotEmpty, false, messages.filterValueRequired, (value) => value.length > 0),
       ],
     },
     bulk: {
       begin: ({ values }) => ({ operation: 'set', value: allEqual(values) ? values[0] ?? '' : '' }),
-      apply: (current, draft) => applyStringBulkDraft(current, draft),
+      apply: (current, draft) => applyStringBulkDraft(current, draft, messages),
     },
   }
 }
@@ -110,6 +164,7 @@ function textFilter(
   id: string,
   label: string,
   requiresValue: boolean,
+  valueRequiredMessage: string,
   matches: (value: string, raw: string) => boolean,
 ) {
   return {
@@ -118,22 +173,26 @@ function textFilter(
     requiresValue,
     input: { kind: 'text' as const },
     ...(requiresValue ? {
-      validate: (raw: string) => raw.length > 0 ? null : 'Enter text to filter by.',
+      validate: (raw: string) => raw.length > 0 ? null : valueRequiredMessage,
     } : {}),
     matches,
   }
 }
 
-function applyStringBulkDraft(current: string, draft: GridStringBulkDraft): GridValueResult<string> {
+function applyStringBulkDraft(
+  current: string,
+  draft: GridStringBulkDraft,
+  messages: GridStringCellTypeMessages,
+): GridValueResult<string> {
   if (draft.operation === 'set') return success(draft.value)
   if (draft.operation === 'affix') return success(`${draft.prefix}${current}${draft.suffix}`)
-  if (!draft.find) return failure('empty-find', 'Enter text to find.')
+  if (!draft.find) return failure('empty-find', messages.findRequired)
   try {
     return success(draft.useRegex
       ? current.replace(new RegExp(draft.find, 'g'), draft.replacement)
       : current.split(draft.find).join(draft.replacement))
   } catch {
-    return failure('invalid-regular-expression', 'Enter a valid regular expression.')
+    return failure('invalid-regular-expression', messages.invalidRegularExpression)
   }
 }
 
@@ -148,7 +207,48 @@ export type GridNumberCellTypeOptions<Empty extends number | null = number> = Re
   emptyValue?: Empty
   locale?: string | readonly string[]
   format?: Intl.NumberFormatOptions
+  messages?: Partial<GridNumberCellTypeMessages>
 }>
+
+export type GridNumberCellTypeMessages = Readonly<{
+  invalidValue: string
+  invalidNumber: string
+  finiteNumberRequired: string
+  belowMinimum: (minimum: number) => string
+  aboveMaximum: (maximum: number) => string
+  equals: string
+  notEquals: string
+  greaterThan: string
+  greaterThanOrEqual: string
+  lessThan: string
+  lessThanOrEqual: string
+  isEmpty: string
+  isNotEmpty: string
+  filterValueInvalid: string
+  value: string
+  cancel: string
+  applyToCells: (count: number) => string
+}>
+
+const DEFAULT_NUMBER_MESSAGES: GridNumberCellTypeMessages = Object.freeze({
+  invalidValue: 'The value must be a finite number.',
+  invalidNumber: 'Enter a valid number.',
+  finiteNumberRequired: 'Enter a finite number.',
+  belowMinimum: (minimum) => `Enter a number of at least ${minimum}.`,
+  aboveMaximum: (maximum) => `Enter a number no greater than ${maximum}.`,
+  equals: 'Equals',
+  notEquals: 'Does not equal',
+  greaterThan: 'Is greater than',
+  greaterThanOrEqual: 'Is at least',
+  lessThan: 'Is less than',
+  lessThanOrEqual: 'Is at most',
+  isEmpty: 'Is empty',
+  isNotEmpty: 'Is not empty',
+  filterValueInvalid: 'Enter a valid number.',
+  value: 'Value',
+  cancel: 'Cancel',
+  applyToCells: formatDefaultApplyToCells,
+})
 
 type GridNumberValue<Empty extends number | null> = Empty extends null ? number | null : number
 
@@ -160,6 +260,7 @@ export function createNumberCellType<Empty extends number | null = number>(
   GridNumberBulkDraft,
   GridNumberColumnOptions | undefined
 > {
+  const messages = resolveCellTypeMessages(DEFAULT_NUMBER_MESSAGES, options.messages)
   const emptyValue = options.emptyValue === undefined ? 0 : options.emptyValue
   if (emptyValue !== null && !Number.isFinite(emptyValue)) {
     throw new Error('Number emptyValue must be null or a finite number.')
@@ -171,15 +272,15 @@ export function createNumberCellType<Empty extends number | null = number>(
     GridNumberBulkDraft,
     GridNumberColumnOptions | undefined
   >(() => ({
-    behavior: createNumberBehavior(emptyValue, defaultFormatter, options.locale, options.format),
+    behavior: createNumberBehavior(emptyValue, defaultFormatter, options.locale, options.format, messages),
     view: {
       Cell: StandardTextCell,
       Editor: NumberEditor,
-      BulkEditor: NumberBulkEditor,
+      BulkEditor: (props) => <NumberBulkEditor {...props} messages={messages} />,
       presentation: {
         content: 'padded',
         align: 'end',
-        editActivation: ['double-click', 'enter', 'f2', 'printable'],
+        editActivation: ['active-cell-click', 'enter', 'f2', 'printable'],
       },
     },
   })) as GridCellTypeFactory<
@@ -195,6 +296,7 @@ function createNumberBehavior<Row>(
   defaultFormatter: Intl.NumberFormat,
   locale: string | readonly string[] | undefined,
   defaultFormat: Intl.NumberFormatOptions | undefined,
+  messages: GridNumberCellTypeMessages,
 ): GridCellBehavior<
   Row,
   number | null,
@@ -202,18 +304,18 @@ function createNumberBehavior<Row>(
   GridNumberBulkDraft,
   GridNumberColumnOptions | undefined
 > {
-  const parse = (raw: string) => parseNumber(raw, emptyValue)
+  const parse = (raw: string) => parseNumber(raw, emptyValue, messages)
   return {
     value: {
       validate: (value, context) => {
         if (value === null) {
           return emptyValue === null
             ? success(null)
-            : failure('invalid-number-value', 'The value must be a finite number.')
+            : failure('invalid-number-value', messages.invalidValue)
         }
         return typeof value === 'number' && Number.isFinite(value)
-          ? validateNumberRange(success(value), context.typeOptions)
-          : failure('invalid-number-value', 'The value must be a finite number.')
+          ? validateNumberRange(success(value), context.typeOptions, messages)
+          : failure('invalid-number-value', messages.invalidValue)
       },
     },
     text: {
@@ -231,13 +333,13 @@ function createNumberBehavior<Row>(
     equals: Object.is,
     clipboard: {
       format: (value) => value === null ? '' : String(value),
-      parse: (raw, context) => validateNumberRange(parse(raw), context.typeOptions),
+      parse: (raw, context) => validateNumberRange(parse(raw), context.typeOptions, messages),
     },
     edit: {
       begin: (value) => value === null ? '' : String(value),
-      commit: (draft, context) => validateNumberRange(parse(draft), context.typeOptions),
+      commit: (draft, context) => validateNumberRange(parse(draft), context.typeOptions, messages),
     },
-    clear: (context) => validateNumberRange(success(emptyValue), context.typeOptions),
+    clear: (context) => validateNumberRange(success(emptyValue), context.typeOptions, messages),
     fill: (context) => validateNumberRange(
       numberSeriesValue(
         context.sourceValues,
@@ -246,24 +348,25 @@ function createNumberBehavior<Row>(
         context.targetIndex,
       ),
       context.typeOptions,
+      messages,
     ),
     compare: (left, right) => left === right ? 0 : left === null ? -1 : right === null ? 1 : left - right,
     filter: {
       defaultOperator: 'equals',
       operators: [
-        numberFilter('equals', 'Equals', true, parse, (value, operand) => value === operand),
-        numberFilter('not-equals', 'Does not equal', true, parse, (value, operand) => value !== operand),
-        numberFilter('greater-than', 'Is greater than', true, parse, (value, operand) => value !== null && operand !== null && value > operand),
-        numberFilter('greater-than-or-equal', 'Is at least', true, parse, (value, operand) => value !== null && operand !== null && value >= operand),
-        numberFilter('less-than', 'Is less than', true, parse, (value, operand) => value !== null && operand !== null && value < operand),
-        numberFilter('less-than-or-equal', 'Is at most', true, parse, (value, operand) => value !== null && operand !== null && value <= operand),
-        numberFilter('is-empty', 'Is empty', false, parse, (value) => value === null),
-        numberFilter('is-not-empty', 'Is not empty', false, parse, (value) => value !== null),
+        numberFilter('equals', messages.equals, true, messages.filterValueInvalid, parse, (value, operand) => value === operand),
+        numberFilter('not-equals', messages.notEquals, true, messages.filterValueInvalid, parse, (value, operand) => value !== operand),
+        numberFilter('greater-than', messages.greaterThan, true, messages.filterValueInvalid, parse, (value, operand) => value !== null && operand !== null && value > operand),
+        numberFilter('greater-than-or-equal', messages.greaterThanOrEqual, true, messages.filterValueInvalid, parse, (value, operand) => value !== null && operand !== null && value >= operand),
+        numberFilter('less-than', messages.lessThan, true, messages.filterValueInvalid, parse, (value, operand) => value !== null && operand !== null && value < operand),
+        numberFilter('less-than-or-equal', messages.lessThanOrEqual, true, messages.filterValueInvalid, parse, (value, operand) => value !== null && operand !== null && value <= operand),
+        numberFilter('is-empty', messages.isEmpty, false, messages.filterValueInvalid, parse, (value) => value === null),
+        numberFilter('is-not-empty', messages.isNotEmpty, false, messages.filterValueInvalid, parse, (value) => value !== null),
       ],
     },
     bulk: {
       begin: ({ values }) => ({ value: allEqual(values) && values[0] !== null && values[0] !== undefined ? String(values[0]) : '' }),
-      apply: (_current, draft, context) => validateNumberRange(parse(draft.value), context.typeOptions),
+      apply: (_current, draft, context) => validateNumberRange(parse(draft.value), context.typeOptions, messages),
     },
   }
 }
@@ -272,6 +375,7 @@ function numberFilter(
   id: string,
   label: string,
   requiresValue: boolean,
+  invalidValueMessage: string,
   parse: (raw: string) => GridValueResult<number | null>,
   matches: (value: number | null, operand: number | null) => boolean,
 ) {
@@ -283,7 +387,7 @@ function numberFilter(
     ...(requiresValue ? {
       validate: (raw: string) => raw.trim().length > 0 && parse(raw).ok
         ? null
-        : 'Enter a valid number.',
+        : invalidValueMessage,
     } : {}),
     matches: (value: number | null, raw: string) => {
       if (!requiresValue) return matches(value, null)
@@ -293,28 +397,33 @@ function numberFilter(
   }
 }
 
-function parseNumber(raw: string, emptyValue: number | null): GridValueResult<number | null> {
+function parseNumber(
+  raw: string,
+  emptyValue: number | null,
+  messages: GridNumberCellTypeMessages,
+): GridValueResult<number | null> {
   const normalized = raw.trim()
   if (!normalized) return success(emptyValue)
   if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(normalized)) {
-    return failure('invalid-number', 'Enter a valid number.')
+    return failure('invalid-number', messages.invalidNumber)
   }
   const value = Number(normalized)
   return Number.isFinite(value)
     ? success(value)
-    : failure('invalid-number', 'Enter a finite number.')
+    : failure('invalid-number', messages.finiteNumberRequired)
 }
 
 function validateNumberRange(
   parsed: GridValueResult<number | null>,
   options: GridNumberColumnOptions | undefined,
+  messages: GridNumberCellTypeMessages,
 ): GridValueResult<number | null> {
   if (!parsed.ok || parsed.value === null) return parsed
   if (options?.minimum !== undefined && parsed.value < options.minimum) {
-    return failure('number-below-minimum', `Enter a number of at least ${options.minimum}.`)
+    return failure('number-below-minimum', messages.belowMinimum(options.minimum))
   }
   if (options?.maximum !== undefined && parsed.value > options.maximum) {
-    return failure('number-above-maximum', `Enter a number no greater than ${options.maximum}.`)
+    return failure('number-above-maximum', messages.aboveMaximum(options.maximum))
   }
   return parsed
 }
@@ -352,7 +461,40 @@ export type GridIsoDateCellTypeOptions<Empty extends '' | null> = Readonly<{
   emptyValue: Empty
   locale?: string | readonly string[]
   display?: Intl.DateTimeFormatOptions
+  messages?: Partial<GridIsoDateCellTypeMessages>
 }>
+
+export type GridIsoDateCellTypeMessages = Readonly<{
+  invalidValue: string
+  invalidFormat: string
+  invalidDate: string
+  on: string
+  notOn: string
+  before: string
+  after: string
+  isEmpty: string
+  isNotEmpty: string
+  filterValueInvalid: string
+  value: string
+  cancel: string
+  applyToCells: (count: number) => string
+}>
+
+const DEFAULT_ISO_DATE_MESSAGES: GridIsoDateCellTypeMessages = Object.freeze({
+  invalidValue: 'The value must be an ISO date.',
+  invalidFormat: 'The value must use YYYY-MM-DD format.',
+  invalidDate: 'Enter a valid date in YYYY-MM-DD format.',
+  on: 'Is on',
+  notOn: 'Is not on',
+  before: 'Is before',
+  after: 'Is after',
+  isEmpty: 'Is empty',
+  isNotEmpty: 'Is not empty',
+  filterValueInvalid: 'Enter a valid date in YYYY-MM-DD format.',
+  value: 'Value',
+  cancel: 'Cancel',
+  applyToCells: formatDefaultApplyToCells,
+})
 
 type GridIsoDateValue<Empty extends '' | null> = Empty extends null ? string | null : string
 
@@ -364,6 +506,7 @@ export function createDateCellType<Empty extends '' | null>(
   GridDateBulkDraft,
   GridIsoDateColumnOptions | undefined
 > {
+  const messages = resolveCellTypeMessages(DEFAULT_ISO_DATE_MESSAGES, options.messages)
   if (options.storage !== 'iso-date') {
     throw new Error('Date storage must be "iso-date".')
   }
@@ -373,7 +516,7 @@ export function createDateCellType<Empty extends '' | null>(
   const defaultFormatter = options.display
     ? new Intl.DateTimeFormat(options.locale, { ...options.display, timeZone: 'UTC' })
     : null
-  const parse = (raw: string) => parseIsoDate(raw, options.emptyValue)
+  const parse = (raw: string) => parseIsoDate(raw, options.emptyValue, messages)
   return defineCellTypeFactory<
     string | null,
     string,
@@ -384,11 +527,11 @@ export function createDateCellType<Empty extends '' | null>(
     view: {
       Cell: StandardTextCell,
       Editor: DateEditor,
-      BulkEditor: DateBulkEditor,
+      BulkEditor: (props) => <DateBulkEditor {...props} messages={messages} />,
       presentation: {
         content: 'padded',
         align: 'start',
-        editActivation: ['double-click', 'enter', 'f2', 'printable'],
+        editActivation: ['active-cell-click', 'enter', 'f2', 'printable'],
       },
     },
   })) as GridCellTypeFactory<
@@ -425,19 +568,19 @@ export function createDateCellType<Empty extends '' | null>(
           if (value === null) {
             return emptyValue === null
               ? success(null)
-              : failure('invalid-iso-date-value', 'The value must be an ISO date.')
+              : failure('invalid-iso-date-value', messages.invalidValue)
           }
           if (typeof value !== 'string') {
-            return failure('invalid-iso-date-value', 'The value must be an ISO date.')
+            return failure('invalid-iso-date-value', messages.invalidValue)
           }
           if (value === '') {
             return emptyValue === ''
               ? success('')
-              : failure('invalid-iso-date-value', 'The value must be an ISO date.')
+              : failure('invalid-iso-date-value', messages.invalidValue)
           }
           return isValidIsoDate(value)
             ? success(value)
-            : failure('invalid-iso-date-value', 'The value must use YYYY-MM-DD format.')
+            : failure('invalid-iso-date-value', messages.invalidFormat)
         },
       },
       text: {
@@ -453,12 +596,12 @@ export function createDateCellType<Empty extends '' | null>(
       filter: {
         defaultOperator: 'on',
         operators: [
-          dateFilter('on', 'Is on', true, parse, (value, operand) => value === operand),
-          dateFilter('not-on', 'Is not on', true, parse, (value, operand) => value !== operand),
-          dateFilter('before', 'Is before', true, parse, (value, operand) => Boolean(value && operand && value < operand)),
-          dateFilter('after', 'Is after', true, parse, (value, operand) => Boolean(value && operand && value > operand)),
-          dateFilter('is-empty', 'Is empty', false, parse, (value) => !value),
-          dateFilter('is-not-empty', 'Is not empty', false, parse, (value) => Boolean(value)),
+          dateFilter('on', messages.on, true, messages.filterValueInvalid, parse, (value, operand) => value === operand),
+          dateFilter('not-on', messages.notOn, true, messages.filterValueInvalid, parse, (value, operand) => value !== operand),
+          dateFilter('before', messages.before, true, messages.filterValueInvalid, parse, (value, operand) => Boolean(value && operand && value < operand)),
+          dateFilter('after', messages.after, true, messages.filterValueInvalid, parse, (value, operand) => Boolean(value && operand && value > operand)),
+          dateFilter('is-empty', messages.isEmpty, false, messages.filterValueInvalid, parse, (value) => !value),
+          dateFilter('is-not-empty', messages.isNotEmpty, false, messages.filterValueInvalid, parse, (value) => Boolean(value)),
         ],
       },
       bulk: {
@@ -473,6 +616,7 @@ function dateFilter(
   id: string,
   label: string,
   requiresValue: boolean,
+  invalidValueMessage: string,
   parse: (raw: string) => GridValueResult<string | null>,
   matches: (value: string | null, operand: string | null) => boolean,
 ) {
@@ -484,7 +628,7 @@ function dateFilter(
     ...(requiresValue ? {
       validate: (raw: string) => raw.trim().length > 0 && parse(raw).ok
         ? null
-        : 'Enter a valid date in YYYY-MM-DD format.',
+        : invalidValueMessage,
     } : {}),
     matches: (value: string | null, raw: string) => {
       if (!requiresValue) return matches(value, null)
@@ -506,12 +650,16 @@ export function isValidIsoDate(value: string): boolean {
   return daysInMonth !== undefined && day <= daysInMonth
 }
 
-function parseIsoDate(raw: string, emptyValue: '' | null): GridValueResult<string | null> {
+function parseIsoDate(
+  raw: string,
+  emptyValue: '' | null,
+  messages: GridIsoDateCellTypeMessages,
+): GridValueResult<string | null> {
   const normalized = raw.trim()
   if (!normalized) return success(emptyValue)
   return isValidIsoDate(normalized)
     ? success(normalized)
-    : failure('invalid-iso-date', 'Enter a valid date in YYYY-MM-DD format.')
+    : failure('invalid-iso-date', messages.invalidDate)
 }
 
 function isoDateToUtc(value: string): Date {
@@ -622,8 +770,11 @@ function StringBulkEditor({
   cellCount,
   draft,
   error,
+  messages,
   setDraft,
-}: GridCellBulkEditorProps<GridStringBulkDraft>) {
+}: GridCellBulkEditorProps<GridStringBulkDraft> & Readonly<{
+  messages: GridStringCellTypeMessages
+}>) {
   const changeOperation = (event: ChangeEvent<HTMLSelectElement>) => {
     const operation = event.currentTarget.value
     if (operation === 'affix') setDraft({ operation, prefix: '', suffix: '' })
@@ -631,25 +782,29 @@ function StringBulkEditor({
     else setDraft({ operation: 'set', value: '' })
   }
   return <form className="data-grid-bulk-editor" onSubmit={(event) => { event.preventDefault(); apply() }}>
-    <label>Operation<select value={draft.operation} onChange={changeOperation}>
-      <option value="set">Set value</option>
-      <option value="affix">Add prefix or suffix</option>
-      <option value="replace">Find and replace</option>
+    <label>{messages.operation}<select value={draft.operation} onChange={changeOperation}>
+      <option value="set">{messages.setValue}</option>
+      <option value="affix">{messages.addPrefixOrSuffix}</option>
+      <option value="replace">{messages.findAndReplace}</option>
     </select></label>
     {draft.operation === 'set'
-      ? <label>Value<input value={draft.value} onChange={(event) => { setDraft({ ...draft, value: event.currentTarget.value }) }} /></label>
+      ? <label>{messages.value}<input value={draft.value} onChange={(event) => { setDraft({ ...draft, value: event.currentTarget.value }) }} /></label>
       : draft.operation === 'affix'
-        ? <><label>Prefix<input value={draft.prefix} onChange={(event) => { setDraft({ ...draft, prefix: event.currentTarget.value }) }} /></label><label>Suffix<input value={draft.suffix} onChange={(event) => { setDraft({ ...draft, suffix: event.currentTarget.value }) }} /></label></>
-        : <><label>Find<input value={draft.find} onChange={(event) => { setDraft({ ...draft, find: event.currentTarget.value }) }} /></label><label>Replace with<input value={draft.replacement} onChange={(event) => { setDraft({ ...draft, replacement: event.currentTarget.value }) }} /></label><label><input checked={draft.useRegex} type="checkbox" onChange={(event) => { setDraft({ ...draft, useRegex: event.currentTarget.checked }) }} />Regular expression</label></>}
-    <BulkActions cancel={cancel} cellCount={cellCount} error={error} />
+        ? <><label>{messages.prefix}<input value={draft.prefix} onChange={(event) => { setDraft({ ...draft, prefix: event.currentTarget.value }) }} /></label><label>{messages.suffix}<input value={draft.suffix} onChange={(event) => { setDraft({ ...draft, suffix: event.currentTarget.value }) }} /></label></>
+        : <><label>{messages.find}<input value={draft.find} onChange={(event) => { setDraft({ ...draft, find: event.currentTarget.value }) }} /></label><label>{messages.replaceWith}<input value={draft.replacement} onChange={(event) => { setDraft({ ...draft, replacement: event.currentTarget.value }) }} /></label><label><input checked={draft.useRegex} type="checkbox" onChange={(event) => { setDraft({ ...draft, useRegex: event.currentTarget.checked }) }} />{messages.regularExpression}</label></>}
+    <BulkActions cancel={cancel} cellCount={cellCount} error={error} messages={messages} />
   </form>
 }
 
-function NumberBulkEditor(props: GridCellBulkEditorProps<GridNumberBulkDraft>) {
+function NumberBulkEditor(props: GridCellBulkEditorProps<GridNumberBulkDraft> & Readonly<{
+  messages: GridNumberCellTypeMessages
+}>) {
   return <SingleValueBulkEditor {...props} inputMode="decimal" type="text" />
 }
 
-function DateBulkEditor(props: GridCellBulkEditorProps<GridDateBulkDraft>) {
+function DateBulkEditor(props: GridCellBulkEditorProps<GridDateBulkDraft> & Readonly<{
+  messages: GridIsoDateCellTypeMessages
+}>) {
   return <SingleValueBulkEditor {...props} type="date" />
 }
 
@@ -660,15 +815,17 @@ function SingleValueBulkEditor<Draft extends Readonly<{ value: string }>>({
   draft,
   error,
   inputMode,
+  messages,
   setDraft,
   type,
 }: GridCellBulkEditorProps<Draft> & Readonly<{
   inputMode?: 'decimal'
+  messages: GridNumberCellTypeMessages | GridIsoDateCellTypeMessages
   type: 'date' | 'text'
 }>) {
   return <form className="data-grid-bulk-editor" onSubmit={(event) => { event.preventDefault(); apply() }}>
-    <label>Value<input inputMode={inputMode} type={type} value={draft.value} onChange={(event) => { setDraft({ ...draft, value: event.currentTarget.value }) }} /></label>
-    <BulkActions cancel={cancel} cellCount={cellCount} error={error} />
+    <label>{messages.value}<input inputMode={inputMode} type={type} value={draft.value} onChange={(event) => { setDraft({ ...draft, value: event.currentTarget.value }) }} /></label>
+    <BulkActions cancel={cancel} cellCount={cellCount} error={error} messages={messages} />
   </form>
 }
 
@@ -676,16 +833,18 @@ function BulkActions({
   cancel,
   cellCount,
   error,
+  messages,
 }: Readonly<{
   cancel: () => void
   cellCount: number
   error: string | null
+  messages: Readonly<{ cancel: string; applyToCells: (count: number) => string }>
 }>) {
   return <>
     {error ? <p role="alert">{error}</p> : null}
     <div className="data-grid-bulk-editor-actions">
-      <button type="button" onClick={cancel}>Cancel</button>
-      <button type="submit">Apply to {cellCount} cells</button>
+      <button type="button" onClick={cancel}>{messages.cancel}</button>
+      <button type="submit">{messages.applyToCells(cellCount)}</button>
     </div>
   </>
 }

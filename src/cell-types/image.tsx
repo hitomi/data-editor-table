@@ -10,6 +10,7 @@ import type {
   GridCellEditorProps,
   GridCellViewProps,
 } from './react-view-contracts.js'
+import { resolveCellTypeMessages } from './messages.js'
 
 export type GridImageUploadInput = Readonly<{
   file: File
@@ -41,7 +42,34 @@ export type GridImageCellTypeOptions<Row, Value> = Readonly<{
   parseClipboard?: (text: string, row: Row) => GridValueResult<Value | null>
   equals?: (left: Value | null, right: Value | null) => boolean
   uploadErrorMessage?: (error: unknown, row: Row) => string
+  messages?: Partial<GridImageCellTypeMessages>
 }>
+
+export type GridImageCellTypeMessages = Readonly<{
+  hasImage: string
+  isEmpty: string
+  removeImage: string
+  uploadCancelled: string
+  uploadFailed: string
+  choose: string
+  replace: string
+  cancel: string
+  fileTooLarge: (maxBytes: number) => string
+  unsupportedFileType: string
+}>
+
+const DEFAULT_IMAGE_MESSAGES: GridImageCellTypeMessages = Object.freeze({
+  hasImage: 'Has image',
+  isEmpty: 'Is empty',
+  removeImage: 'Remove image',
+  uploadCancelled: 'Image upload was cancelled.',
+  uploadFailed: 'The image could not be uploaded.',
+  choose: 'Choose',
+  replace: 'Replace',
+  cancel: 'Cancel',
+  fileTooLarge: (maxBytes) => `Choose an image smaller than ${formatBytes(maxBytes)}.`,
+  unsupportedFileType: 'Choose a supported image file.',
+})
 
 export function createImageCellType<Row, Value>(
   options: GridImageCellTypeOptions<Row, Value>,
@@ -53,6 +81,7 @@ export function createImageCellType<Row, Value>(
   GridImageColumnOptions<Row, Value> | undefined,
   GridImageCellEffects
 > {
+  const messages = resolveCellTypeMessages(DEFAULT_IMAGE_MESSAGES, options.messages)
   if (options.maxBytes !== undefined && (!Number.isFinite(options.maxBytes) || options.maxBytes <= 0)) {
     throw new Error('Image maxBytes must be a positive finite number.')
   }
@@ -98,13 +127,13 @@ export function createImageCellType<Row, Value>(
     filter: {
       defaultOperator: 'has-image',
       operators: [
-        { id: 'has-image', label: 'Has image', requiresValue: false, matches: (value) => value !== null },
-        { id: 'is-empty', label: 'Is empty', requiresValue: false, matches: (value) => value === null },
+        { id: 'has-image', label: messages.hasImage, requiresValue: false, matches: (value) => value !== null },
+        { id: 'is-empty', label: messages.isEmpty, requiresValue: false, matches: (value) => value === null },
       ],
     },
     actions: [{
       id: 'remove-image',
-      label: 'Remove image',
+      label: messages.removeImage,
       destructive: true,
       disabled: ({ value }) => value === null,
       run: () => success({ kind: 'set-value', value: null }),
@@ -114,17 +143,17 @@ export function createImageCellType<Row, Value>(
         concurrency: 'replace-cell',
         run: async ({ file }, context, signal) => {
           const resolved = resolveOptions(context.typeOptions)
-          const preflight = validateImageFile(file, resolved.accept, resolved.maxBytes)
+          const preflight = validateImageFile(file, resolved.accept, resolved.maxBytes, messages)
           if (!preflight.ok) return preflight
           try {
             const value = await options.upload({ file, row: context.row, signal })
-            if (signal.aborted) return failure('image-upload-cancelled', 'Image upload was cancelled.')
+            if (signal.aborted) return failure('image-upload-cancelled', messages.uploadCancelled)
             return success(value)
           } catch (error) {
-            if (signal.aborted) return failure('image-upload-cancelled', 'Image upload was cancelled.')
+            if (signal.aborted) return failure('image-upload-cancelled', messages.uploadCancelled)
             return failure(
               'image-upload-failed',
-              options.uploadErrorMessage?.(error, context.row) ?? 'The image could not be uploaded.',
+              options.uploadErrorMessage?.(error, context.row) ?? messages.uploadFailed,
             )
           }
         },
@@ -213,7 +242,7 @@ export function createImageCellType<Row, Value>(
     const activeEffect = useRef<GridCellEffectHandle | null>(null)
     const resolved = resolveOptions(props.typeOptions)
     const label = resolved.label(props.row)
-    const compactLabel = props.value === null ? 'Choose' : 'Replace'
+    const compactLabel = props.value === null ? messages.choose : messages.replace
     useEffect(() => {
       if (props.claimInitialActivation()) input.current?.click()
       return () => { activeEffect.current?.cancel() }
@@ -248,7 +277,7 @@ export function createImageCellType<Row, Value>(
           }}
         />
       </span>
-      <button className="data-grid-image-editor-cancel" type="button" onClick={props.cancel}>Cancel</button>
+      <button className="data-grid-image-editor-cancel" type="button" onClick={props.cancel}>{messages.cancel}</button>
     </div>
   }
 
@@ -260,7 +289,7 @@ export function createImageCellType<Row, Value>(
       presentation: {
         content: 'edge-to-edge',
         align: 'center',
-        editActivation: ['double-click', 'enter', 'f2'],
+        editActivation: ['active-cell-click', 'enter', 'f2'],
       },
     },
   }
@@ -275,12 +304,13 @@ function validateImageFile(
   file: File,
   accept: string | undefined,
   maxBytes: number | undefined,
+  messages: GridImageCellTypeMessages,
 ): GridValueResult<null> {
   if (maxBytes !== undefined && file.size > maxBytes) {
-    return failure('image-too-large', `Choose an image smaller than ${formatBytes(maxBytes)}.`)
+    return failure('image-too-large', messages.fileTooLarge(maxBytes))
   }
   if (accept && !matchesAccept(file, accept)) {
-    return failure('unsupported-image-type', 'Choose a supported image file.')
+    return failure('unsupported-image-type', messages.unsupportedFileType)
   }
   return success(null)
 }

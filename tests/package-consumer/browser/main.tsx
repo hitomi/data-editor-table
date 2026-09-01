@@ -7,8 +7,15 @@ import {
   type GridDataSource,
   type GridDataSourceSnapshot,
   type GridReadyDataSourceSnapshot,
-} from 'react-data-grid-ext'
-import 'react-data-grid-ext/styles.css'
+} from 'data-editor-table'
+
+const structureOnly = new URLSearchParams(window.location.search).get('styles') === 'structure'
+const stylesReady = structureOnly
+  ? Promise.all([
+      import('data-editor-table/structure.css'),
+      import('./structure-theme.css'),
+    ])
+  : import('data-editor-table/styles.css')
 
 type Row = Readonly<{ id: number; name: string }>
 
@@ -54,6 +61,13 @@ const dataSource: GridDataSource<Row, number, Schema> = {
   },
 }
 
-createRoot(document.getElementById('root')!).render(
-  <DataGrid ariaLabel="Packed package grid" dataSource={dataSource} registry={registry} />,
-)
+void stylesReady.then(() => {
+  createRoot(document.getElementById('root')!).render(
+    <DataGrid
+      ariaLabel="Packed package grid"
+      className={structureOnly ? 'packed-tailwind-grid' : undefined}
+      dataSource={dataSource}
+      registry={registry}
+    />,
+  )
+})

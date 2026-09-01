@@ -1,4 +1,4 @@
-import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
 import type { GridCellTypeSchema } from '../cell-types/contracts.js'
 import type { GridCellTypeRegistry } from '../cell-types/registry.js'
@@ -229,6 +229,7 @@ const DEFAULT_MESSAGES: DataGridMessages = Object.freeze({
   anyCondition: 'Any condition',
   condition: (index) => `Condition ${index}`,
   value: (column, index, multiple) => `${column} value${multiple ? ` ${index}` : ''}`,
+  chooseValue: 'Choose a value',
   removeCondition: (index) => `Remove condition ${index}`,
   clearFilter: 'Clear filter',
   addCondition: 'Add condition',
@@ -360,20 +361,37 @@ function OwnedDataGrid<
   rowIndicatorWidth?: number
 }>) {
   const ownerMessages = { ...DEFAULT_MESSAGES, ...messageOverrides }
-  type OwnedEntry = Readonly<{
-    dataSource: GridDataSource<Row, RowKey, Schema>
-    registry: GridCellTypeRegistry<Row, Schema>
-    effectsRef: { current: GridEffectPort<Row, RowKey, Effect> | undefined }
-    maxMutations: number | undefined
-    maxClipboardBytes: number | undefined
-    rowHeight: number | undefined
-    headerHeight: number | undefined
-    rowIndicatorWidth: number | undefined
-    binding: DataGridBinding<Row, RowKey, Schema, Effect>
-  }>
+  type OwnedEntry = {
+    readonly dataSource: GridDataSource<Row, RowKey, Schema>
+    readonly registry: GridCellTypeRegistry<Row, Schema>
+    readonly effectsRef: { current: GridEffectPort<Row, RowKey, Effect> | undefined }
+    readonly maxMutations: number | undefined
+    readonly maxClipboardBytes: number | undefined
+    readonly rowHeight: number | undefined
+    readonly headerHeight: number | undefined
+    readonly rowIndicatorWidth: number | undefined
+    readonly binding: DataGridBinding<Row, RowKey, Schema, Effect>
+    releaseWhenClean: (() => void) | null
+  }
   const pool = useRef<OwnedEntry[]>([])
   const [owned, setOwned] = useState<OwnedEntry | null>(null)
   const active = useRef<OwnedEntry | null>(null)
+  const destroyEntry = useCallback((entry: OwnedEntry) => {
+    entry.releaseWhenClean?.()
+    entry.releaseWhenClean = null
+    const index = pool.current.indexOf(entry)
+    if (index >= 0) pool.current.splice(index, 1)
+    if (active.current === entry) active.current = null
+    entry.binding.destroy()
+  }, [])
+  const retainPendingEntry = useCallback((entry: OwnedEntry) => {
+    if (entry.releaseWhenClean) return
+    entry.releaseWhenClean = entry.binding.controller.subscribe(() => {
+      if (active.current === entry
+        || hasPendingWork(entry.binding.controller.getSnapshot())) return
+      destroyEntry(entry)
+    })
+  }, [destroyEntry])
   useLayoutEffect(() => {
     const previous = active.current
     let next = pool.current.find((candidate) => candidate.dataSource === dataSource)
@@ -396,9 +414,11 @@ function OwnedDataGrid<
         ...(headerHeight === undefined ? {} : { headerHeight }),
         ...(rowIndicatorWidth === undefined ? {} : { rowIndicatorWidth }),
       })
-      next = { dataSource, registry, effectsRef, maxMutations, maxClipboardBytes, rowHeight, headerHeight, rowIndicatorWidth, binding }
+      next = { dataSource, registry, effectsRef, maxMutations, maxClipboardBytes, rowHeight, headerHeight, rowIndicatorWidth, binding, releaseWhenClean: null }
       pool.current.push(next)
     } else {
+      next.releaseWhenClean?.()
+      next.releaseWhenClean = null
       next.effectsRef.current = effects
     }
     if (next.registry !== registry
@@ -417,21 +437,27 @@ function OwnedDataGrid<
         },
       })
     }
-    if (previous && previous !== next && hasPendingWork(previous.binding.controller.getSnapshot())) {
-      next.binding.controller.dispatch({
-        type: 'feedback/push',
-        item: {
-          id: 'grid:detached-source-work',
-          kind: 'warning',
-          message: ownerMessages.detachedSourceWork,
-          persistent: true,
-        },
-      })
+    if (previous && previous !== next) {
+      if (hasPendingWork(previous.binding.controller.getSnapshot())) {
+        retainPendingEntry(previous)
+        next.binding.controller.dispatch({
+          type: 'feedback/push',
+          item: {
+            id: 'grid:detached-source-work',
+            kind: 'warning',
+            message: ownerMessages.detachedSourceWork,
+            persistent: true,
+          },
+        })
+      } else {
+        destroyEntry(previous)
+      }
     }
     active.current = next
     setOwned(next)
   }, [
     dataSource,
+    destroyEntry,
     effects,
     headerHeight,
     maxClipboardBytes,
@@ -439,11 +465,16 @@ function OwnedDataGrid<
     ownerMessages.detachedSourceWork,
     ownerMessages.sourceConfigurationChanged,
     registry,
+    retainPendingEntry,
     rowHeight,
     rowIndicatorWidth,
   ])
   useLayoutEffect(() => () => {
-    pool.current.forEach((entry) => { entry.binding.destroy() })
+    pool.current.forEach((entry) => {
+      entry.releaseWhenClean?.()
+      entry.releaseWhenClean = null
+      entry.binding.destroy()
+    })
     pool.current.length = 0
     active.current = null
   }, [])
@@ -477,6 +508,7 @@ function hasPendingWork<Row, RowKey extends GridRowKey>(snapshot: import('../mod
     || snapshot.draft.conflicts.length > 0
     || snapshot.edit !== null
     || snapshot.bulk !== null
+    || snapshot.filterSession !== null
     || snapshot.persistence.status === 'saving'
 }
 
@@ -514,7 +546,7 @@ function BoundDataGridImpl<
       // Defer until its capture handlers have had a chance to claim the native
       // event; DOM containment alone cannot identify a body-level portal.
       queueMicrotask(() => {
-        if (!active) return
+        if (!active || event.defaultPrevented) return
         if (
           ownedPointerEvents.current.has(event) ||
           path.some((target) =>

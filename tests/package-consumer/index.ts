@@ -6,9 +6,11 @@ import {
   type GridDataSource,
   type GridDataSourceSnapshot,
   type GridReadyDataSourceSnapshot,
-} from 'react-data-grid-ext'
-import { createGridController } from 'react-data-grid-ext/engine'
-import 'react-data-grid-ext/styles.css'
+} from 'data-editor-table'
+import { createGridController } from 'data-editor-table/engine'
+import 'data-editor-table/styles.css'
+import 'data-editor-table/structure.css'
+import 'data-editor-table/theme.css'
 
 type Row = { id: number; name: string }
 

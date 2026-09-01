@@ -5,7 +5,7 @@ import {
   type GridDataSource,
   type GridDataSourceSnapshot,
   type GridReadyDataSourceSnapshot,
-} from 'react-data-grid-ext/engine'
+} from 'data-editor-table/engine'
 
 type Row = Readonly<{ id: number; name: string }>
 type Schema = Readonly<{

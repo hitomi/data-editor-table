@@ -67,10 +67,15 @@ export type GridCellFillContext<Row, Value, ColumnOptions = undefined> = Readonl
   typeOptions: ColumnOptions
 }>
 
-export type GridCellFilterInput = Readonly<{
-  kind: 'text' | 'number' | 'date'
-  inputMode?: 'text' | 'decimal' | 'numeric'
-}>
+export type GridCellFilterInput =
+  | Readonly<{
+      kind: 'text' | 'number' | 'date'
+      inputMode?: 'text' | 'decimal' | 'numeric'
+    }>
+  | Readonly<{
+      kind: 'select'
+      options: readonly Readonly<{ value: string; label: string }>[]
+    }>
 
 export type GridCellFilterOperator<Row, Value, ColumnOptions = undefined> = Readonly<{
   id: string
@@ -201,6 +206,8 @@ export type GridCellBehavior<
     ) => GridValueResult<Value>
   }>
   edit?: Readonly<{
+    /** Whether unrelated grid interactions may commit this draft implicitly. */
+    exit?: 'auto-commit' | 'explicit'
     begin: (value: Value, context: GridCellValueContext<Row, ColumnOptions>) => EditDraft
     commit: (
       draft: EditDraft,
@@ -228,6 +235,25 @@ export type GridStringBulkDraft =
 export type GridNumberBulkDraft = Readonly<{ value: string }>
 
 export type GridDateBulkDraft = Readonly<{ value: string }>
+
+export type GridChoiceValue = string | number
+
+export type GridChoiceOption<Value extends GridChoiceValue> = Readonly<{
+  value: Value
+  label: string
+  disabled?: boolean
+}>
+
+export type GridSingleSelectBulkDraft<Value extends GridChoiceValue> =
+  | Readonly<{ operation: 'keep' }>
+  | Readonly<{ operation: 'set'; value: Value | null }>
+
+export type GridMultiSelectBulkDraft<Value extends GridChoiceValue> = Readonly<{
+  operation: 'keep' | 'replace' | 'add' | 'remove'
+  values: readonly Value[]
+}>
+
+export type GridBooleanBulkDraft = Readonly<{ value: boolean | 'mixed' }>
 
 export type GridRuntimeRegisteredValueContext<Row> = GridRuntimeValueContext<Row>
 

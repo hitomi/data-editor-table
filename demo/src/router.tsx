@@ -3,30 +3,29 @@ import {
   Outlet,
   createRootRoute,
   createRoute,
+  createHashHistory,
   createRouter,
+  lazyRouteComponent,
 } from '@tanstack/react-router'
-import { CrossGridDragPage } from './cross-grid-drag'
-import { MultiImageImportPage } from './multi-image-import'
-import { PlaygroundPage } from './playground'
 
 const rootRoute = createRootRoute({ component: DemoLayout })
 
 const playgroundRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
-  component: PlaygroundPage,
+  component: lazyRouteComponent(() => import('./playground'), 'PlaygroundPage'),
 })
 
 const multiImageImportRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/multi-image-import',
-  component: MultiImageImportPage,
+  component: lazyRouteComponent(() => import('./multi-image-import'), 'MultiImageImportPage'),
 })
 
 const crossGridDragRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/cross-grid-drag',
-  component: CrossGridDragPage,
+  component: lazyRouteComponent(() => import('./cross-grid-drag'), 'CrossGridDragPage'),
 })
 
 const routeTree = rootRoute.addChildren([
@@ -35,7 +34,10 @@ const routeTree = rootRoute.addChildren([
   crossGridDragRoute,
 ])
 
-export const router = createRouter({ routeTree })
+export const router = createRouter({
+  routeTree,
+  history: createHashHistory(),
+})
 
 declare module '@tanstack/react-router' {
   interface Register {

@@ -2,8 +2,8 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "paths": {
-      "react-data-grid-ext": ["./src/index.ts"],
-      "react-data-grid-ext/styles.css": ["./src/styles-entry.ts"]
+      "data-editor-table": ["./src/index.ts"],
+      "data-editor-table/styles.css": ["./src/styles-entry.ts"]
     },
     "types": ["vite/client"]
   },

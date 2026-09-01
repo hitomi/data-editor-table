@@ -2198,6 +2198,9 @@ export function createGridController<
     if (snapshot.filterSession)
       return no(`Apply or cancel the filter edit before ${action}.`)
     if (!snapshot.edit) return null
+    const resolved = cell(snapshot.edit.cell)
+    if (resolved?.column.behavior.edit?.exit === 'explicit')
+      return no(`Apply or cancel the cell edit before ${action}.`)
     const committed = commitEdit()
     return committed.accepted ? null : committed
   }

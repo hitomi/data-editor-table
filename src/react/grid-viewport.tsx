@@ -28,6 +28,7 @@ import type {
   GridControllerSnapshot,
   GridHitTarget,
   GridLayoutState,
+  GridPoint,
   GridRowKey,
   GridSort,
 } from '../model/grid-model.js'
@@ -109,6 +110,13 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
     clientX: 0,
     clientY: 0,
   })
+  const activeCellClick = useRef<Readonly<{
+    pointerId: number
+    point: GridPoint<RowKey>
+    startX: number
+    startY: number
+    moved: boolean
+  }> | null>(null)
   const dropAutoScroll = useRef<number | null>(null)
   const dropPointer = useRef<{ clientX: number; clientY: number } | null>(null)
   const dropZoneRef = useRef(rowDropZone)
@@ -268,10 +276,29 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
 
   const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return
+    if (isNativeScrollbarPointer(event, scrollport.current)) return
     if (isRowHeaderActionTarget(event.target)
-      || (event.target as Element).closest('[data-grid-header-action], input, button, select, textarea, [contenteditable="true"]')) return
+      || (event.target as Element).closest('[data-grid-editor], [data-grid-header-action], input, button, select, textarea, [contenteditable="true"]')) return
     const target = targetAt(event)
     if (!target) return
+    const snapshot = controller.getSnapshot()
+    const point = target.kind === 'cell' ? target : null
+    const column = point && snapshot.columns.find((candidate) => candidate.key === point.columnKey)
+    const row = point && snapshot.draft.rows.find((candidate) => gridRowKeysEqual(snapshot.getRowKey(candidate), point.rowKey))
+    const supportsActiveCellClick = Boolean(column && views.resolve(column.type)?.presentation.editActivation.includes('active-cell-click'))
+    activeCellClick.current = point
+      && event.isPrimary
+      && !event.altKey
+      && !event.shiftKey
+      && !event.metaKey
+      && !event.ctrlKey
+      && snapshot.edit === null
+      && supportsActiveCellClick
+      && row
+      && column?.isEditable(row)
+      && isOnlySelectedCell(snapshot, point)
+      ? { pointerId: event.pointerId, point, startX: event.clientX, startY: event.clientY, moved: false }
+      : null
     event.preventDefault()
     const result = dispatch({
       type: 'pointer/start',
@@ -285,9 +312,18 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
         const active = controller.getSnapshot().interaction.activeCell
         if (active) dom.focusCell(active, false)
       })
-    } else reportRejected(result)
+    } else {
+      activeCellClick.current = null
+      reportRejected(result)
+    }
   }
   const onPointerMove = (event: PointerEvent<HTMLDivElement>) => {
+    const candidate = activeCellClick.current
+    if (candidate?.pointerId === event.pointerId
+      && !candidate.moved
+      && Math.hypot(event.clientX - candidate.startX, event.clientY - candidate.startY) > 4) {
+      activeCellClick.current = { ...candidate, moved: true }
+    }
     const gesture = controller.getSnapshot().interaction.gesture
     if (!gesture || gesture.pointerId !== event.pointerId) return
     autoScroll.current.pointerId = event.pointerId
@@ -301,14 +337,24 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
     const gesture = controller.getSnapshot().interaction.gesture
     if (!gesture || gesture.pointerId !== event.pointerId) return
     const target = targetAt(event)
+    const candidate = activeCellClick.current
+    activeCellClick.current = null
     const result = dispatch(target
       ? { type: 'pointer/end', pointerId: event.pointerId, target }
       : { type: 'pointer/end', pointerId: event.pointerId })
     dom.releasePointer(event.pointerId)
     stopAutoScroll()
     reportRejected(result)
+    if (
+      result.accepted
+      && target?.kind === 'cell'
+      && candidate?.pointerId === event.pointerId
+      && !candidate.moved
+      && sameGridPoint(candidate.point, target)
+    ) reportRejected(dispatch({ type: 'edit/start', cell: candidate.point }))
   }
   const onPointerCancel = (event: PointerEvent<HTMLDivElement>) => {
+    activeCellClick.current = null
     const gesture = controller.getSnapshot().interaction.gesture
     if (!gesture || gesture.pointerId !== event.pointerId) return
     dispatch({ type: 'pointer/cancel', pointerId: event.pointerId })
@@ -318,7 +364,7 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (isRowHeaderActionTarget(event.target)
-      || (event.target as Element).closest('input, textarea, select, [contenteditable="true"]')) return
+      || (event.target as Element).closest('button, input, textarea, select, [contenteditable="true"]')) return
     const shortcut = event.metaKey || event.ctrlKey
     if (shortcut && event.key.toLowerCase() === 'z') {
       event.preventDefault()
@@ -344,10 +390,11 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
       const point = snapshot.interaction.activeCell
       const column = point && snapshot.columns.find((candidate) => candidate.key === point.columnKey)
       const view = column && views.resolve(column.type)
-      if (view?.presentation.editActivation.includes('printable')) {
+      const activation = event.key === ' ' ? 'space' : 'printable'
+      if (view?.presentation.editActivation.includes(activation)) {
         event.preventDefault()
         const start = dispatch({ type: 'edit/start' })
-        if (start.accepted) dispatch({ type: 'edit/change', value: event.key })
+        if (start.accepted && activation === 'printable') dispatch({ type: 'edit/change', value: event.key })
       }
     }
   }
@@ -395,16 +442,6 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
     className="business-grid__viewport-shell"
     ref={shell}
     style={style}
-    onDoubleClick={(event) => {
-      if (isRowHeaderActionTarget(event.target)
-        || (event.target as Element).closest('input, button, select, textarea')) return
-      const target = targetAt(event as unknown as PointerEvent<HTMLElement>)
-      if (!target || target.kind !== 'cell') return
-      const column = controller.getSnapshot().columns.find((candidate) => candidate.key === target.columnKey)
-      if (column && views.resolve(column.type)?.presentation.editActivation.includes('double-click')) {
-        reportRejected(dispatch({ type: 'edit/start', cell: target }))
-      }
-    }}
     onPointerCancel={onPointerCancel}
     onPointerDown={onPointerDown}
     onPointerMove={onPointerMove}
@@ -461,7 +498,8 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
       onKeyDown={onKeyDown}
       onPaste={onPaste}
       onScroll={(event) => {
-        dispatch({ type: 'viewport/scrolled', scrollLeft: event.currentTarget.scrollLeft, scrollTop: event.currentTarget.scrollTop })
+        const node = event.currentTarget
+        dispatch({ type: 'viewport/scrolled', scrollLeft: node.scrollLeft, scrollTop: node.scrollTop })
         const pointer = dropPointer.current
         if (pointer && dropZoneRef.current?.active) {
           publishDropTarget(dropTargetAt(pointer.clientX, pointer.clientY))
@@ -493,6 +531,8 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
             />
           })}
         />)}
+        <GridSelectionBoundary controller={controller} />
+        <div className="business-grid__editor-body-host" ref={setEditorBodyHost} />
       </div>
     </div>
     {dropTarget && dropIndicatorY !== null ? <div
@@ -502,9 +542,7 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
     >{rowDropZone?.renderIndicator
         ? rowDropZone.renderIndicator(dropTarget)
         : <div className="business-grid__row-drop-indicator-line" />}</div> : null}
-    <GridSelectionBoundary controller={controller} />
     <div className="business-grid__editor-host">
-      <div className="business-grid__editor-body-host" ref={setEditorBodyHost} />
       <div className="business-grid__editor-floating-host" ref={setEditorFloatingHost} />
     </div>
     <GridScrollportFocusBoundary controller={controller} scrollport={scrollport} />
@@ -606,8 +644,12 @@ function GridEditorBoundary<
     const result = controller.dispatch({ type: 'edit/commit' })
     reportCommitResult(result)
     queueMicrotask(() => {
-      if (result.accepted) dom.focusGrid()
-      else dom.focusEditor()
+      if (!result.accepted) {
+        dom.focusEditor()
+        return
+      }
+      const active = controller.getSnapshot().interaction.activeCell
+      if (!active || !dom.focusCell(active, false)) dom.focusGrid()
     })
   }
   const onDraftChange = (draft: unknown) => {
@@ -894,10 +936,8 @@ function equalMatrixLayout(left: GridLayoutState, right: GridLayoutState) {
 }
 
 function equalSelectionLayout(left: GridLayoutState, right: GridLayoutState) {
-  return left.viewportWidth === right.viewportWidth
-    && left.viewportHeight === right.viewportHeight
-    && left.scrollLeft === right.scrollLeft
-    && left.scrollTop === right.scrollTop
+  return left.contentWidth === right.contentWidth
+    && left.contentHeight === right.contentHeight
     && left.headerHeight === right.headerHeight
     && left.rowHeight === right.rowHeight
     && left.rowIndicatorWidth === right.rowIndicatorWidth
@@ -1018,6 +1058,46 @@ function edgeVelocity(position: number, start: number, end: number) {
 function isRowHeaderActionTarget(target: EventTarget | null) {
   return target instanceof Element
     && target.closest('[data-grid-row-header-actions]') !== null
+}
+
+function isNativeScrollbarPointer(event: PointerEvent<HTMLElement>, scrollport: HTMLElement | null) {
+  if (!scrollport) return false
+  const rect = scrollport.getBoundingClientRect()
+  if (rect.width <= 0 || rect.height <= 0 || scrollport.offsetWidth <= 0 || scrollport.offsetHeight <= 0) return false
+  const scaleX = rect.width / scrollport.offsetWidth
+  const scaleY = rect.height / scrollport.offsetHeight
+  const clientLeft = rect.left + scrollport.clientLeft * scaleX
+  const clientTop = rect.top + scrollport.clientTop * scaleY
+  const clientRight = clientLeft + scrollport.clientWidth * scaleX
+  const clientBottom = clientTop + scrollport.clientHeight * scaleY
+  const insideBorderBox = event.clientX >= rect.left
+    && event.clientX < rect.right
+    && event.clientY >= rect.top
+    && event.clientY < rect.bottom
+  return insideBorderBox && (
+    event.clientX < clientLeft
+    || event.clientX >= clientRight
+    || event.clientY < clientTop
+    || event.clientY >= clientBottom
+  )
+}
+
+function isOnlySelectedCell<Row, RowKey extends GridRowKey>(
+  snapshot: GridControllerSnapshot<Row, RowKey>,
+  point: GridPoint<RowKey>,
+) {
+  const range = snapshot.interaction.ranges[0]
+  return snapshot.interaction.ranges.length === 1
+    && snapshot.interaction.activeRangeIndex === 0
+    && snapshot.interaction.activeCell !== null
+    && range !== undefined
+    && sameGridPoint(snapshot.interaction.activeCell, point)
+    && sameGridPoint(range.anchor, point)
+    && sameGridPoint(range.focus, point)
+}
+
+function sameGridPoint<RowKey extends GridRowKey>(left: GridPoint<RowKey>, right: GridPoint<RowKey>) {
+  return gridRowKeysEqual(left.rowKey, right.rowKey) && left.columnKey === right.columnKey
 }
 
 function keyboardCommand(key: string) {

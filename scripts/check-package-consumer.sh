@@ -9,10 +9,10 @@ case "$system_temp" in
     exit 1
     ;;
 esac
-temp_root=$(mktemp -d "$system_temp/react-data-grid-ext-package.XXXXXX")
+temp_root=$(mktemp -d "$system_temp/data-editor-table-package.XXXXXX")
 
 cleanup() {
-  if [[ "$(dirname -- "$temp_root")" == "$system_temp" && "$(basename -- "$temp_root")" == react-data-grid-ext-package.* ]]; then
+  if [[ "$(dirname -- "$temp_root")" == "$system_temp" && "$(basename -- "$temp_root")" == data-editor-table-package.* ]]; then
     rm -rf -- "$temp_root"
   else
     echo "Refusing to remove unexpected temporary path: $temp_root" >&2
@@ -49,13 +49,13 @@ resolve_dependency_root() {
 }
 
 engine_consumer="$temp_root/engine-consumer"
-engine_package="$engine_consumer/node_modules/react-data-grid-ext"
+engine_package="$engine_consumer/node_modules/data-editor-table"
 extract_package "$engine_package"
 cp "$repo_root/tests/package-consumer/engine-only.ts" "$engine_consumer/engine-only.ts"
 cp "$repo_root/tests/package-consumer/tsconfig.engine.json" "$engine_consumer/tsconfig.json"
 
 react_consumer="$temp_root/react-consumer"
-package_root="$react_consumer/node_modules/react-data-grid-ext"
+package_root="$react_consumer/node_modules/data-editor-table"
 extract_package "$package_root"
 cp "$repo_root/tests/package-consumer/index.ts" "$react_consumer/index.ts"
 cp "$repo_root/tests/package-consumer/tsconfig.json" "$react_consumer/tsconfig.json"
@@ -81,6 +81,8 @@ test -f "$package_root/dist/index.js"
 test -f "$package_root/dist/engine.d.ts"
 test -f "$package_root/dist/engine.js"
 test -f "$package_root/dist/styles.css"
+test -f "$package_root/dist/structure.css"
+test -f "$package_root/dist/theme.css"
 test -f "$package_root/dist/styles-entry.d.ts"
 
 node "$repo_root/scripts/verify-headless-bundle.mjs" "$engine_package"

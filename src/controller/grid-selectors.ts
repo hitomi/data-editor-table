@@ -1,5 +1,5 @@
 import type { GridControllerSnapshot, GridPoint, GridRange, GridRowKey } from '../model/grid-model.js'
-import { selectedCells, selectedRowKeys } from './selection-model.js'
+import { isGridCellSelected, selectedCells, selectedRowKeys } from './selection-model.js'
 import { invokeGridCallback } from '../data/safe-callback.js'
 import { encodeCellIdentity } from '../model/cell-identity.js'
 import {
@@ -16,7 +16,7 @@ export function selectGridCell<Row, RowKey extends GridRowKey>(snapshot: GridCon
   const dirty = snapshot.draft.dirtyCells.find((candidate) => samePoint(candidate, point)) ?? null
   const resolved = resolveGridCellValue(row, column)
   const displayed = displayGridCellValue(resolved)
-  const selected = selectedCells(snapshot.interaction.ranges, snapshot.view.visibleRowKeys, snapshot.columns.map((candidate) => candidate.key)).some((candidate) => samePoint(candidate, point))
+  const selected = isGridCellSelected(snapshot, point.rowKey, point.columnKey)
   return Object.freeze({
     row,
     column,

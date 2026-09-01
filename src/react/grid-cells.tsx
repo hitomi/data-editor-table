@@ -8,6 +8,7 @@ import {
   selectGridRowDeleteAvailability,
   type GridRowDeleteAvailability,
 } from '../controller/grid-selectors.js'
+import { isGridCellSelected } from '../controller/selection-model.js'
 import { invokeGridCallback } from '../data/safe-callback.js'
 import type {
   GridCompiledColumn,
@@ -522,7 +523,7 @@ function createCellSelector<Row, RowKey extends GridRowKey>(point: GridPoint<Row
 function selectAllCellsSelected<Row, RowKey extends GridRowKey>(snapshot: GridControllerSnapshot<Row, RowKey>) {
   return snapshot.columns.length > 0
     && snapshot.view.visibleRowKeys.length > 0
-    && snapshot.view.visibleRowKeys.every((rowKey) => snapshot.columns.every((column) => isCellSelected(snapshot, rowKey, column.key)))
+    && snapshot.view.visibleRowKeys.every((rowKey) => snapshot.columns.every((column) => isGridCellSelected(snapshot, rowKey, column.key)))
 }
 
 function selectColumnHeader<Row, RowKey extends GridRowKey>(snapshot: GridControllerSnapshot<Row, RowKey>, columnKey: string) {
@@ -531,7 +532,7 @@ function selectColumnHeader<Row, RowKey extends GridRowKey>(snapshot: GridContro
     dirty: snapshot.draft.dirtyCells.some((entry) => entry.columnKey === columnKey),
     filterCount: snapshot.view.columnFilters.filter((entry) => entry.columnKey === columnKey).length,
     selected: snapshot.view.visibleRowKeys.length > 0
-      && snapshot.view.visibleRowKeys.every((rowKey) => isCellSelected(snapshot, rowKey, columnKey)),
+      && snapshot.view.visibleRowKeys.every((rowKey) => isGridCellSelected(snapshot, rowKey, columnKey)),
     sortDirection: sort?.direction,
   } as const
 }
@@ -544,7 +545,7 @@ function selectRowIndicator<Row, RowKey extends GridRowKey>(snapshot: GridContro
     dirty: snapshot.draft.insertedRowKeys.some((key) => gridRowKeysEqual(key, rowKey))
       || snapshot.draft.dirtyCells.some((entry) => gridRowKeysEqual(entry.rowKey, rowKey)),
     selected: snapshot.columns.length > 0
-      && snapshot.columns.every((column) => isCellSelected(snapshot, rowKey, column.key)),
+      && snapshot.columns.every((column) => isGridCellSelected(snapshot, rowKey, column.key)),
   } as const
 }
 
@@ -557,27 +558,6 @@ function selectDraftRow<Row, RowKey extends GridRowKey>(
     if (resolved.ok && gridRowKeysEqual(resolved.value, rowKey)) return row
   }
   return missingDraftRow
-}
-
-function isCellSelected<Row, RowKey extends GridRowKey>(
-  snapshot: GridControllerSnapshot<Row, RowKey>,
-  rowKey: RowKey,
-  columnKey: string,
-) {
-  const rowIndex = snapshot.view.visibleRowKeys.findIndex((key) => gridRowKeysEqual(key, rowKey))
-  const columnIndex = snapshot.columns.findIndex((column) => column.key === columnKey)
-  if (rowIndex < 0 || columnIndex < 0) return false
-  return snapshot.interaction.ranges.some((range) => {
-    const anchorRow = snapshot.view.visibleRowKeys.findIndex((key) => gridRowKeysEqual(key, range.anchor.rowKey))
-    const focusRow = snapshot.view.visibleRowKeys.findIndex((key) => gridRowKeysEqual(key, range.focus.rowKey))
-    const anchorColumn = snapshot.columns.findIndex((column) => column.key === range.anchor.columnKey)
-    const focusColumn = snapshot.columns.findIndex((column) => column.key === range.focus.columnKey)
-    if (anchorRow < 0 || focusRow < 0 || anchorColumn < 0 || focusColumn < 0) return false
-    return rowIndex >= Math.min(anchorRow, focusRow)
-      && rowIndex <= Math.max(anchorRow, focusRow)
-      && columnIndex >= Math.min(anchorColumn, focusColumn)
-      && columnIndex <= Math.max(anchorColumn, focusColumn)
-  })
 }
 
 function equalColumnHeader(

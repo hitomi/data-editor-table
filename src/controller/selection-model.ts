@@ -1,4 +1,5 @@
 import type {
+  GridControllerSnapshot,
   GridHitTarget,
   GridInteractionState,
   GridPoint,
@@ -57,6 +58,78 @@ export function selectedCells<RowKey extends GridRowKey>(
     }
   }
   return Object.freeze([...cells.values()])
+}
+
+type GridSelectionBounds = Readonly<{
+  firstRow: number
+  lastRow: number
+  firstColumn: number
+  lastColumn: number
+}>
+
+type GridSelectionIndex = Readonly<{
+  columns: readonly Readonly<{ key: string }>[]
+  visibleRowKeys: readonly GridRowKey[]
+  columnIndexes: ReadonlyMap<string, number>
+  rowIndexes: ReadonlyMap<GridRowKey, number>
+  ranges: readonly GridSelectionBounds[]
+}>
+
+const selectionIndexes = new WeakMap<object, GridSelectionIndex>()
+
+/** Checks range membership without materializing every selected cell. */
+export function isGridCellSelected<Row, RowKey extends GridRowKey>(
+  snapshot: GridControllerSnapshot<Row, RowKey>,
+  rowKey: RowKey,
+  columnKey: string,
+) {
+  const index = selectionIndex(snapshot)
+  const row = index.rowIndexes.get(rowKey)
+  const column = index.columnIndexes.get(columnKey)
+  if (row === undefined || column === undefined) return false
+  return index.ranges.some((range) => row >= range.firstRow
+    && row <= range.lastRow
+    && column >= range.firstColumn
+    && column <= range.lastColumn)
+}
+
+function selectionIndex<Row, RowKey extends GridRowKey>(
+  snapshot: GridControllerSnapshot<Row, RowKey>,
+): GridSelectionIndex {
+  const cached = selectionIndexes.get(snapshot.interaction)
+  if (cached
+    && cached.columns === snapshot.columns
+    && cached.visibleRowKeys === snapshot.view.visibleRowKeys) return cached
+
+  const rowIndexes = new Map<GridRowKey, number>()
+  snapshot.view.visibleRowKeys.forEach((rowKey, index) => { rowIndexes.set(rowKey, index) })
+  const columnIndexes = new Map<string, number>()
+  snapshot.columns.forEach((column, index) => { columnIndexes.set(column.key, index) })
+  const ranges = snapshot.interaction.ranges.flatMap((range) => {
+    const anchorRow = rowIndexes.get(range.anchor.rowKey)
+    const focusRow = rowIndexes.get(range.focus.rowKey)
+    const anchorColumn = columnIndexes.get(range.anchor.columnKey)
+    const focusColumn = columnIndexes.get(range.focus.columnKey)
+    if (anchorRow === undefined
+      || focusRow === undefined
+      || anchorColumn === undefined
+      || focusColumn === undefined) return []
+    return [Object.freeze({
+      firstRow: Math.min(anchorRow, focusRow),
+      lastRow: Math.max(anchorRow, focusRow),
+      firstColumn: Math.min(anchorColumn, focusColumn),
+      lastColumn: Math.max(anchorColumn, focusColumn),
+    })]
+  })
+  const next = Object.freeze({
+    columns: snapshot.columns,
+    visibleRowKeys: snapshot.view.visibleRowKeys,
+    columnIndexes,
+    rowIndexes,
+    ranges: Object.freeze(ranges),
+  })
+  selectionIndexes.set(snapshot.interaction, next)
+  return next
 }
 
 export function selectedRowKeys<RowKey extends GridRowKey>(

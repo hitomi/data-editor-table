@@ -822,21 +822,21 @@ pointerup
 | M5 | **Test candidate ready** | turnkey UI、image type、surface override、messages/theme 和 demo 已具备；等待用户实际验收，不标记为用户已接受 |
 | M6 | **尚未开始** | 未新增永久 v2 unit/integration/E2E 回归套件；按用户要求在功能确认后再固化 |
 
-M1–M4 的“技术完成”不反向把 M0 标成 `Approved`；包名、breaking major、license 和最终 legacy 删除时点等发布决策仍按 M0/M7 的待办追踪。
+M1–M4 的“技术完成”不反向把 M0 标成 `Approved`；breaking major 等其余发布决策仍按 M0/M7 的待办追踪。包名与 license 已于 2026-09-01 确认。
 
 本次候选的实际架构边界：
 
 - `src/` 是 native v2 唯一生产源码；`controller/`、`data/`、`model/` 和 `layout/` 不依赖 React；`react/` 以及 cell type 的 view projection 负责订阅 snapshot、派发 intent、registered views 和 DOM/portal 适配。
 - 所有 cell type 均由同一 typed registry 注册；string、number、ISO-date、image 与应用自定义类型走同一 behavior/view projection，内核没有标准类型特例。
 - 主 Grid 使用固定行高、自有列几何和 SVG selection layer；首发没有 virtualizer，也不承诺任意超大客户端数据集。
-- `react-data-grid-ext/engine` 是 React-free runtime 和 declaration subpath；包根导出 turnkey React API，`styles.css` 提供浏览器样式入口。
-- `src-legacy/`、`demo-legacy/`、`tests-legacy/` 及 legacy 配置只保留旧 `react-data-grid` 实现供比较。import boundary 禁止新 `src/` 依赖 legacy 或 `react-data-grid`；legacy 不进入 native v2 生产入口。完全删除 legacy 属于 M7，尚未执行。
+- `data-editor-table/engine` 是 React-free runtime 和 declaration subpath；包根导出 turnkey React API，`styles.css` 提供浏览器样式入口。
+- legacy 源码、demo、测试和专用配置已经删除；`src/` 是仓库中唯一的 Grid 实现。import boundary 继续禁止 native 源码重新引入 `react-data-grid`。
 
 2026-08-31 的验证证据：
 
 - 独立 core 审计使用仓库外一次性脚本直接驱动最终构建的 controller，覆盖 receipt/request-base/第三 opaque token、same-version 不同行、四类保存失败、提交前后累计 history、结构 undo/redo、remote rebase、session mutation gates、stale effects、invalid typed values、fill/paste atomicity、mutation limits、clone/key guards 和全部 pointer hit target。最终反例矩阵通过；脚本已删除，没有转成永久测试。
 - 最后一个 chooser one-shot/edit-session 修复前的最新稳定快照完成了 Chromium 13/13 组探索式 UI audit，覆盖 1440、1920、2560、3840 四种桌面宽度；工作流包括统一选择与 modifier/drag、显式排序、menu/filter portal 与无 layout shift、clipboard/multi-clear、四类 fill、pointer capture、text/IME/Tab/Escape、filter all/any、行操作/history、三种保存模式及失败/冲突恢复、image 和七种 collection states。终端 fill handle 的 scroll overflow 为 0、相对 selection stroke 的中心偏差为 0；dirty marker 与上/右边均为 5px 且不占布局，header action 覆盖完整高度。
-- chooser 修复后的最终源码在 Chromium 1440 做了受影响面的定向 3/3 回归，而没有重跑其余 12 组或全部宽度：官方 demo 36/36 图像行逐一验证 double-click + 显式 Cancel，并验证 Enter、F2 和实际 PNG 上传；同一 image edit session 因远端改名退出 filter 后 detached remount 不会二次打开 chooser；远端删除 active edit row 时保留 draft + Cancel，远端修改其他字段使 active edit row 退出 filter 后保留 typed editor + Apply edit，清除 filter 后提交值可见。共观察到 40 次 chooser 事件，每个新会话严格 1 次、remount 0 次；最终 `console warning/error=[]`、`pageerror=[]`。
+- chooser 修复后的最终源码在 Chromium 1440 做了受影响面的定向 3/3 回归，而没有重跑其余 12 组或全部宽度：官方 demo 36/36 图像行逐一验证 active cell 再次 click + 显式 Cancel，并验证 Enter、F2 和实际 PNG 上传；同一 image edit session 因远端改名退出 filter 后 detached remount 不会二次打开 chooser；远端删除 active edit row 时保留 draft + Cancel，远端修改其他字段使 active edit row 退出 filter 后保留 typed editor + Apply edit，清除 filter 后提交值可见。共观察到 40 次 chooser 事件，每个新会话严格 1 次、remount 0 次；最终 `console warning/error=[]`、`pageerror=[]`。
 - `pnpm check`、`pnpm lint`、`pnpm build` 和 `pnpm check:package` 已通过。package check 在仓库外打包并验证 isolated engine/runtime/declaration graph、root TypeScript consumer 和 Chromium browser consumer；`/engine` 的最终图保持 React-free。
 - 当前没有 Safari、Firefox 或真实触屏设备的验证证据；最终 chooser patch 后也没有重复全宽度和其余 12 组。这些是已知未覆盖项，不用 Chromium 结果代替，也不在用户验收前推断兼容性。
 
@@ -931,9 +931,9 @@ M1–M4 的“技术完成”不反向把 M0 标成 `Approved`；包名、breaki
 
 ### M7 — 切换与清理
 
-- [ ] 删除 `src-legacy/` 和所有 legacy build/demo 配置；
-- [ ] 删除 `react-data-grid` peer/dev dependency、CSS import、外部化配置和 `.rdg-*` 测试；
-- [ ] 确认主 build/package 只包含新 `src/`；
+- [x] 删除 `src-legacy/` 和所有 legacy build/demo 配置；
+- [x] 删除 `react-data-grid` dev dependency、CSS import、外部化配置和 `.rdg-*` 测试；
+- [x] 确认主 build/package 只包含新 `src/`；
 - [ ] 全量 unit/type/lint/build/package/Playwright；
 - [ ] 最终 diff review，删除实验、兼容层和 dead code。
 
@@ -982,7 +982,7 @@ M1–M4 的“技术完成”不反向把 M0 标成 `Approved`；包名、breaki
 
 | ID | 状态 | 决策 | 当前结论/建议 | 原因 |
 | --- | --- | --- | --- | --- |
-| D-01 | 待评审 | 包名 | 发布前更换不再包含 `react-data-grid` 的名称 | 移除依赖后当前包名会误导消费者 |
+| D-01 | 已确认 | 包名 | 使用 `data-editor-table` | 名称描述产品用途且不再暗示依赖 `react-data-grid` |
 | D-02 | 待评审 | 主组件名 | 使用 `DataGrid`，数据源驱动是默认而不是特殊版本 | 强调这是开箱即用主路径 |
 | D-03 | 待评审 | 兼容策略 | 作为 breaking major，不建设 RDG props compatibility layer | 兼容层会重新引入本次要删除的边界 |
 | D-04 | 待评审 | v1 core 复用 | v2 禁止直接 import；只允许按新契约移植纯算法 | 保证是重新设计，不是隐性拆依赖 |
@@ -997,9 +997,12 @@ M1–M4 的“技术完成”不反向把 M0 标成 `Approved`；包名、breaki
 | D-13 | 已确认 | 状态所有权 | 语义状态由 React-free controller/state machine 持有，React 只负责 UI adapter | 避免 hooks 形成多套互相补丁的状态机 |
 | D-14 | 已确认 | 测试顺序 | 先实现、探索验证并确认功能，再为确认后的契约编写永久测试 | 避免大量测试固化错误交互并产生无效返工 |
 | D-15 | 已确认 | 源码迁移 | 开发开始先把旧 `src/` 改名为 `src-legacy/`，新实现直接写入新的 `src/` | 使用最终路径开发，避免 `src/v2` 二次搬迁和隐式混合 |
+| D-16 | 已确认 | License | 使用 MIT License | 允许公开发布、使用、修改和分发，同时保留标准免责声明 |
+| D-17 | 已确认 | i18n | Grid shell 与所有内置类型都提供 typed partial messages override | 默认英文保持零配置使用；宿主可接入任意 i18n/pluralization 方案且无需全局状态 |
 
 ## 20. 变更记录
 
+- 2026-09-01：确认包名 `data-editor-table` 与 MIT License；为 Grid shell 和全部内置 cell type 明确 typed i18n override 边界。
 - 2026-08-31：记录 M1–M4 技术完成、M5 test candidate ready 且等待用户验收；明确 M6 永久 v2 回归测试尚未开始，并补充 native/legacy 架构边界、独立 core、Chromium Playwright、packed consumer 证据和 Safari/Firefox/真实触屏未覆盖项。
 - 2026-08-30：创建提案，记录 v2 产品范围、架构、迁移阶段、验证矩阵与待评审决策。
 - 2026-08-30：根据产品定位修正移除首发超大规模/virtualizer 目标；确认 data-source 协作规模模式、全类型显式注册和 React-free controller。

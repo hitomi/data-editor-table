@@ -270,6 +270,7 @@ function eraseBehavior<Row>(
     }),
     ...(behavior.edit === undefined ? {} : {
       edit: Object.freeze({
+        ...(behavior.edit.exit === undefined ? {} : { exit: behavior.edit.exit }),
         begin: (value: unknown, context: GridRuntimeValueContext<Row>) => behavior.edit!.begin(value, context),
         commit: (draft: unknown, context: GridRuntimeValueContext<Row>) => behavior.edit!.commit(draft, context),
       }),
@@ -300,9 +301,12 @@ function eraseBehavior<Row>(
           label: operator.label,
           requiresValue: operator.requiresValue,
           ...(operator.input === undefined ? {} : {
-            inputMode: operator.input.kind === 'date'
-              ? 'date' as const
-              : operator.input.inputMode ?? operator.input.kind,
+            input: Object.freeze(operator.input.kind === 'select'
+              ? {
+                  kind: 'select' as const,
+                  options: Object.freeze(operator.input.options.map((option) => Object.freeze({ ...option }))),
+                }
+              : { ...operator.input }),
           }),
           ...(operator.validate === undefined ? {} : {
             validate: (value: unknown) => {

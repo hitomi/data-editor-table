@@ -1,7 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { RouterProvider } from '@tanstack/react-router'
-import 'react-data-grid-ext/styles.css'
+import 'data-editor-table/styles.css'
 import './styles.css'
 import { router } from './router'
 

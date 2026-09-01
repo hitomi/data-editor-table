@@ -44,6 +44,106 @@ const GridPortalThemeContext = createContext<GridPortalThemeValue>({
   style: {},
 })
 
+type GridCellEditorPopoverPosition = Readonly<{ left: number; top: number }>
+
+/** Body-level, theme-aware popover for registered cell editors that need room beyond one row. */
+export function GridCellEditorPopover({
+  anchor,
+  ariaLabel,
+  children,
+  onCancel,
+}: {
+  anchor: RefObject<HTMLElement | null>
+  ariaLabel: string
+  children: ReactNode
+  onCancel: () => void
+}) {
+  const portal = useContext(GridPortalThemeContext)
+  const content = useRef<HTMLDivElement>(null)
+  const cancel = useRef(onCancel)
+  cancel.current = onCancel
+  const [position, setPosition] = useState<GridCellEditorPopoverPosition | null>(null)
+  const container = typeof document === 'undefined' ? null : document.body
+
+  useLayoutEffect(() => {
+    const anchorNode = anchor.current
+    const contentNode = content.current
+    if (!anchorNode || !contentNode) return
+    const update = () => {
+      const anchorRect = anchorNode.getBoundingClientRect()
+      const contentRect = contentNode.getBoundingClientRect()
+      const inset = 8
+      const gap = 5
+      const maxLeft = Math.max(inset, window.innerWidth - contentRect.width - inset)
+      const left = Math.min(maxLeft, Math.max(inset, anchorRect.left))
+      const below = anchorRect.bottom + gap
+      const above = anchorRect.top - contentRect.height - gap
+      const requestedTop = below + contentRect.height <= window.innerHeight - inset || above < inset ? below : above
+      const maxTop = Math.max(inset, window.innerHeight - contentRect.height - inset)
+      const top = Math.min(maxTop, Math.max(inset, requestedTop))
+      setPosition((current) => current?.left === left && current.top === top ? current : { left, top })
+    }
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(anchorNode)
+    observer.observe(contentNode)
+    window.addEventListener('resize', update)
+    document.addEventListener('scroll', update, true)
+    queueMicrotask(() => queueMicrotask(() => contentNode.querySelector<HTMLElement>('[role="option"][tabindex="0"], input:not(:disabled), button:not(:disabled), select:not(:disabled)')?.focus()))
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', update)
+      document.removeEventListener('scroll', update, true)
+    }
+  }, [anchor])
+
+  useLayoutEffect(() => {
+    const isInside = (target: EventTarget | null) => target instanceof Node
+      && Boolean(anchor.current?.contains(target) || content.current?.contains(target))
+    const pointerDown = (event: globalThis.PointerEvent) => {
+      if (isInside(event.target)) return
+      event.preventDefault()
+      event.stopPropagation()
+    }
+    const click = (event: globalThis.MouseEvent) => {
+      if (isInside(event.target)) return
+      event.preventDefault()
+      event.stopPropagation()
+    }
+    const keyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      cancel.current()
+    }
+    document.addEventListener('pointerdown', pointerDown, true)
+    document.addEventListener('click', click, true)
+    document.addEventListener('keydown', keyDown, true)
+    return () => {
+      document.removeEventListener('pointerdown', pointerDown, true)
+      document.removeEventListener('click', click, true)
+      document.removeEventListener('keydown', keyDown, true)
+    }
+  }, [anchor])
+
+  if (!container) return null
+  return createPortal(<div
+    aria-label={ariaLabel}
+    className="business-grid-portal business-grid-cell-editor-popover"
+    data-grid-pointer-owner={portal.ownerId ?? undefined}
+    ref={content}
+    role="dialog"
+    style={{
+      ...portal.style,
+      left: position?.left ?? 0,
+      top: position?.top ?? 0,
+      visibility: position ? 'visible' : 'hidden',
+    }}
+    onKeyDown={(event) => event.stopPropagation()}
+    onPointerDown={(event) => event.stopPropagation()}
+  >{children}</div>, container)
+}
+
 /** Keeps body-level portals on the same resolved theme as their grid root. */
 export function GridPortalThemeBridge({
   children,
@@ -320,7 +420,6 @@ export function GridSelectionLayer<RowKey extends GridRowKey>({
   visibleRowKeys,
   fillEnabled,
 }: GridSelectionLayerProps<RowKey>) {
-  const clipId = useId()
   const columnKeys = layout.columns.map((column) => column.key)
   const ranges = interaction.ranges.flatMap((range, index) => {
     const rect = rangeRect(range, visibleRowKeys, columnKeys, layout)
@@ -333,18 +432,9 @@ export function GridSelectionLayer<RowKey extends GridRowKey>({
     ? rangeRect(interaction.fillPreview, visibleRowKeys, columnKeys, layout)
     : null
   const activeStroke = active ? strokeCenterRect(active.rect, GRID_SELECTION_STROKE_WIDTH) : null
-  const handleCenter = activeStroke ? {
-    x: activeStroke.x + activeStroke.width,
-    y: activeStroke.y + activeStroke.height,
-  } : null
   const showHandle = fillEnabled
     && interaction.ranges.length === 1
     && activeStroke !== null
-    && handleCenter !== null
-    && handleCenter.x >= layout.rowIndicatorWidth
-    && handleCenter.x <= layout.viewportWidth
-    && handleCenter.y >= layout.headerHeight
-    && handleCenter.y <= layout.viewportHeight
 
   if (ranges.length === 0 && preview === null) return null
 
@@ -352,41 +442,29 @@ export function GridSelectionLayer<RowKey extends GridRowKey>({
     aria-hidden="true"
     className="business-grid__selection-layer"
     data-grid-selection-layer="true"
-    width={layout.viewportWidth}
-    height={layout.viewportHeight}
-    viewBox={`0 0 ${layout.viewportWidth} ${layout.viewportHeight}`}
+    width={layout.contentWidth}
+    height={layout.contentHeight}
+    viewBox={`0 0 ${layout.contentWidth} ${layout.contentHeight}`}
   >
-    <defs>
-      <clipPath id={clipId}>
-        <rect
-          x={layout.rowIndicatorWidth}
-          y={layout.headerHeight}
-          width={Math.max(0, layout.viewportWidth - layout.rowIndicatorWidth)}
-          height={Math.max(0, layout.viewportHeight - layout.headerHeight)}
-        />
-      </clipPath>
-    </defs>
-    <g clipPath={`url(#${clipId})`}>
-      {ranges.map(({ index, rect }) => <rect
-        className="business-grid__selection-fill"
-        data-grid-selection-range={index}
-        key={index}
-        x={rect.x}
-        y={rect.y}
-        width={rect.width}
-        height={rect.height}
-      />)}
-      {activeStroke ? <rect
-        className="business-grid__selection-border"
-        data-grid-selection-border="true"
-        strokeWidth={GRID_SELECTION_STROKE_WIDTH}
-        x={activeStroke.x}
-        y={activeStroke.y}
-        width={activeStroke.width}
-        height={activeStroke.height}
-      /> : null}
-      {preview ? <rect className="business-grid__fill-preview" x={preview.x} y={preview.y} width={preview.width} height={preview.height} /> : null}
-    </g>
+    {ranges.map(({ index, rect }) => <rect
+      className="business-grid__selection-fill"
+      data-grid-selection-range={index}
+      key={index}
+      x={rect.x}
+      y={rect.y}
+      width={rect.width}
+      height={rect.height}
+    />)}
+    {activeStroke ? <rect
+      className="business-grid__selection-border"
+      data-grid-selection-border="true"
+      strokeWidth={GRID_SELECTION_STROKE_WIDTH}
+      x={activeStroke.x}
+      y={activeStroke.y}
+      width={activeStroke.width}
+      height={activeStroke.height}
+    /> : null}
+    {preview ? <rect className="business-grid__fill-preview" x={preview.x} y={preview.y} width={preview.width} height={preview.height} /> : null}
     {showHandle && activeStroke ? <g data-grid-fill-handle="true">
       <rect
         className="business-grid__fill-hit"
@@ -670,8 +748,8 @@ function editorFrameStyle(
     '--grid-editor-boundary-width': `${GRID_SELECTION_STROKE_WIDTH}px`,
     '--grid-editor-error-inline-offset': `${errorPlacement.inlineOffset}px`,
     '--grid-editor-error-max-inline-size': `${errorPlacement.maxInlineSize}px`,
-    left: column.offset - layout.scrollLeft,
-    top: rowIndex * layout.rowHeight - layout.scrollTop,
+    left: column.offset,
+    top: rowIndex * layout.rowHeight,
     width: column.width,
     height: layout.rowHeight,
   } satisfies CSSProperties & Record<
@@ -753,7 +831,7 @@ function InvalidEditorCancel({
 function EditorFocusRegistration({ dom }: { dom: GridDomEffectAdapter }) {
   const marker = useRef<HTMLSpanElement>(null)
   useLayoutEffect(() => {
-    const editor = marker.current?.parentElement?.querySelector<HTMLElement>('input, textarea, select, [contenteditable="true"]') ?? null
+    const editor = marker.current?.parentElement?.querySelector<HTMLElement>('input, textarea, select, button, [contenteditable="true"]') ?? null
     dom.registerEditor(editor)
     if (editor) queueMicrotask(() => { dom.focusEditor(true) })
     return () => { dom.registerEditor(null) }
@@ -881,7 +959,21 @@ export function GridDialog({
   const container = portalContainer ?? (typeof document === 'undefined' ? null : document.body)
   useLayoutEffect(() => {
     if (container === null) return
-    queueMicrotask(() => dialog.current?.querySelector<HTMLElement>('input, textarea, select, button, [tabindex]:not([tabindex="-1"])')?.focus({ preventScroll: true }))
+    const previouslyFocused = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null
+    let active = true
+    queueMicrotask(() => {
+      if (!active) return
+      const node = dialog.current
+      const target = node && gridDialogTabStops(node)[0]
+      const focusTarget = target ?? node
+      focusTarget?.focus({ preventScroll: true })
+    })
+    return () => {
+      active = false
+      if (previouslyFocused?.isConnected) previouslyFocused.focus({ preventScroll: true })
+    }
   }, [container])
   if (container === null) return null
   return createPortal(<div
@@ -896,8 +988,41 @@ export function GridDialog({
     className="business-grid-dialog"
     ref={dialog}
     role="dialog"
-    onKeyDown={(event) => event.stopPropagation()}
+    tabIndex={-1}
+    onKeyDown={(event) => {
+      event.stopPropagation()
+      if (event.key !== 'Tab') return
+      const stops = gridDialogTabStops(event.currentTarget)
+      if (stops.length === 0) {
+        event.preventDefault()
+        event.currentTarget.focus({ preventScroll: true })
+        return
+      }
+      const first = stops[0]!
+      const last = stops.at(-1)!
+      const focused = document.activeElement
+      if (event.shiftKey && (focused === first || !event.currentTarget.contains(focused))) {
+        event.preventDefault()
+        last.focus({ preventScroll: true })
+      } else if (!event.shiftKey && focused === last) {
+        event.preventDefault()
+        first.focus({ preventScroll: true })
+      }
+    }}
   >{children}</section></div>, container)
+}
+
+function gridDialogTabStops(root: HTMLElement) {
+  return [...root.querySelectorAll<HTMLElement>([
+    'a[href]',
+    'button:not(:disabled)',
+    'input:not(:disabled)',
+    'select:not(:disabled)',
+    'textarea:not(:disabled)',
+    '[tabindex]:not([tabindex="-1"])',
+  ].join(','))].filter((element) => !element.hidden
+    && element.getAttribute('aria-hidden') !== 'true'
+    && element.getClientRects().length > 0)
 }
 
 function readPortalTheme(root: HTMLElement | null): GridPortalThemeStyle {
@@ -946,8 +1071,8 @@ function rangeRect<RowKey extends GridRowKey>(
   const lastColumn = layout.columns[maxColumn]
   if (!firstColumn || !lastColumn) return null
   return {
-    x: layout.rowIndicatorWidth + firstColumn.offset - layout.scrollLeft,
-    y: layout.headerHeight + minRow * layout.rowHeight - layout.scrollTop,
+    x: layout.rowIndicatorWidth + firstColumn.offset,
+    y: layout.headerHeight + minRow * layout.rowHeight,
     width: lastColumn.offset + lastColumn.width - firstColumn.offset,
     height: (maxRow - minRow + 1) * layout.rowHeight,
   }

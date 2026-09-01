@@ -21,7 +21,7 @@ import {
   type GridImageColumnOptions,
   type GridReadyDataSourceSnapshot,
   type GridStringColumnOptions,
-} from 'react-data-grid-ext'
+} from 'data-editor-table'
 
 type ImportRow = {
   id: string

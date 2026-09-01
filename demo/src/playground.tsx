@@ -2,11 +2,14 @@ import { useRef, useSyncExternalStore } from 'react'
 import {
   DataGrid,
   GridCommitError,
+  createBooleanCellType,
   createCellTypeRegistry,
   createDateCellType,
   createDataGridBinding,
   createImageCellType,
   createNumberCellType,
+  createMultiSelectCellType,
+  createSingleSelectCellType,
   createStringCellType,
   useGridSelector,
   type GridCellTypeSchemaOf,
@@ -15,7 +18,7 @@ import {
   type GridDataSourceSnapshot,
   type GridPersistenceMode,
   type GridReadyDataSourceSnapshot,
-} from 'react-data-grid-ext'
+} from 'data-editor-table'
 
 type DemoRow = {
   id: string
@@ -23,15 +26,18 @@ type DemoRow = {
   name: string
   quantity: number
   deliveryDate: string
+  status: 'draft' | 'ready' | 'archived'
+  tags: readonly ('featured' | 'seasonal' | 'wholesale' | 'legacy')[]
+  active: boolean
 }
 
 const initialRows: readonly DemoRow[] = [
-  { id: 'row-1', image: null, name: 'Amber poster', quantity: 12, deliveryDate: '2026-09-02' },
-  { id: 'row-2', image: null, name: 'Blue card', quantity: 14, deliveryDate: '2026-09-05' },
-  { id: 'row-3', image: null, name: 'Cedar label', quantity: 16, deliveryDate: '2026-09-08' },
-  { id: 'row-4', image: null, name: 'Dune notebook', quantity: 18, deliveryDate: '2026-09-12' },
-  { id: 'row-5', image: null, name: 'Ember envelope', quantity: 20, deliveryDate: '2026-09-16' },
-  { id: 'row-6', image: null, name: 'Fern calendar', quantity: 22, deliveryDate: '2026-09-21' },
+  { id: 'row-1', image: null, name: 'Amber poster', quantity: 12, deliveryDate: '2026-09-02', status: 'ready', tags: ['featured', 'seasonal', 'wholesale'], active: true },
+  { id: 'row-2', image: null, name: 'Blue card', quantity: 14, deliveryDate: '2026-09-05', status: 'draft', tags: ['wholesale'], active: false },
+  { id: 'row-3', image: null, name: 'Cedar label', quantity: 16, deliveryDate: '2026-09-08', status: 'archived', tags: ['legacy'], active: false },
+  { id: 'row-4', image: null, name: 'Dune notebook', quantity: 18, deliveryDate: '2026-09-12', status: 'ready', tags: ['featured'], active: true },
+  { id: 'row-5', image: null, name: 'Ember envelope', quantity: 20, deliveryDate: '2026-09-16', status: 'draft', tags: [], active: true },
+  { id: 'row-6', image: null, name: 'Fern calendar', quantity: 22, deliveryDate: '2026-09-21', status: 'ready', tags: ['seasonal'], active: true },
   ...[
     'Granite folio', 'Harbor postcard', 'Indigo planner', 'Juniper tag', 'Kite memo pad',
     'Linen folder', 'Moss invitation', 'Navy bookmark', 'Ochre sketchbook', 'Pine notecard',
@@ -45,6 +51,9 @@ const initialRows: readonly DemoRow[] = [
     name,
     quantity: 24 + index * 2,
     deliveryDate: `2026-10-${String(index % 28 + 1).padStart(2, '0')}`,
+    status: index % 3 === 0 ? 'draft' : 'ready',
+    tags: index % 4 === 0 ? ['featured', 'wholesale'] : index % 3 === 0 ? ['seasonal'] : [],
+    active: index % 5 !== 0,
   })),
 ]
 
@@ -76,6 +85,22 @@ const registry = createCellTypeRegistry<DemoRow>()
   .register('string', createStringCellType())
   .register('number', createNumberCellType())
   .register('date', createDateCellType({ storage: 'iso-date', emptyValue: '' }))
+  .register('status', createSingleSelectCellType<DemoRow['status']>({
+    options: [
+      { value: 'draft', label: 'Draft' },
+      { value: 'ready', label: 'Ready' },
+      { value: 'archived', label: 'Archived', disabled: true },
+    ],
+  }))
+  .register('tags', createMultiSelectCellType<DemoRow['tags'][number]>({
+    options: [
+      { value: 'featured', label: 'Featured' },
+      { value: 'seasonal', label: 'Seasonal' },
+      { value: 'wholesale', label: 'Wholesale' },
+      { value: 'legacy', label: 'Legacy', disabled: true },
+    ],
+  }))
+  .register('boolean', createBooleanCellType({ trueLabel: 'Active', falseLabel: 'Inactive' }))
 
 type DemoSchema = GridCellTypeSchemaOf<typeof registry>
 
@@ -149,6 +174,39 @@ const dataSource: GridDataSource<DemoRow, string, DemoSchema> = {
       getValue: (row) => row.deliveryDate,
       setValue: (row, deliveryDate) => ({ ...row, deliveryDate }),
     },
+    {
+      key: 'status',
+      label: 'Status',
+      type: 'status',
+      layout: { basis: 150, min: 120, flex: 1 },
+      sortable: true,
+      filterable: true,
+      bulkEditable: true,
+      getValue: (row) => row.status,
+      setValue: (row, status) => ({ ...row, status }),
+    },
+    {
+      key: 'tags',
+      label: 'Tags',
+      type: 'tags',
+      layout: { basis: 250, min: 180, flex: 2 },
+      sortable: true,
+      filterable: true,
+      bulkEditable: true,
+      getValue: (row) => row.tags,
+      setValue: (row, tags) => ({ ...row, tags }),
+    },
+    {
+      key: 'active',
+      label: 'Active',
+      type: 'boolean',
+      layout: { basis: 110, min: 90 },
+      sortable: true,
+      filterable: true,
+      bulkEditable: true,
+      getValue: (row) => row.active,
+      setValue: (row, active) => ({ ...row, active }),
+    },
   ],
   getRowKey: (row) => row.id,
   getSnapshot: () => store.snapshot,
@@ -187,11 +245,15 @@ const dataSource: GridDataSource<DemoRow, string, DemoSchema> = {
       name: 'Untitled item',
       quantity: 0,
       deliveryDate: '2026-09-30',
+      status: 'draft',
+      tags: [],
+      active: true,
     }),
     duplicate: (row) => ({
       ...row,
       id: `row-${store.nextId++}`,
       name: `${row.name} copy`,
+      tags: [...row.tags],
     }),
     canDelete: () => true,
   },

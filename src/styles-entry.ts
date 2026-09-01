@@ -1,4 +1,4 @@
-// Type-only companion for the CSS subpath. The package export maps runtime
-// consumers directly to dist/styles.css; declarations intentionally avoid a
-// side-effect CSS import so strict TypeScript consumers need no ambient shim.
+// Type-only companion for the CSS subpaths. Package exports map runtime
+// consumers directly to the built CSS assets; declarations intentionally avoid
+// side-effect CSS imports so strict TypeScript consumers need no ambient shim.
 export {}

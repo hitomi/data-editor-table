@@ -6,7 +6,7 @@ import type {
   GridCellEffectSchema,
 } from './contracts.js'
 
-export type GridCellEditActivation = 'double-click' | 'enter' | 'f2' | 'printable'
+export type GridCellEditActivation = 'active-cell-click' | 'enter' | 'f2' | 'printable' | 'space'
 
 export type GridCellViewPresentation = Readonly<{
   content: 'padded' | 'edge-to-edge'

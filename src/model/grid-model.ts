@@ -322,6 +322,7 @@ export type GridRuntimeCellBehavior<Row> = Readonly<{
     ) => GridValueResult<unknown>
   }>
   edit?: Readonly<{
+    exit?: 'auto-commit' | 'explicit'
     begin: (value: unknown, context: GridRuntimeValueContext<Row>) => unknown
     commit: (
       draft: unknown,
@@ -351,7 +352,15 @@ export type GridRuntimeCellBehavior<Row> = Readonly<{
       id: string
       label: string
       requiresValue: boolean
-      inputMode?: 'text' | 'numeric' | 'decimal' | 'date'
+      input?:
+        | Readonly<{
+            kind: 'text' | 'number' | 'date'
+            inputMode?: 'text' | 'numeric' | 'decimal'
+          }>
+        | Readonly<{
+            kind: 'select'
+            options: readonly Readonly<{ value: string; label: string }>[]
+          }>
       validate?: (value: unknown) => GridValueResult<unknown>
       matches: (
         cellValue: unknown,

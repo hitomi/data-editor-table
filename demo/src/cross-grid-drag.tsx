@@ -33,7 +33,7 @@ import {
   type GridNumberColumnOptions,
   type GridReadyDataSourceSnapshot,
   type GridStringColumnOptions,
-} from 'react-data-grid-ext'
+} from 'data-editor-table'
 
 type GridSide = 'left' | 'right'
 type TransferMode = 'copy' | 'cut'
@@ -71,7 +71,7 @@ type CrossGridStatus = Readonly<{
 }>
 type MoveDirection = 'up' | 'down'
 
-const TRANSFER_MIME = 'application/x-react-data-grid-ext-rows+json'
+const TRANSFER_MIME = 'application/x-data-editor-table-rows+json'
 const TRANSFER_SCHEMA = 'inventory-edit-row/v1'
 const MAX_TRANSFER_ROWS = 50
 const MAX_TRANSFER_BYTES = 2 * 1024 * 1024

@@ -160,7 +160,15 @@ export type GridFilterDraft = Readonly<{
     id: string
     label: string
     requiresValue: boolean
-    inputMode?: 'text' | 'numeric' | 'decimal' | 'date'
+    input?:
+      | Readonly<{
+          kind: 'text' | 'number' | 'date'
+          inputMode?: 'text' | 'numeric' | 'decimal'
+        }>
+      | Readonly<{
+          kind: 'select'
+          options: readonly Readonly<{ value: string; label: string }>[]
+        }>
   }>[]
   conditions: readonly Readonly<{ operator: string; value: string }>[]
   combine: 'all' | 'any'
@@ -177,6 +185,7 @@ export type GridFilterDialogProps = Readonly<{
     anyCondition: string
     condition: (index: number) => string
     value: (column: string, index: number, multiple: boolean) => string
+    chooseValue: string
     removeCondition: (index: number) => string
     clearFilter: string
     addCondition: string
@@ -217,13 +226,22 @@ export function GridFilterDialog({
         <label><span className="business-grid__visually-hidden">{messages.condition(index + 1)}</span><select aria-label={messages.condition(index + 1)} value={condition.operator} onChange={(event) => onOperatorChange(index, event.currentTarget.value)}>
           {draft.operators.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.label}</option>)}
         </select></label>
-        {operator?.requiresValue ? <label><span className="business-grid__visually-hidden">{messages.value(draft.columnLabel, index + 1, draft.conditions.length > 1)}</span><input
-          aria-label={messages.value(draft.columnLabel, index + 1, draft.conditions.length > 1)}
-          inputMode={operator.inputMode === 'date' ? undefined : operator.inputMode}
-          type={operator.inputMode === 'date' ? 'date' : 'text'}
-          value={condition.value}
-          onChange={(event) => onValueChange(index, event.currentTarget.value)}
-        /></label> : <span />}
+        {operator?.requiresValue ? <label><span className="business-grid__visually-hidden">{messages.value(draft.columnLabel, index + 1, draft.conditions.length > 1)}</span>{operator.input?.kind === 'select'
+          ? <select
+              aria-label={messages.value(draft.columnLabel, index + 1, draft.conditions.length > 1)}
+              value={condition.value}
+              onChange={(event) => onValueChange(index, event.currentTarget.value)}
+            >
+              <option disabled value="">{messages.chooseValue}</option>
+              {operator.input.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          : <input
+              aria-label={messages.value(draft.columnLabel, index + 1, draft.conditions.length > 1)}
+              inputMode={operator.input?.kind === 'date' ? undefined : operator.input?.inputMode}
+              type={operator.input?.kind === 'date' ? 'date' : 'text'}
+              value={condition.value}
+              onChange={(event) => onValueChange(index, event.currentTarget.value)}
+            />}</label> : <span />}
         {draft.conditions.length > 1 ? <button aria-label={messages.removeCondition(index + 1)} className="business-grid__icon-button" type="button" onClick={() => onRemoveCondition(index)}>×</button> : null}
       </div>
     })}</div>

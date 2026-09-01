@@ -1,23 +1,42 @@
-# react-data-grid-ext
+# data-editor-table
 
-A turnkey React bulk editor for real business data. It provides range, row,
-column and select-all selection; registered cell rendering and editing; matrix
-copy, paste, clear and fill; bulk editing; filtering and sorting; dirty and
-conflict feedback; row operations; undo/redo; and manual or automatic saving.
+A styled React bulk editor for business data. Applications provide an authoritative data source, explicitly register cell types, and define columns; the grid supplies selection, typed editing, validation, clipboard and fill operations, filtering, sorting, dirty/conflict handling, row operations, history, and persistence.
 
-The native grid owns its fixed-row layout and interactions. It does not depend
-on `react-data-grid`, does not virtualize the initial release, and keeps its
-controller, data source and cell behaviors usable without React. The rationale,
-milestones and tracked limits are in
-[the native grid v2 plan](docs/native-grid-v2-plan.md).
+## Core capabilities
+
+- Cell, range, row, column, additive, and select-all selection
+- Keyboard navigation, matrix copy/paste, clear, and drag-to-fill
+- Typed editing, filtering, sorting, validation, and bulk editing
+- Seven built-in factories: string, number, ISO date, image, single-select, multi-select tags, and boolean
+- Dirty markers, original-value preview, revert, undo, redo, and conflict recovery
+- Add, duplicate, protect, delete, and reorder rows
+- Immediate, manual, or debounced automatic saving
+- Styled toolbar, footer, dialogs, grouped context menu, and feedback surfaces
+- React-free controller and engine for host workflows
+
+The initial release renders the complete row set supplied by the data source, uses fixed row heights, and is not intended as a 100k-row client-side BigTable renderer.
 
 ## Install
 
 ```sh
-pnpm add react-data-grid-ext react react-dom
+pnpm add data-editor-table react react-dom
 ```
 
-Import the bundled styles once; the component is fully styled by default.
+Import the complete default styles once:
+
+```ts
+import 'data-editor-table/styles.css'
+```
+
+`styles.css` is the convenience entry point for `structure.css` plus the
+default `theme.css`. It is not loaded by the JavaScript entry point, so every
+application makes the styling choice explicitly.
+
+React 19 is a peer dependency.
+
+## Quick start
+
+This is a complete in-memory editor. In production, replace the body of `commit` with an API call.
 
 ```tsx
 import {
@@ -26,235 +45,484 @@ import {
   createStringCellType,
   type GridCellTypeSchemaOf,
   type GridDataSource,
-} from 'react-data-grid-ext'
-import 'react-data-grid-ext/styles.css'
+  type GridDataSourceSnapshot,
+  type GridReadyDataSourceSnapshot,
+} from 'data-editor-table'
+import 'data-editor-table/styles.css'
 
-type Row = { id: string; title: string }
+type Product = { id: string; name: string }
 
-const registry = createCellTypeRegistry<Row>()
+const registry = createCellTypeRegistry<Product>()
   .register('string', createStringCellType())
-
 type CellTypes = GridCellTypeSchemaOf<typeof registry>
 
-const dataSource: GridDataSource<Row, string, CellTypes> = {
+let snapshot: GridDataSourceSnapshot<Product> = {
+  rows: [
+    { id: 'product-1', name: 'Amber poster' },
+    { id: 'product-2', name: 'Blue card' },
+  ],
+  status: 'ready',
+  version: 1,
+  scope: { kind: 'complete' },
+}
+const listeners = new Set<() => void>()
+function publish(next: GridDataSourceSnapshot<Product>) {
+  snapshot = next
+  for (const listener of listeners) listener()
+}
+
+const dataSource: GridDataSource<Product, string, CellTypes> = {
   columns: [{
-    key: 'title',
-    label: 'Title',
+    key: 'name',
+    label: 'Name',
     type: 'string',
+    layout: { basis: 280, min: 180, flex: 1 },
     sortable: true,
     filterable: true,
     bulkEditable: true,
-    getValue: (row) => row.title,
-    setValue: (row, title) => ({ ...row, title }),
+    getValue: (row) => row.name,
+    setValue: (row, name) => ({ ...row, name }),
   }],
   getRowKey: (row) => row.id,
-  // Supply cloneRow when Row is a class instance or needs custom cloning.
-  // Plain structured-cloneable business objects use the built-in default.
-  getSnapshot: () => store.getSnapshot(),
-  subscribe: (listener) => store.subscribe(listener),
-  async refresh({ signal }) {
-    await store.refresh({ signal })
-    // refresh publishes refreshing/ready/error snapshots through store
+  getSnapshot: () => snapshot,
+  subscribe(listener) {
+    listeners.add(listener)
+    return () => { listeners.delete(listener) }
   },
   persistence: {
     mode: 'auto-save',
-    debounceMs: 700,
+    debounceMs: 500,
     async commit(request) {
-      const snapshot = await api.saveRows(request)
-      store.publish(snapshot)
-      return { operationId: request.operationId, applied: snapshot }
+      // Use request.operationId as the idempotency key for a real write.
+      const applied = {
+        rows: request.rows,
+        status: 'ready',
+        version: Number(snapshot.version) + 1,
+        scope: { kind: 'complete' },
+      } satisfies GridReadyDataSourceSnapshot<Product>
+      publish(applied)
+      return { operationId: request.operationId, applied }
     },
   },
 }
 
-export function Editor() {
-  return <DataGrid
-    ariaLabel="Content"
-    dataSource={dataSource}
-    registry={registry}
-  />
+export function ProductEditor() {
+  return <div style={{ height: 480, minWidth: 0 }}>
+    <DataGrid ariaLabel="Products" dataSource={dataSource} registry={registry} />
+  </div>
 }
 ```
 
-Every data-source snapshot is complete and versioned. A successful `commit`
-must return a receipt containing the exact request operation ID and the
-authoritative `ready` snapshot that applied that proposal. `getSnapshot()` may
-still expose the request's source version while publication catches up, may
-expose the receipt's applied version, or may already expose a causally later
-authority. A third opaque version returned at receipt settlement is therefore a
-data-source promise that it was published after `applied`; opaque version values
-are never ordered by the controller. The controller acknowledges the receipt
-first, ignores an exact stale request base, then rebases onto a causally later
-snapshot when present. If settlement observed that stale base, the data source's
-next publication must be `applied` or a causally later snapshot; it must not
-publish the superseded base again. Reject with
-`GridCommitError('source-version-conflict', message)` or
-`GridCommitError('not-applied', message)` only when the write definitely did
-not apply; transient and unknown-outcome failures retain the original operation
-ID for an idempotent retry. The optional `refresh({ signal })` capability must
-publish its own source snapshots and is aborted when the controller is
-destroyed. Failed saves keep the draft. Cell types are explicitly registered, so value type,
-column options, clipboard codecs, editor, filter, bulk and fill behaviors remain
-one coherent capability. The package includes string, number, ISO-date and image
-types, but none is special-cased by the grid.
+`DataGrid` fills its host, so the host needs an explicit height or a layout that supplies one. The owned form above manages controller lifecycle automatically.
 
-`version` is an opaque authority token, not a row count or display revision. It
-must change whenever authoritative row values or row order change; reusing one
-version is allowed only for status/error metadata transitions over exactly the
-same rows. Treat every published snapshot, its rows array, and the row values for
-one version as immutable: mutating a previously published row in place while
-reusing its version cannot be detected reliably. Rows are cloned before a setter
-runs so an adapter cannot mutate the authoritative snapshot or history in place.
-The default clone supports plain, structured-cloneable business data. Provide
-`cloneRow(row)` for class instances or other rows whose runtime semantics require
-a custom clone.
+## Data-source and column contract
 
-`DataGrid` keeps one controller per `dataSource` object while mounted. Switching
-to another source and back preserves each source's draft, automatic save, and
-in-flight write. For one source identity, keep `registry`, `rowHeight`,
-`headerHeight`, and `rowIndicatorWidth` stable; changing those structural values
-requires a new data-source identity. The optional `effects` port may change and
-the existing controller always calls its latest implementation.
+The data source is an external-store boundary: authoritative snapshot → local draft → commit request → published authoritative snapshot.
 
-`maxMutations` and `maxClipboardBytes` are also fixed controller options on both
-`createDataGridBinding(...)` and the owned `DataGrid` form. They default to
-10,000 mutations per command and 2,000,000 clipboard bytes. Keep them stable for
-one data-source identity; reopen the grid with a new identity to change them.
+Practical rules:
 
-Host workflows that need to create rows and update multiple typed columns use
-the React-free synchronous transaction boundary instead of dispatching a series
-of cell commands:
+1. Return the complete currently loaded rows from `getSnapshot`; notify subscribers for every publication.
+2. Keep the `dataSource` object identity stable for one logical data set. Its registry and sizing options remain fixed for that identity. The owned `DataGrid` preserves bindings that still have edits or in-progress work when the identity changes, and releases inactive clean bindings.
+3. `getRowKey` must produce a unique, stable string or number.
+4. Treat every published snapshot, rows array, and row value as immutable. Setters return new rows.
+5. `version` is an opaque token. Change it whenever authoritative values or persistent order change; never compare versions by magnitude.
+6. A successful `commit` returns the request's exact `operationId` and the exact applied `ready` snapshot. Publish it, or a causally later snapshot, through the store.
+7. Reject failed writes. The grid retains the draft and exposes retry/recovery.
+
+Snapshots distinguish `loading`, `refreshing`, `ready`, and `error` (`error` also requires a user-facing `error` string). Optional `refresh({ signal })` starts a host refresh and publishes its result. Supply `cloneRow(row)` for class instances or other rows that cannot use structured cloning.
+
+A column maps a registered type to business data:
 
 ```ts
-const result = controller.applyTransaction((transaction) => {
-  const rowKey = transaction.createRow()
-  transaction.set(dataSource.columns[0]!, rowKey, 'Imported title')
-}, { label: 'Import items' })
-
-if (!result.accepted) {
-  showIssues(result.issues)
+{
+  key: 'quantity', label: 'Quantity', type: 'number',
+  typeOptions: { minimum: 0, format: { maximumFractionDigits: 0 } },
+  layout: { basis: 140, min: 100, max: 220, flex: 1 },
+  sortable: true, filterable: true, bulkEditable: true,
+  getValue: (row) => row.quantity,
+  setValue: (row, quantity) => ({ ...row, quantity }),
+  isEditable: (row) => !row.locked,
 }
 ```
 
-`transaction.base` is the controller snapshot captured before the builder ran.
-`createRow(position?)` stages a candidate from `dataSource.rows.create`;
-`duplicateRow(sourceRowKey, position?)` uses `dataSource.rows.duplicate` so
-hidden and read-only business fields are preserved; `moveRows(rowKeys,
-position?)` packs the rows into one group in their current draft order; and
-`deleteRows(rowKeys)` applies the data-source deletion policy to every target
-before staging any deletion. Positions use `{ beforeRowKey }` in complete draft
-order, never a filtered or sorted visible index; omission or `null` means append.
-Moving and non-append creation/duplication require the data source to declare
-`rows.ordering: 'mutable'`. Hosts should disable positional gestures while a
-sorted or filtered view is active rather than infer persistence order from that
-view. `set()` infers the value type from the configured column definition. A
-cell may be set only once in one transaction. `transaction.abort(issue)` stops
-the builder immediately. Builders must be synchronous; returning a Promise is
-rejected.
-Validation, row-key invariants, edit/filter/bulk session gates, mutation limits,
-dirty tracking, history, and persistence all run before the staged draft is
-published. Rejection publishes none of the staged rows or values; acceptance
-creates at most one history entry and schedules persistence once. Row factories
-should therefore be pure candidate factories: they may run before a later value
-fails validation, even though that candidate is never published by the grid.
-Atomicity is scoped to one controller. A cross-grid cut is two authoritative
-operations: the host should accept the target insertion before deleting the
-source, surface a partial outcome if the second controller rejects, and apply
-domain-specific compensation when global all-or-nothing behavior is required.
+Omit `setValue` for a read-only column. `isEditable` is a per-row gate. Optional `validate` adds domain validation. A flag such as `sortable` only exposes a capability implemented by that type. `typeOptions` are type-checked against the registered type.
 
-For host-owned HTML row drag and drop, pass `rowDropZone` to `DataGrid`:
+## Built-in cell types
+
+There are no implicit defaults; register every type used by the grid.
 
 ```tsx
-const naturalOrder = selectGridNaturalRowOrder(controller.getSnapshot())
+const standardRegistry = createCellTypeRegistry<Product>()
+  .register('string', createStringCellType())
+  .register('number', createNumberCellType({ emptyValue: null }))
+  .register('date', createDateCellType({ storage: 'iso-date', emptyValue: '' }))
+  .register('status', createSingleSelectCellType({
+    options: [
+      { value: 'draft', label: 'Draft' },
+      { value: 'ready', label: 'Ready' },
+      { value: 'archived', label: 'Archived', disabled: true },
+    ] as const,
+  }))
+  .register('tags', createMultiSelectCellType({
+    options: [
+      { value: 'featured', label: 'Featured' },
+      { value: 'wholesale', label: 'Wholesale' },
+    ] as const,
+  }))
+  .register('boolean', createBooleanCellType({ trueLabel: 'Active', falseLabel: 'Inactive' }))
+```
+
+| Factory | Value | Included behavior |
+| --- | --- | --- |
+| `createStringCellType` | `string` | Edit, clipboard, clear, sort, text filters, set/affix/replace bulk edit |
+| `createNumberCellType` | `number` or `number \| null` | Edit, range validation, clipboard, clear, series fill, sort, numeric filters, bulk set |
+| `createDateCellType` | ISO date string (optionally empty/null) | Edit, clipboard, clear, source-sequence repeat fill, sort, date filters, bulk set |
+| `createImageCellType` | Application value or `null` | Preview, active-cell click/drag upload, clipboard format/optional parse, clear, fill, presence filters, remove action |
+| `createSingleSelectCellType` | An option's `string`/`number` value, optionally `null` | Native select editing, label/value clipboard parsing, sort, choice filters, bulk set |
+| `createMultiSelectCellType` | `readonly (string \| number)[]` | Responsive tags, checklist editing, CSV clipboard, set-style equality, choice filters, replace/add/remove bulk edit |
+| `createBooleanCellType` | `boolean` | Checkbox display, keyboard toggle, TRUE/FALSE clipboard, filters and mixed-state bulk edit |
+
+Choice factories receive a static option catalog. Values store option IDs rather than display
+objects. Multi-select values are canonicalized to catalog order, so selecting the same tags in a
+different order does not create a change. A disabled option remains valid and filterable for
+existing data, but cannot be newly selected or pasted; an existing disabled tag can still be
+removed. Pass `emptyValue: null` to make a single-select nullable. Boolean cells expose Clear only
+when `clearValue` is explicitly configured.
+
+- Single-select stores one option ID, supports an explicitly nullable variant, and uses the option
+  label for display, search, clipboard, filtering, and original-value previews.
+- Multi-select stores a set-like readonly array of option IDs. Editing, paste, fill, and bulk changes
+  canonicalize the array to catalog order; bulk edit can replace, add, or remove tags.
+- Boolean stores a strict `boolean`, displays a checkbox, accepts `TRUE`/`FALSE` clipboard values,
+  and represents mixed bulk selections only in the editor draft—not in row data.
+
+Option catalogs are intentionally synchronous and registration-scoped. If options differ by
+business field, register separate cell types such as `status` and `category`. Loading, caching,
+and invalidation for asynchronous or row-dependent options belong in a custom registered type.
+
+Image storage and upload belong to the application:
+
+```tsx
+const imageType = createImageCellType<Product, string>({
+  alt: (row) => row.name,
+  label: () => 'Add or replace image',
+  resolveSrc: (value) => value,
+  validate: (value) => typeof value === 'string' && /^https?:\/\//.test(value)
+    ? { ok: true, value }
+    : { ok: false, issue: { code: 'invalid-image-url', message: 'Choose a valid uploaded image.' } },
+  async upload({ file, signal }) {
+    const body = new FormData()
+    body.append('file', file)
+    const response = await fetch('/api/uploads', { method: 'POST', body, signal })
+    if (!response.ok) throw new Error('Upload failed')
+    return (await response.json() as { url: string }).url
+  },
+  parseClipboard: (text) => /^https?:\/\//.test(text)
+    ? { ok: true, value: text }
+    : { ok: false, issue: { code: 'invalid-image-url', message: 'Paste a valid image URL.' } },
+})
+
+const registry = standardRegistry.register('image', imageType)
+```
+
+`accept` and `maxBytes` may be set on the factory or column. Upload receives an abort signal.
+
+## Saving and errors
+
+| Mode | Behavior |
+| --- | --- |
+| `'immediate'` | Schedule a commit as soon as an accepted change can persist |
+| `'manual-save'` | Keep a draft until **Save changes** |
+| `'auto-save'` | Commit after `debounceMs` without a newer change |
+
+The controller can change this with `persistence/set-mode`. Use
+`GridCommitError` to classify the failure and select the correct recovery path:
+
+```ts
+throw new GridCommitError('transient', 'The service is temporarily unavailable.')
+```
+
+- `transient`: a retryable transport or service failure. The grid retains the
+  proposal and reuses its operation ID when retrying.
+- `unknown-outcome`: the client cannot determine whether the write applied. The
+  grid retains the proposal and reuses its operation ID when retrying.
+- `source-version-conflict`: the write definitively did not apply because its
+  source version is stale.
+- `not-applied`: the write definitively did not apply for another authoritative
+  reason.
+
+Both `transient` and `unknown-outcome` require an idempotent commit implementation
+because a retry uses the original operation ID. Use `source-version-conflict` or
+`not-applied` only when the server guarantees non-application. Ordinary errors
+also preserve the draft. Every commit contains the complete proposed rows in
+persistent order, which the data source must retain. Detailed settlement and
+rebase rules are in the [native grid v2 plan](docs/native-grid-v2-plan.md).
+
+## Row operations and protected rows
+
+```ts
+rows: {
+  create: () => ({ id: crypto.randomUUID(), name: 'Untitled', locked: false }),
+  duplicate: (row) => ({ ...row, id: crypto.randomUUID(), name: `${row.name} copy` }),
+  canDelete: (row) => !row.locked,
+  ordering: 'mutable',
+}
+```
+
+`create` enables Add row; `duplicate` enables single/multi-row duplication and should preserve hidden business fields; `canDelete` protects rows from deletion. Combine it with `column.isEditable` for read-only protected rows. `ordering: 'mutable'` declares that commit persists row order and enables non-append placement/movement. Multi-row operations reject atomically if any target is ineligible.
+
+## Built-in interactions
+
+- Drag cells to select; Shift extends and Ctrl/Command adds ranges. Row indicators, headers, and the corner select rows, columns, or all visible cells.
+- Clicking the already-active single cell, Enter, F2, or printable input edits when the type allows it.
+- Copy/paste, clear, bulk edit, and fill validate every destination through its type. Fill repeats the source sequence unless the type supplies series behavior.
+- Header buttons filter and sort; clicking the header selects the column.
+- Dirty markers preview the original value and offer Revert. Selection/row revert, undo/redo, conflicts, and retry are available where applicable.
+- The grouped context menu includes applicable toolbar, row, selection, persistence, type-specific, revert, and conflict actions.
+
+Filtering/sorting are local view changes over loaded rows and do not change persistent order.
+
+## Custom cell types
+
+All types use the same registry path. This minimal editable rating uses the real behavior/view pairing:
+
+```tsx
+const ratingType = defineCellType<Product, number, string>({
+  behavior: {
+    value: { validate: (value) => typeof value === 'number' && value >= 1 && value <= 5
+      ? { ok: true, value }
+      : { ok: false, issue: { code: 'invalid-rating', message: 'Rating must be from 1 to 5.' } } },
+    text: { display: (value) => `${value} / 5`, original: String },
+    edit: {
+      begin: String,
+      commit: (draft) => {
+        const value = Number(draft)
+        return Number.isInteger(value) && value >= 1 && value <= 5
+          ? { ok: true, value }
+          : { ok: false, issue: { code: 'invalid-rating', message: 'Rating must be from 1 to 5.' } }
+      },
+    },
+    clipboard: { format: String },
+    compare: (left, right) => left - right,
+  },
+  view: {
+    Cell: ({ displayText }) => <span>{displayText}</span>,
+    Editor: ({ draft, setDraft, commit, cancel }) => <input
+      aria-label="Rating" autoFocus inputMode="numeric" value={draft}
+      onChange={(event) => { setDraft(event.currentTarget.value) }}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') commit()
+        if (event.key === 'Escape') cancel()
+      }}
+    />,
+    presentation: { content: 'padded', align: 'end', editActivation: ['active-cell-click', 'enter', 'f2', 'printable'] },
+  },
+})
+
+const registry = createCellTypeRegistry<Product>().register('rating', ratingType)
+```
+
+Import `defineCellType` from the package root. Every definition needs `behavior.value.validate`, `behavior.text.display`, `view.Cell`, and `view.presentation`. `behavior.edit`/`view.Editor` and `behavior.bulk`/`view.BulkEditor` must appear in pairs. Optional `search`, `original`, `equals`, `clipboard`, `clear`, `fill`, `compare`, `filter`, `bulk`, `actions`, and cancellable `effects` add capabilities without grid special cases.
+
+## Messages, surfaces, and theme
+
+The package is i18n-library agnostic. `DataGrid.messages` accepts typed partial overrides for the
+grid shell, and every built-in cell-type factory accepts its own typed partial `messages` object.
+Function-valued messages receive values such as row, cell, or byte counts, so the host can apply
+its own pluralization and number formatting.
+
+```tsx
+const registry = createCellTypeRegistry<Product>()
+  .register('string', createStringCellType({
+    locale: 'zh-CN',
+    messages: {
+      contains: '包含',
+      notContains: '不包含',
+      equals: '等于',
+      isEmpty: '为空',
+      value: '内容',
+      cancel: '取消',
+      applyToCells: (count) => `应用到 ${count} 个单元格`,
+    },
+  }))
 
 <DataGrid
-  binding={binding}
-  rowDropZone={{
-    active: dragging && naturalOrder.eligible,
-    onTargetChange(target) {
-      dropTarget.current = target
-    },
+  ariaLabel="商品"
+  dataSource={dataSource}
+  registry={registry}
+  messages={{
+    actionsLabel: '表格操作',
+    filterRowsLabel: '筛选行',
+    saveChanges: '保存更改',
+    rows: (_visible, total) => `共 ${total} 行`,
   }}
 />
 ```
 
-`selectGridNaturalRowOrder(snapshot)` is eligible only when global filtering,
-column filtering, and sorting are inactive; its `rowKeys` then follow complete
-draft order. An active drop zone reports a `DataGridRowDropTarget` with
-`visibleRowIndex`, `edge: 'before' | 'after' | 'end'`, and the canonical
-`placement: { beforeRowKey }` accepted by a transaction. The grid owns only
-scrollport hit testing, the default insertion marker, and optional vertical
-auto-scroll (`autoScroll` defaults to `true`). It does not inspect or write
-`DataTransfer`, call `preventDefault()`, accept a drop, validate a payload, or
-choose Copy versus Cut. The host owns those decisions and may replace the
-marker contents with `renderIndicator(target)`.
+The exported `DataGridMessages`, `GridStringCellTypeMessages`,
+`GridNumberCellTypeMessages`, `GridIsoDateCellTypeMessages`,
+`GridImageCellTypeMessages`, `GridSingleSelectCellTypeMessages`,
+`GridMultiSelectCellTypeMessages`, and `GridBooleanCellTypeMessages` types can be used to author
+shared locale packs. Column labels, choice labels, image labels, application validation messages,
+data-source errors, and custom cell-type copy remain application-owned and should use the same
+locale. `locale` on string/number/date factories controls collation and `Intl` formatting; it does
+not translate interface copy.
 
-Every commit request contains the complete proposed rows in exact persistent
-order. `orderChanged` reports persistent order intent relative to the current
-authority/baseline. It can remain false when only pending appended inserts are
-reordered, because those rows have no authoritative order yet. Regardless of
-the flag, the data source must retain `request.rows` order while applying
-append/delete/value changes. During ordinary remote rebase, explicit local
-structural order is local-wins among surviving locally known rows, while
-remote-only rows retain their authoritative slots. This first contract does
-not invent an order conflict that the cell-oriented conflict UI cannot resolve.
+`surfaceRenderers` can replace toolbar, footer, context menu, filter dialog, bulk dialog, or
+feedback while receiving resolved state and safe callbacks. `toolbarActions` and
+`rowHeaderActions` add host actions without replacing defaults.
 
-Use `messages` for typed overrides of the built-in grid chrome, and
-`surfaceRenderers` to replace the toolbar, footer, context menu, filter dialog,
-bulk dialog, or feedback surface. Each renderer receives the already resolved
-capability and eligibility model plus dispatch-safe callbacks; hosts do not
-need to duplicate command rules. These overrides intentionally do not localize
-domain validation, cell-type, or data-source messages, which remain owned by
-their respective adapters. `messages.rejectedAction(reason)` is the single
-React presentation boundary for rejected controller dispatches and defaults to
-returning the reason unchanged. It presents the complete reason; it does not
-translate fine-grained core codes. Context-menu actions also carry a stable
-`group` value for custom surfaces. The built-in menu exposes that value through
-`data-grid-menu-group` without adding visual separators or changing layout.
-Default menu and dialog portals stay mounted under `document.body` to avoid
-clipping, while inheriting the resolved `--grid-*` theme tokens from their grid
-root.
+Override semantic variables on the `DataGrid` root through its `className`:
 
-When passing an external `binding`, the caller owns it and must call
-`binding.destroy()` after the grid is permanently unmounted. One binding (and
-therefore one controller) may drive only one mounted viewport at a time; create
-separate bindings for simultaneous grids, even when they read the same source.
-The owned `dataSource`/`registry` form manages this lifecycle automatically.
+```css
+.inventory-grid {
+  --grid-surface: #fff;
+  --grid-subtle-surface: #f8fafc;
+  --grid-text: #172033;
+  --grid-muted: #68758a;
+  --grid-border: #d8deea;
+  --grid-accent: #2563eb;
+  --grid-accent-soft: #dbeafe;
+  --grid-dirty: #f59e0b;
+  --grid-invalid: #dc2626;
+  --grid-conflict: #c2410c;
+  --grid-radius: 8px;
+}
+```
 
-Import `react-data-grid-ext/engine` for the React-free data-source, cell behavior,
-resolver, controller, state, selection, and persistence contracts. That subpath
-does not export React components, views, registry factories, or hooks.
+Pass `className="inventory-grid"`. If an application stylesheet must target a
+grid from outside, use a descendant selector with enough specificity to override
+the component defaults rather than relying on inheritance from an ordinary
+ancestor. Body portals inherit the values resolved on their grid root.
+
+### Tailwind CSS
+
+Tailwind applications can load only the layout and interaction contract, then
+own all visual styling. Import the structural stylesheet before Tailwind so the
+application layers have precedence:
+
+```css
+@import 'data-editor-table/structure.css';
+@import 'tailwindcss';
+
+@layer components {
+  .inventory-grid {
+    @apply rounded-lg border border-slate-300 bg-white text-sm text-slate-900;
+  }
+
+  .inventory-grid :is(
+    .business-grid__toolbar,
+    .business-grid__footer,
+    .business-grid__corner,
+    .business-grid__column-header,
+    .business-grid__row-indicator,
+    .business-grid__cell
+  ) {
+    @apply border-slate-200 bg-white;
+  }
+
+  .inventory-grid :is(
+    .business-grid__corner,
+    .business-grid__column-header,
+    .business-grid__row-indicator
+  ) {
+    @apply bg-slate-50;
+  }
+
+  .inventory-grid .business-grid__button {
+    @apply rounded-md border-slate-300 bg-white px-2.5 hover:bg-slate-50;
+  }
+
+  .inventory-grid .business-grid__button--primary {
+    @apply border-blue-600 bg-blue-600 text-white hover:bg-blue-700;
+  }
+
+  :is(
+    .business-grid-menu,
+    .business-grid-dialog,
+    .business-grid-cell-editor-popover,
+    .business-grid-dirty-popover
+  ) {
+    @apply rounded-lg border border-slate-200 bg-white text-slate-900 shadow-xl;
+  }
+}
+```
+
+The example uses Tailwind CSS v4. With v3, keep the `structure.css` import first
+and place the `@tailwind base`, `components`, and `utilities` directives after it.
+
+Pass `className="inventory-grid"` to the grid. The structural stylesheet keeps
+grid geometry, scrolling, sticky headers, editor placement, hit targets, and
+accessibility utilities while leaving visual appearance to the application.
+Use the existing `business-grid__*` and `data-grid-*` classes for Tailwind
+`@apply` rules, and
+remember that menus, dialogs, and editor popovers render in a body portal and
+therefore need their global component classes styled as shown above.
+
+## Advanced integration
+
+Use `createDataGridBinding({ dataSource, registry })` when host UI needs `binding.controller`; render `<DataGrid binding={binding} ariaLabel="Products" />` and call `binding.destroy()` after permanent unmount. One binding drives only one mounted viewport. `useGridSelector` subscribes to controller state. The owned form manages this lifecycle automatically.
+
+Import React-free data-source, resolver, selection, controller, and persistence contracts from `data-editor-table/engine`; that subpath does not export React views, registries, or hooks.
+
+Atomic host imports use a synchronous transaction:
+
+```ts
+const result = binding.controller.applyTransaction((transaction) => {
+  const rowKey = transaction.createRow()
+  transaction.set(dataSource.columns[0]!, rowKey, 'Imported product')
+}, { label: 'Import products' })
+if (!result.accepted) showIssues(result.issues)
+```
+
+Transactions also provide `duplicateRow`, `moveRows`, `deleteRows`, and `abort`; they are all-or-nothing. Placement uses `{ beforeRowKey }` in complete draft order, never a filtered/sorted visible index.
+
+For row drag/drop, pass `rowDropZone={{ active, onTargetChange }}`. Targets provide a canonical `{ beforeRowKey }` placement. The grid owns hit testing, marker, and optional auto-scroll; the host owns `DataTransfer`, validation, Copy/Cut, acceptance, and transaction. Disable positional gestures when `selectGridNaturalRowOrder(snapshot).eligible` is false.
+
+## Demo recipes
+
+Run `pnpm demo` and use:
+
+- [Playground](demo/src/playground.tsx): built-in types, selection, row operations, save modes, failures, remote changes, dirty state, and conflicts
+- [Multi-image import](demo/src/multi-image-import.tsx): drop multiple images, populate image/filename columns, and create rows
+- [Cross-grid drag](demo/src/cross-grid-drag.tsx): Copy/Cut between grids and reorder within one grid
+
+Demos are integration recipes, not additional API contracts.
+
+## Entry points
+
+- `data-editor-table`: React grid, types, registry, controller, and public contracts
+- `data-editor-table/engine`: React-free engine
+- `data-editor-table/styles.css`: structure plus the default theme
+- `data-editor-table/structure.css`: behavior-critical layout for Tailwind or custom themes
+- `data-editor-table/theme.css`: default visual theme (loaded after `structure.css`)
+
+## Limits and status
+
+- Snapshots currently contain one complete loaded set; there is no pagination/window protocol or row virtualization.
+- Rows have fixed height. Interactive column resize, arbitrary frozen columns, and persisted column layout are not in the initial release.
+- Cross-grid Cut is two controller operations, not a globally atomic transaction.
+- The native implementation is the only production path; legacy and `react-data-grid` were removed.
+- M5 is a test candidate awaiting interaction acceptance. Permanent v2 regression coverage is planned for M6.
+
+See the [native grid v2 plan](docs/native-grid-v2-plan.md) for rationale, detailed concurrency rules, milestones, and acceptance notes.
 
 ## Development
 
-- `pnpm demo` — native v2 playground
-- `pnpm demo:legacy` — archived `react-data-grid` implementation
-- `pnpm check` — boundaries and TypeScript
-- `pnpm check:package` — packed, isolated headless/type/browser consumers
-- `pnpm test` — archived legacy regression suite during M1–M5 (`test:legacy` is an alias)
-- `pnpm demo:legacy:test` — archived legacy browser regression
-- `pnpm build` — package build and declarations
+This repository uses Node.js 22 or newer and pnpm.
 
-As of 2026-08-31, M1–M4 are technically complete and M5 is a test candidate
-awaiting user acceptance. This status does not mean the M5 experience has been
-accepted. Permanent v2 unit, integration and E2E regression work has not begun;
-it remains intentionally deferred to M6 until the behavior is confirmed.
+```sh
+pnpm install
+pnpm demo
+pnpm check
+pnpm lint
+pnpm build
+pnpm demo:build
+pnpm check:package
+```
 
-The current candidate has passed the repository boundary/type/lint/build checks,
-an isolated packed-consumer check, an independent disposable core
-counterexample audit, and a 13/13-group exploratory Chromium Playwright audit at
-1440, 1920, 2560 and 3840 pixels on the latest stable snapshot before the final
-chooser-session patch. The affected chooser and detached-edit surfaces then
-passed a targeted 3/3 Chromium regression at 1440 with no console warning,
-console error or page error; the other 12 groups and full width matrix were not
-rerun after that patch. Safari, Firefox and real touch devices have not yet been
-verified. See the dated evidence and exact milestone boundary in
-[the v2 plan](docs/native-grid-v2-plan.md#2026-08-31-技术候选快照).
+`pnpm check` validates boundaries and TypeScript. `pnpm check:package` packs the package and checks isolated headless, type, and browser consumers.
 
-The legacy implementation remains under `src-legacy` only for comparison and
-migration. Permanent v2 regression tests begin after interaction acceptance in
-M6; until then v2 is verified with type/build/package checks and disposable
-Playwright exploration. New consumers should use the API above.
+## License
 
-The package is currently `UNLICENSED`; choose and document a license before
-publishing it outside owner-controlled repositories.
+MIT. See [LICENSE](./LICENSE).

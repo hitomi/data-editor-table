@@ -2,10 +2,11 @@ import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 
 export default defineConfig({
+  base: './',
   resolve: {
     alias: {
-      'react-data-grid-ext/styles.css': fileURLToPath(new URL('./src/styles.css', import.meta.url)),
-      'react-data-grid-ext': fileURLToPath(new URL('./src/index.ts', import.meta.url)),
+      'data-editor-table/styles.css': fileURLToPath(new URL('./src/styles.css', import.meta.url)),
+      'data-editor-table': fileURLToPath(new URL('./src/index.ts', import.meta.url)),
     },
   },
   root: 'demo',

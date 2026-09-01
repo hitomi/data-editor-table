@@ -67,7 +67,11 @@ const collectModuleSpecifiers = (source, fileName) => {
     for (let cursor = index + 1; cursor < tokens.length; cursor += 1) {
       const candidate = tokens[cursor]
       if (candidate.value === ';') break
-      if (candidate.kind === 'word' && candidate.value === 'from') {
+      if (
+        candidate.kind === 'word' &&
+        candidate.value === 'from' &&
+        tokens[cursor + 1]?.kind === 'string'
+      ) {
         addString(tokens[cursor + 1], 'static import/export')
         break
       }

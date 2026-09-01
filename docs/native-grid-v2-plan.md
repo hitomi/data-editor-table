@@ -636,9 +636,10 @@ type GridSnapshot<Row> =
   | { status: 'refreshing'; rows: readonly Row[]; version: string | number; scope: GridCompleteScope }
   | { status: 'error'; rows: readonly Row[]; version: string | number; scope: GridCompleteScope; error: string }
 
-type GridCommitReceipt<Row> = Readonly<{
+type GridCommitReceipt<Row, RowKey> = Readonly<{
   operationId: string
   applied: GridSnapshot<Row> & { status: 'ready' }
+  keyRemap?: readonly { from: RowKey; to: RowKey }[]
 }>
 
 type GridDataSource<Row, RowKey, CellTypes> = {
@@ -651,7 +652,7 @@ type GridDataSource<Row, RowKey, CellTypes> = {
   persistence: {
     mode: 'immediate' | 'manual-save' | 'auto-save'
     debounceMs?: number
-    commit: (request: GridCommitRequest<Row, RowKey>) => Promise<GridCommitReceipt<Row>>
+    commit: (request: GridCommitRequest<Row, RowKey>) => Promise<GridCommitReceipt<Row, RowKey>>
   }
   rows?: {
     create?: () => Row
@@ -669,6 +670,9 @@ type GridDataSource<Row, RowKey, CellTypes> = {
 - `fields` 改为 `columns`；
 - `update` 模式命名为更明确的 `immediate`；
 - `commitRows` 和远端 save 合并为 `commit(request)`：宿主发布权威 snapshot，并返回 `{ operationId, applied }` receipt；
+- `createRemoteGridDataSource` 为 API/数据库场景提供稳定 external store：mutation 可以直接返回真实 authority，或要求 adapter 等待 `load` 重新读取；query/cache 仍可通过 `publish(snapshot)` 接入，不绑定具体请求库；
+- request 同时包含完整 proposal 和 typed `changes`（inserted/updated/deleted/order），前者适合 document replacement，后者直接映射事务式 CRUD；
+- 服务端为 inserted row 分配新主键时，通过 receipt `keyRemap` 返回 temporary → authoritative key；controller 会把排队修改、selection、edit session 和 history 一起映射，非法 remap 视为已应用但本地无法 reconcile，不得重试写操作；
 - receipt 必须精确回显 request operation ID；controller 先以 `applied` 确认该 proposal，再读取 `getSnapshot()`：若仍是 request source version 则视为尚未 publish 的 stale base 并使用 `applied`（此后 data source 的下一次 publish 必须是 `applied` 或其因果后继，不能再次 publish 已淘汰的 base），若是 `applied` 则直接确认，若是第三个 opaque token，则 data source 必须保证它在因果上发布于 `applied` 之后，controller 才将其作为 latest rebase；opaque token 本身不可比较顺序；
 - transient/unknown-outcome retry 冻结原 proposal 并复用 operation ID；明确未应用或 source-version conflict 在 refresh/rebase 后生成新 proposal；
 - complete scope 的默认 filter/sort 是本地 view 能力，不要求宿主为了显示按钮重写 setter；
@@ -690,6 +694,10 @@ P0 complete-scope persistence request 至少包含：
 - draft revision；
 - source version；
 - cryptographically random operation ID。
+
+`operationId` 必须贯穿 HTTP/RPC 和数据库事务，并由数据库唯一约束或 operation ledger
+保证幂等；unknown outcome retry 会重发完全相同的 proposal 和 ID。成功结果必须来自写接口
+实际返回或写后权威读取，不能用本地 proposal 冒充服务端 canonical rows。
 
 服务端返回 canonical rows 后，controller 用 proposal revision 精确确认已经提交的改动，并重放请求期间产生的新事务。P1 window 模式不能复用“提交完整 rows”的请求模型，必须使用 row-key/declarative target 和 data-source authoritative receipt。
 

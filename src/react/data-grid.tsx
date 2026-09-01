@@ -121,6 +121,110 @@ export function createDataGridBinding<
   return Object.freeze({ dataSource, registry, controller, destroy: () => controller.destroy() })
 }
 
+type DataGridBindingHookEntry<
+  Row,
+  RowKey extends GridRowKey,
+  Schema extends GridCellTypeSchema,
+  Effect,
+> = Readonly<{
+  dataSource: GridDataSource<Row, RowKey, Schema>
+  registry: GridCellTypeRegistry<Row, Schema>
+  maxMutations: number | undefined
+  maxClipboardBytes: number | undefined
+  rowHeight: number | undefined
+  headerHeight: number | undefined
+  rowIndicatorWidth: number | undefined
+  binding: DataGridBinding<Row, RowKey, Schema, Effect>
+}>
+
+/**
+ * Owns a controller for integrations that need direct controller access.
+ * Creation and destruction happen after commit, so development StrictMode
+ * cannot leak a subscription from a discarded render. The first render (and
+ * the render where a static option changes) returns null.
+ */
+export function useDataGridBinding<
+  Row,
+  RowKey extends GridRowKey,
+  Schema extends GridCellTypeSchema,
+  Effect = never,
+>(
+  options: CreateDataGridBindingOptions<Row, RowKey, Schema, Effect>,
+): DataGridBinding<Row, RowKey, Schema, Effect> | null {
+  const {
+    dataSource,
+    registry,
+    effects,
+    maxMutations,
+    maxClipboardBytes,
+    rowHeight,
+    headerHeight,
+    rowIndicatorWidth,
+  } = options
+  const effectsRef = useRef(effects)
+  effectsRef.current = effects
+  const [entry, setEntry] = useState<DataGridBindingHookEntry<
+    Row,
+    RowKey,
+    Schema,
+    Effect
+  > | null>(null)
+
+  useLayoutEffect(() => {
+    const effectPort: GridEffectPort<Row, RowKey, Effect> = {
+      run(effect, context) {
+        const current = effectsRef.current
+        if (!current) {
+          throw new Error('No effect port is configured for this data source.')
+        }
+        return current.run(effect, context)
+      },
+    }
+    const binding = createDataGridBinding({
+      dataSource,
+      registry,
+      effects: effectPort,
+      ...(maxMutations === undefined ? {} : { maxMutations }),
+      ...(maxClipboardBytes === undefined ? {} : { maxClipboardBytes }),
+      ...(rowHeight === undefined ? {} : { rowHeight }),
+      ...(headerHeight === undefined ? {} : { headerHeight }),
+      ...(rowIndicatorWidth === undefined ? {} : { rowIndicatorWidth }),
+    })
+    setEntry(Object.freeze({
+      dataSource,
+      registry,
+      maxMutations,
+      maxClipboardBytes,
+      rowHeight,
+      headerHeight,
+      rowIndicatorWidth,
+      binding,
+    }))
+    return () => {
+      binding.destroy()
+    }
+  }, [
+    dataSource,
+    headerHeight,
+    maxClipboardBytes,
+    maxMutations,
+    registry,
+    rowHeight,
+    rowIndicatorWidth,
+  ])
+
+  return entry
+    && entry.dataSource === dataSource
+    && entry.registry === registry
+    && entry.maxMutations === maxMutations
+    && entry.maxClipboardBytes === maxClipboardBytes
+    && entry.rowHeight === rowHeight
+    && entry.headerHeight === headerHeight
+    && entry.rowIndicatorWidth === rowIndicatorWidth
+    ? entry.binding
+    : null
+}
+
 type DataGridCommonProps<Row, RowKey extends GridRowKey, Schema extends GridCellTypeSchema, Effect> = Readonly<{
   ariaLabel: string
   className?: string

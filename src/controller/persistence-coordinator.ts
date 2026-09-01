@@ -17,6 +17,7 @@ import type { GridDispatchResult } from './controller-contracts.js'
 import { selectGridSavePlan } from './grid-selectors.js'
 import { areGridAuthorityRowsEqual } from '../data/authority-snapshot.js'
 import { gridRowKeysEqual } from '../model/row-key.js'
+import { createGridChangeSet } from '../data/change-set.js'
 
 type CommitProposal<Row, RowKey extends GridRowKey> = Readonly<{
   request: GridCommitRequest<Row, RowKey>
@@ -33,7 +34,7 @@ export type GridPersistenceCoordinatorOptions<
   getPublishedSnapshot: () => GridDataSourceSnapshot<Row>
   commit: (
     request: GridCommitRequest<Row, RowKey>,
-  ) => Promise<GridCommitReceipt<Row>>
+  ) => Promise<GridCommitReceipt<Row, RowKey>>
   requestRefresh?: (context: Readonly<{ signal: AbortSignal }>) =>
     | Promise<void>
     | void
@@ -46,6 +47,7 @@ export type GridPersistenceCoordinatorOptions<
     latest: GridDataSourceSnapshot<Row>,
     committedRows: readonly Row[],
     committedDraftRevision: number,
+    keyRemap: NonNullable<GridCommitReceipt<Row, RowKey>['keyRemap']>,
   ) => void
   isDestroyed: () => boolean
   ok: (payload?: unknown) => GridDispatchResult
@@ -298,7 +300,7 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
       !savePlan.orderChanged
     ) return null
     const id = crypto.randomUUID()
-    const request: GridCommitRequest<Row, RowKey> = Object.freeze({
+    const proposal = {
       rows: savePlan.proposedRows,
       acceptedRowKeys: Object.freeze(acceptedRowKeys),
       deletedRowKeys: Object.freeze(deletedRowKeys),
@@ -315,6 +317,15 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
       draftRevision: snapshot.draft.revision,
       sourceVersion: snapshot.source.version,
       operationId: id,
+    } as const
+    const request: GridCommitRequest<Row, RowKey> = Object.freeze({
+      ...proposal,
+      changes: createGridChangeSet({
+        ...proposal,
+        sourceRows: snapshot.source.rows,
+        columns: this.#options.columns,
+        getRowKey: this.#options.getRowKey,
+      }),
     })
     return { request, id }
   }
@@ -325,7 +336,7 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
 
   #settleReceipt(
     proposal: CommitProposal<Row, RowKey>,
-    receipt: GridCommitReceipt<Row>,
+    receipt: GridCommitReceipt<Row, RowKey>,
   ) {
     if (receipt.operationId !== proposal.id) {
       throw new Error('The commit receipt operation ID does not match the request.')
@@ -339,6 +350,12 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
         'A committed authority must publish a new opaque source version.',
       )
     }
+    const keyRemap = validateKeyRemap(
+      receipt.keyRemap ?? [],
+      proposal.request,
+      receipt.applied,
+      this.#options.getRowKey,
+    )
     const published = this.#options.getPublishedSnapshot()
     assertCompleteDataSourceSnapshot(published)
     if (
@@ -385,6 +402,7 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
       latest,
       proposal.request.rows,
       proposal.request.draftRevision,
+      keyRemap,
     )
     this.#inFlight = null
     this.#retry = null
@@ -536,4 +554,43 @@ function isDraftDirty<Row, RowKey extends GridRowKey>(
     snapshot.draft.deletedRowKeys.length > 0 ||
     snapshot.draft.orderDirty
   )
+}
+
+function validateKeyRemap<Row, RowKey extends GridRowKey>(
+  remap: NonNullable<GridCommitReceipt<Row, RowKey>['keyRemap']>,
+  request: GridCommitRequest<Row, RowKey>,
+  applied: GridReadyDataSourceSnapshot<Row>,
+  getRowKey: (row: Row) => RowKey,
+) {
+  const inserted = new Set(request.changes.inserted.map((item) => item.rowKey))
+  const appliedKeys = new Set(applied.rows.map(getRowKey))
+  const fromKeys = new Set<RowKey>()
+  const toKeys = new Set<RowKey>()
+  const normalized = remap.map((item) => {
+    if (gridRowKeysEqual(item.from, item.to)) {
+      throw new Error('A server row-key remap must change the row key.')
+    }
+    if (!inserted.has(item.from)) {
+      throw new Error(
+        `A server row-key remap references a row that was not inserted: "${String(item.from)}".`,
+      )
+    }
+    if (fromKeys.has(item.from) || toKeys.has(item.to)) {
+      throw new Error('A commit receipt contains duplicate server row-key remaps.')
+    }
+    if (!appliedKeys.has(item.to)) {
+      throw new Error(
+        `The applied snapshot does not contain remapped row key "${String(item.to)}".`,
+      )
+    }
+    if (appliedKeys.has(item.from)) {
+      throw new Error(
+        `The applied snapshot still contains temporary row key "${String(item.from)}".`,
+      )
+    }
+    fromKeys.add(item.from)
+    toKeys.add(item.to)
+    return Object.freeze({ from: item.from, to: item.to })
+  })
+  return Object.freeze(normalized)
 }

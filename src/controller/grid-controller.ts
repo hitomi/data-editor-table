@@ -21,6 +21,7 @@ import {
   assertUniqueDataSourceRowKeys,
   type GridDataSource,
   type GridDataSourceSnapshot,
+  type GridRowKeyRemap,
 } from '../data/data-source.js'
 import { deriveLocalView } from '../data/local-view.js'
 import {
@@ -45,6 +46,7 @@ import {
 import type {
   GridCompiledColumn,
   GridControllerSnapshot,
+  GridEditSession,
   GridHitTarget,
   GridInteractionState,
   GridPoint,
@@ -93,6 +95,67 @@ import {
   replaceGridRanges,
   startGridPointer,
 } from './interaction-transitions.js'
+
+function remapGridRowKey<RowKey extends GridRowKey>(
+  rowKey: RowKey,
+  remap: readonly GridRowKeyRemap<RowKey>[],
+) {
+  return remap.find((item) => gridRowKeysEqual(item.from, rowKey))?.to ?? rowKey
+}
+
+function remapGridRowKeys<RowKey extends GridRowKey>(
+  rowKeys: readonly RowKey[],
+  remap: readonly GridRowKeyRemap<RowKey>[],
+) {
+  return remap.length === 0
+    ? rowKeys
+    : Object.freeze(rowKeys.map((rowKey) => remapGridRowKey(rowKey, remap)))
+}
+
+function remapGridPoint<RowKey extends GridRowKey>(
+  point: GridPoint<RowKey>,
+  remap: readonly GridRowKeyRemap<RowKey>[],
+): GridPoint<RowKey> {
+  if (remap.length === 0) return point
+  const rowKey = remapGridRowKey(point.rowKey, remap)
+  return gridRowKeysEqual(rowKey, point.rowKey)
+    ? point
+    : Object.freeze({ ...point, rowKey })
+}
+
+function remapGridInteraction<RowKey extends GridRowKey>(
+  interaction: GridInteractionState<RowKey>,
+  remap: readonly GridRowKeyRemap<RowKey>[],
+): GridInteractionState<RowKey> {
+  if (remap.length === 0) return interaction
+  const range = (item: GridRange<RowKey>) => Object.freeze({
+    anchor: remapGridPoint(item.anchor, remap),
+    focus: remapGridPoint(item.focus, remap),
+  })
+  return Object.freeze({
+    ...interaction,
+    activeCell: interaction.activeCell
+      ? remapGridPoint(interaction.activeCell, remap)
+      : null,
+    ranges: Object.freeze(interaction.ranges.map(range)),
+    fillPreview: interaction.fillPreview ? range(interaction.fillPreview) : null,
+    actionSession: interaction.actionSession
+      ? Object.freeze({
+          ...interaction.actionSession,
+          target: remapGridPoint(interaction.actionSession.target, remap),
+        })
+      : null,
+  })
+}
+
+function remapGridEditSession<RowKey extends GridRowKey>(
+  session: GridEditSession<RowKey> | null,
+  remap: readonly GridRowKeyRemap<RowKey>[],
+) {
+  if (!session || remap.length === 0) return session
+  const cell = remapGridPoint(session.cell, remap)
+  return cell === session.cell ? session : Object.freeze({ ...session, cell })
+}
 
 export type * from './controller-contracts.js'
 
@@ -2295,6 +2358,7 @@ export function createGridController<
     latest: GridDataSourceSnapshot<Row>,
     committedRows: readonly Row[],
     committedDraftRevision: number,
+    keyRemap: readonly GridRowKeyRemap<RowKey>[],
   ) => {
     let draft = replayDraftAfterCommit({
       current: snapshot.draft,
@@ -2304,6 +2368,7 @@ export function createGridController<
       publishedVersion: applied.version,
       columns,
       getRowKey: options.dataSource.getRowKey,
+      keyRemap,
       ...(options.dataSource.cloneRow
         ? { cloneRow: options.dataSource.cloneRow }
         : {}),
@@ -2320,12 +2385,13 @@ export function createGridController<
           : {}),
       })
     }
-    publishRemote(latest, draft)
+    publishRemote(latest, draft, keyRemap)
   }
 
   const publishRemote = (
     remote: GridDataSourceSnapshot<Row>,
     draft: typeof snapshot.draft,
+    keyRemap: readonly GridRowKeyRemap<RowKey>[] = [],
   ) => {
     assertCompleteDataSourceSnapshot(remote)
     assertUniqueDataSourceRowKeys(remote, options.dataSource.getRowKey)
@@ -2338,20 +2404,37 @@ export function createGridController<
         error: remote.error ?? null,
       }),
       view = derive(draft.rows, snapshot.view, snapshot.view.revision + 1),
-      interaction = sameKeyOrder(
+      previousVisibleRowKeys = remapGridRowKeys(
         snapshot.view.visibleRowKeys,
+        keyRemap,
+      ),
+      previousInteraction = remapGridInteraction(
+        snapshot.interaction,
+        keyRemap,
+      ),
+      interaction = sameKeyOrder(
+        previousVisibleRowKeys,
         view.visibleRowKeys,
       )
-        ? snapshot.interaction
+        ? previousInteraction
         : reconcileInteractionAfterViewChange(
-            snapshot.interaction,
+            previousInteraction,
             view.visibleRowKeys,
             columnKeys(),
           ),
-      nextEdit = reconcileEditAfterRemote(snapshot.edit, draft, source.revision),
+      nextEdit = reconcileEditAfterRemote(
+        remapGridEditSession(snapshot.edit, keyRemap),
+        draft,
+        source.revision,
+      ),
       nextBulk = snapshot.bulk
         ? Object.freeze({
             ...snapshot.bulk,
+            targetCells: Object.freeze(
+              snapshot.bulk.targetCells.map((target) =>
+                remapGridPoint(target, keyRemap),
+              ),
+            ),
             revision: snapshot.bulk.revision + 1,
             error: 'Data changed while this bulk edit was open. Cancel it and start again.',
           })

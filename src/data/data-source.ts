@@ -21,9 +21,52 @@ export type GridDataSourceSnapshot<Row> =
 export type GridReadyDataSourceSnapshot<Row> = GridDataSourceSnapshotBase<Row> &
   Readonly<{ status: 'ready'; error?: never }>
 
+export type GridCellChange<RowKey extends GridRowKey> = Readonly<{
+  rowKey: RowKey
+  columnKey: string
+  before: unknown
+  after: unknown
+}>
+
+export type GridInsertedRow<Row, RowKey extends GridRowKey> = Readonly<{
+  rowKey: RowKey
+  row: Row
+}>
+
+export type GridUpdatedRow<Row, RowKey extends GridRowKey> = Readonly<{
+  rowKey: RowKey
+  before: Row
+  after: Row
+  cells: readonly GridCellChange<RowKey>[]
+}>
+
+export type GridDeletedRow<Row, RowKey extends GridRowKey> = Readonly<{
+  rowKey: RowKey
+  row: Row
+}>
+
+export type GridRowOrderChange<RowKey extends GridRowKey> = Readonly<{
+  before: readonly RowKey[]
+  after: readonly RowKey[]
+}>
+
+/**
+ * Persistence-oriented changes derived from one accepted grid proposal.
+ * Rows remain available on the request for document-style or replacement
+ * APIs, while this change set maps directly to transactional CRUD writes.
+ */
+export type GridChangeSet<Row, RowKey extends GridRowKey> = Readonly<{
+  inserted: readonly GridInsertedRow<Row, RowKey>[]
+  updated: readonly GridUpdatedRow<Row, RowKey>[]
+  deleted: readonly GridDeletedRow<Row, RowKey>[]
+  order: GridRowOrderChange<RowKey> | null
+}>
+
 export type GridCommitRequest<Row, RowKey extends GridRowKey> = Readonly<{
   /** Complete proposed authority in its exact persistent row order. */
   rows: readonly Row[]
+  /** Typed inserts, updates, deletes, and optional ordering intent. */
+  changes: GridChangeSet<Row, RowKey>
   acceptedRowKeys: readonly RowKey[]
   deletedRowKeys: readonly RowKey[]
   /**
@@ -43,9 +86,21 @@ export type GridCommitRequest<Row, RowKey extends GridRowKey> = Readonly<{
   operationId: string
 }>
 
-export type GridCommitReceipt<Row> = Readonly<{
+export type GridRowKeyRemap<RowKey extends GridRowKey> = Readonly<{
+  /** Client-generated key used in the committed proposal. */
+  from: RowKey
+  /** Authoritative key assigned by the server. */
+  to: RowKey
+}>
+
+export type GridCommitReceipt<
+  Row,
+  RowKey extends GridRowKey = never,
+> = Readonly<{
   operationId: string
   applied: GridReadyDataSourceSnapshot<Row>
+  /** Maps temporary inserted-row keys to keys assigned by the authority. */
+  keyRemap?: readonly GridRowKeyRemap<RowKey>[]
 }>
 
 export type GridPersistenceCapability<Row, RowKey extends GridRowKey> = Readonly<{
@@ -61,7 +116,7 @@ export type GridPersistenceCapability<Row, RowKey extends GridRowKey> = Readonly
    */
   commit: (
     request: GridCommitRequest<Row, RowKey>,
-  ) => Promise<GridCommitReceipt<Row>>
+  ) => Promise<GridCommitReceipt<Row, RowKey>>
 }>
 
 export type GridCommitFailureKind =

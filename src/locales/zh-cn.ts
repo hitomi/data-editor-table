@@ -1,0 +1,270 @@
+import type { GridBooleanCellTypeMessages } from '../cell-types/boolean.js'
+import type {
+  GridMultiSelectCellTypeMessages,
+  GridSingleSelectCellTypeMessages,
+} from '../cell-types/choices.js'
+import type { GridImageCellTypeMessages } from '../cell-types/image.js'
+import type {
+  GridIsoDateCellTypeMessages,
+  GridNumberCellTypeMessages,
+  GridStringCellTypeMessages,
+} from '../cell-types/standard.js'
+import type { DataGridMessages } from '../react/data-grid.js'
+
+export type DataEditorTableLocale = Readonly<{
+  code: string
+  dataGrid: DataGridMessages
+  cellTypes: Readonly<{
+    string: GridStringCellTypeMessages
+    number: GridNumberCellTypeMessages
+    isoDate: GridIsoDateCellTypeMessages
+    singleSelect: GridSingleSelectCellTypeMessages
+    multiSelect: GridMultiSelectCellTypeMessages
+    boolean: GridBooleanCellTypeMessages
+    image: GridImageCellTypeMessages
+  }>
+}>
+
+const applyToCells = (count: number) => `应用到 ${count} 个单元格`
+
+/** Simplified Chinese messages for the grid and every built-in cell type. */
+export const zhCN: DataEditorTableLocale = {
+  code: 'zh-CN',
+  dataGrid: {
+    loadingData: '正在初始化表格…',
+    sourceConfigurationChanged: '表格配置已更新。保存当前修改后重新打开表格以应用新配置。',
+    detachedSourceWork: '另一份表格数据仍有未保存或正在处理的修改。',
+    rowsRefreshFailed: '数据未能刷新。',
+    retryRefresh: '重新读取',
+    changesSaveFailed: '修改未能保存。',
+    refreshData: '刷新数据',
+    retrySave: '重试保存',
+    actionsLabel: '表格操作',
+    filterRowsLabel: '搜索表格',
+    filterRowsPlaceholder: '搜索当前表格…',
+    undo: '撤销',
+    redo: '重做',
+    editSelection: '批量编辑…',
+    addRow: '新增一行',
+    duplicateRows: (count) => `复制 ${count} 行`,
+    deleteRows: (count) => `删除 ${count} 行`,
+    deleteRowsBlocked: (blockedCount, selectedCount) =>
+      selectedCount === blockedCount
+        ? `选中的 ${selectedCount} 行不可删除。`
+        : `选中的 ${selectedCount} 行中有 ${blockedCount} 行不可删除。请取消选择后再删除其他行。`,
+    saving: '正在保存…',
+    saveChanges: '保存修改',
+    rows: (visible, total) => visible === total
+      ? `共 ${total} 行`
+      : `显示 ${visible} / ${total} 行`,
+    selection: (rows, columns, cells) =>
+      `${rows} 行 × ${columns} 列 · ${cells} 个单元格`,
+    changed: (count) => `${count} 项修改`,
+    invalid: (count) => `${count} 项无效`,
+    conflicted: (count) => `${count} 项冲突`,
+    saveScheduled: '等待保存',
+    editCells: (count) => `编辑选中的 ${count} 个单元格`,
+    dismissMessage: '关闭消息',
+    editCell: '编辑单元格',
+    copySelection: '复制选区',
+    clipboardUnavailable: '无法访问剪贴板。可使用 Ctrl/Cmd+C 复制选区。',
+    clipboardWriteFailed: '未能复制选区。允许剪贴板访问后重试。',
+    clearSelection: '清空选中单元格',
+    useRemoteCell: '采用服务器值',
+    keepLocalCell: '保留本地值',
+    useRemoteRow: '采用服务器数据',
+    keepLocalRow: '保留本地数据',
+    restoreCell: '恢复此单元格',
+    restoreSelection: '恢复选区',
+    restoreRow: '恢复此行',
+    dialogLabel: (column) => `筛选${column}`,
+    title: (column) => `筛选${column}`,
+    match: '条件关系',
+    allConditions: '满足全部条件',
+    anyCondition: '满足任一条件',
+    condition: (index) => `第 ${index} 个条件`,
+    value: (column, index, multiple) => multiple
+      ? `${column}的第 ${index} 个值`
+      : `${column}的值`,
+    chooseValue: '选择值',
+    removeCondition: (index) => `移除第 ${index} 个条件`,
+    clearFilter: '清除筛选',
+    addCondition: '添加条件',
+    cancel: '取消',
+    applyFilter: '应用筛选',
+    selectAllCells: '选择全部单元格',
+    columnContainsChanges: '此列有待保存的修改',
+    filterColumn: (column) => `筛选${column}`,
+    sortColumn: (column) => `排序${column}`,
+    sortColumnAscending: (column) => `${column}升序`,
+    sortColumnDescending: (column) => `${column}降序`,
+    clearColumnSort: (column) => `清除${column}排序`,
+    rowLabel: (row) => `第 ${row} 行`,
+    selectRow: (row) => `选择${row}`,
+    rowCannotBeDeleted: (row) => `${row}不可删除`,
+    rowContainsChanges: '此行有待保存的修改',
+    rowChangedTitle: (row) => `${row}有待保存的修改`,
+    cellContainsChanges: '此单元格有待保存的修改',
+    changedCellOriginalValue: (value) => `已修改。原始值：${value}`,
+    emptyOriginalValue: '空',
+    originalValue: '原始值',
+    revertCell: '恢复原始值',
+    loadingRows: '正在读取数据…',
+    refreshingRows: '正在刷新数据…',
+    rowsLoadError: '数据未能读取。',
+    emptyRows: '暂无数据。',
+    filteredEmptyRows: '没有数据符合当前筛选条件。',
+    unknownCellType: (cellType) => `无法显示单元格类型：${cellType}`,
+    cancelInvalidEdit: '取消编辑',
+    unsavedEditValue: (value) => `尚未应用的输入：${value}`,
+    currentInvalidSourceValue: (value) => `当前数据：${value}`,
+    applyHiddenEdit: '应用编辑',
+    editedCellOutsideViewport: '正在编辑的单元格不在当前可见区域。',
+    editedRowHidden: '正在编辑的行不符合当前筛选条件。',
+    editedRowUnavailable: '正在编辑的行已不可用。',
+    rejectedAction: () => '当前操作无法完成。请检查未完成的编辑、无效数据或数据冲突。',
+  },
+  cellTypes: {
+    string: {
+      invalidValue: '输入文本。',
+      contains: '包含',
+      notContains: '不包含',
+      equals: '等于',
+      notEquals: '不等于',
+      isEmpty: '为空',
+      isNotEmpty: '不为空',
+      filterValueRequired: '输入筛选内容。',
+      findRequired: '输入要查找的内容。',
+      invalidRegularExpression: '输入有效的正则表达式。',
+      operation: '操作',
+      setValue: '统一设置',
+      addPrefixOrSuffix: '添加前缀或后缀',
+      findAndReplace: '查找并替换',
+      value: '内容',
+      prefix: '前缀',
+      suffix: '后缀',
+      find: '查找',
+      replaceWith: '替换为',
+      regularExpression: '使用正则表达式',
+      cancel: '取消',
+      applyToCells,
+    },
+    number: {
+      invalidValue: '输入有效数值。',
+      invalidNumber: '输入有效数值。',
+      finiteNumberRequired: '输入有限数值。',
+      belowMinimum: (minimum) => `数值不能小于 ${minimum}。`,
+      aboveMaximum: (maximum) => `数值不能大于 ${maximum}。`,
+      equals: '等于',
+      notEquals: '不等于',
+      greaterThan: '大于',
+      greaterThanOrEqual: '大于或等于',
+      lessThan: '小于',
+      lessThanOrEqual: '小于或等于',
+      isEmpty: '为空',
+      isNotEmpty: '不为空',
+      filterValueInvalid: '输入有效的筛选数值。',
+      value: '数值',
+      cancel: '取消',
+      applyToCells,
+    },
+    isoDate: {
+      invalidValue: '输入 ISO 日期。',
+      invalidFormat: '日期格式应为 YYYY-MM-DD。',
+      invalidDate: '输入有效的 YYYY-MM-DD 日期。',
+      on: '日期等于',
+      notOn: '日期不等于',
+      before: '早于',
+      after: '晚于',
+      isEmpty: '为空',
+      isNotEmpty: '不为空',
+      filterValueInvalid: '输入有效的 YYYY-MM-DD 日期。',
+      value: '日期',
+      cancel: '取消',
+      applyToCells,
+    },
+    singleSelect: {
+      valueRequired: '选择一个值。',
+      unknownValue: '选择可用选项。',
+      unavailable: (label) => `${label ?? '此选项'}当前不可用。`,
+      pasteValueInvalid: '粘贴可用选项的名称或值。',
+      restartEdit: '重新打开编辑并选择一个值。',
+      equals: '等于',
+      notEquals: '不等于',
+      isEmpty: '为空',
+      isNotEmpty: '不为空',
+      filterValueRequired: '选择筛选值。',
+      chooseValue: '选择值',
+      chooseValuePlaceholder: '选择一个值',
+      value: '值',
+      keepExistingValues: '保留原值',
+      cancel: '取消',
+      applyToCells,
+    },
+    multiSelect: {
+      invalidValue: '值应为选项列表。',
+      unknownValue: '每个值都必须来自可用选项。',
+      duplicateValue: '同一个选项不能重复选择。',
+      unavailable: (label) => `${label ?? '此选项'}当前不可用。`,
+      unknownOption: (value) => `未知选项：${value}`,
+      invalidCsvRow: '粘贴一行由选项名称或值组成的 CSV。',
+      unclosedCsvQuote: '粘贴的 CSV 中有未闭合的引号。',
+      contains: '包含',
+      notContains: '不包含',
+      isEmpty: '为空',
+      isNotEmpty: '不为空',
+      filterValueRequired: '选择用于筛选的标签。',
+      chooseValues: '选择值',
+      cancel: '取消',
+      apply: '应用',
+      operation: '操作',
+      keepExistingTags: '保留现有标签',
+      replaceTags: '替换标签',
+      addTags: '添加标签',
+      removeTags: '移除标签',
+      tags: '标签',
+      applyToCells,
+    },
+    boolean: {
+      invalidValue: '选择是或否。',
+      equals: '等于',
+      notEquals: '不等于',
+      choiceRequired: '选择一个布尔值后再应用。',
+      filterChoiceRequired: '选择一个布尔值。',
+      pasteValueInvalid: '粘贴 TRUE、FALSE 或当前配置的显示名称。',
+      value: '值',
+      chooseValue: '选择一个值',
+      cancel: '取消',
+      applyToCells,
+    },
+    image: {
+      hasImage: '有图片',
+      isEmpty: '无图片',
+      removeImage: '移除图片',
+      uploadCancelled: '已取消图片上传。',
+      uploadFailed: '图片未能上传。',
+      choose: '选择图片',
+      replace: '更换图片',
+      cancel: '取消',
+      fileTooLarge: (maxBytes) => `选择小于 ${formatBytes(maxBytes)} 的图片。`,
+      unsupportedFileType: '选择支持的图片文件。',
+    },
+  },
+}
+
+Object.freeze(zhCN.dataGrid)
+for (const messages of Object.values(zhCN.cellTypes)) Object.freeze(messages)
+Object.freeze(zhCN.cellTypes)
+Object.freeze(zhCN)
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`
+  const units = ['KB', 'MB', 'GB']
+  let value = bytes / 1024
+  let unit = units[0]!
+  for (let index = 1; index < units.length && value >= 1024; index += 1) {
+    value /= 1024
+    unit = units[index]!
+  }
+  return `${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 }).format(value)} ${unit}`
+}

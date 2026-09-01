@@ -1,6 +1,6 @@
 {
   "name": "data-editor-table",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Turnkey business-data bulk editor for React",
   "homepage": "https://hitomi.github.io/data-editor-table/",
   "repository": {
@@ -29,6 +29,10 @@
       "types": "./dist/engine.d.ts",
       "import": "./dist/engine.js"
     },
+    "./locales/zh-CN": {
+      "types": "./dist/locales/zh-cn.d.ts",
+      "import": "./dist/locales/zh-CN.js"
+    },
     "./styles.css": {
       "types": "./dist/styles-entry.d.ts",
       "default": "./dist/styles.css"
@@ -49,8 +53,9 @@
     "check": "pnpm check:boundaries && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.demo.json --noEmit",
     "check:boundaries": "bash scripts/check-v2-import-boundary.sh",
     "check:package": "bash scripts/check-package-consumer.sh",
+    "test": "vitest run",
     "lint": "oxlint src --deny-warnings",
-    "prepublishOnly": "pnpm check && pnpm lint && pnpm demo:build && pnpm check:package"
+    "prepublishOnly": "pnpm check && pnpm test && pnpm lint && pnpm demo:build && pnpm check:package"
   },
   "peerDependencies": {
     "react": "^19.0.0",

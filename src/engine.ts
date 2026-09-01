@@ -1,6 +1,7 @@
 export * from './controller/grid-controller.js'
 export * from './controller/grid-selectors.js'
 export * from './data/data-source.js'
+export * from './data/remote-data-source.js'
 export * from './data/runtime-cell-resolver.js'
 export * from './model/grid-model.js'
 export * from './model/cell-identity.js'

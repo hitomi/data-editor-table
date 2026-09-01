@@ -57,7 +57,11 @@ try {
   page.on('pageerror', (error) => browserErrors.push(error.message))
   const verifyGrid = async ({ path, structureOnly }) => {
     await page.goto(`http://127.0.0.1:${address.port}/${path}`)
-    await page.getByRole('grid', { name: 'Packed package grid' }).waitFor()
+    await page.getByRole('grid', { name: '打包产物表格' }).waitFor()
+    const save = page.getByRole('button', { name: '保存修改' })
+    if (!(await save.isDisabled())) {
+      throw new Error('A clean packed remote grid unexpectedly enabled Save changes.')
+    }
     const cell = page.getByRole('gridcell').filter({ hasText: 'Packed row' })
     await cell.waitFor()
     await cell.click()
@@ -71,6 +75,10 @@ try {
     await editor.fill('Packed edit')
     await page.keyboard.press('Enter')
     await page.getByRole('gridcell').filter({ hasText: 'Packed edit' }).waitFor()
+    await save.click()
+    if (!(await save.isDisabled())) {
+      throw new Error('The packed remote grid did not settle after saving.')
+    }
 
     const editedCell = page.getByRole('gridcell').filter({ hasText: 'Packed edit' })
     await editedCell.click({ button: 'right' })
@@ -114,7 +122,7 @@ try {
   if (browserErrors.length > 0) {
     throw new Error(`Packed browser consumer reported errors:\n${browserErrors.join('\n')}`)
   }
-  process.stdout.write('Verified packed styles.css and Tailwind-style structure.css consumers in Chromium.\n')
+  process.stdout.write('Verified the StrictMode hook, remote adapter, zh-CN locale, styles.css, and structure.css consumers in Chromium.\n')
 } finally {
   await browser?.close()
   await new Promise((resolveClose, rejectClose) => {

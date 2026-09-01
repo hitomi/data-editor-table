@@ -1,12 +1,15 @@
 import {
   DataGrid,
   createCellTypeRegistry,
+  createRemoteGridDataSource,
   createStringCellType,
+  useDataGridBinding,
   type GridCellTypeSchemaOf,
   type GridDataSource,
   type GridDataSourceSnapshot,
   type GridReadyDataSourceSnapshot,
 } from 'data-editor-table'
+import { zhCN } from 'data-editor-table/locales/zh-CN'
 import { createGridController } from 'data-editor-table/engine'
 import 'data-editor-table/styles.css'
 import 'data-editor-table/structure.css'
@@ -49,6 +52,24 @@ export const dataSource: GridDataSource<Row, number, Schema> = {
 
 export const headlessController = createGridController<Row, number, Schema>({ dataSource, cellBehaviors: registry.behaviors })
 export const TurnkeyGrid = DataGrid<Row, number, Schema>
+export const createBindingHook = useDataGridBinding<Row, number, Schema>
+export const chineseGridMessages = zhCN.dataGrid
+
+export const remoteDataSource = createRemoteGridDataSource<Row, number, Schema>({
+  columns: dataSource.columns,
+  getRowKey: dataSource.getRowKey,
+  initialSnapshot: snapshot,
+  persistence: {
+    mode: 'manual-save',
+    mutate: async (request) => ({
+      kind: 'applied',
+      authority: {
+        rows: request.rows,
+        version: Number(request.sourceVersion) + 1,
+      },
+    }),
+  },
+})
 
 const invalidDataSource: GridDataSource<Row, number, Schema> = {
   ...dataSource,

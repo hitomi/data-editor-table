@@ -28,7 +28,7 @@ The initial release renders the complete row set supplied by the data source, us
 pnpm add data-editor-table react react-dom
 ```
 
-The current public release is `0.1.0`.
+This source release is `0.2.0`.
 
 Import the complete default styles once:
 
@@ -48,17 +48,19 @@ React 19 is a peer dependency.
 
 ## Quick start
 
-This is a complete in-memory editor. In production, replace the body of `commit` with an API call.
+This example uses the remote adapter intended for API/database-backed applications. The adapter
+keeps one stable external-store identity, exposes a typed change set to the write API, and publishes
+the server's actual result back to the grid.
 
 ```tsx
 import {
   DataGrid,
+  GridCommitError,
   createCellTypeRegistry,
+  createGridIdempotencyHeaders,
+  createRemoteGridDataSource,
   createStringCellType,
   type GridCellTypeSchemaOf,
-  type GridDataSource,
-  type GridDataSourceSnapshot,
-  type GridReadyDataSourceSnapshot,
 } from 'data-editor-table'
 import 'data-editor-table/styles.css'
 
@@ -68,22 +70,7 @@ const registry = createCellTypeRegistry<Product>()
   .register('string', createStringCellType())
 type CellTypes = GridCellTypeSchemaOf<typeof registry>
 
-let snapshot: GridDataSourceSnapshot<Product> = {
-  rows: [
-    { id: 'product-1', name: 'Amber poster' },
-    { id: 'product-2', name: 'Blue card' },
-  ],
-  status: 'ready',
-  version: 1,
-  scope: { kind: 'complete' },
-}
-const listeners = new Set<() => void>()
-function publish(next: GridDataSourceSnapshot<Product>) {
-  snapshot = next
-  for (const listener of listeners) listener()
-}
-
-const dataSource: GridDataSource<Product, string, CellTypes> = {
+const dataSource = createRemoteGridDataSource<Product, string, CellTypes>({
   columns: [{
     key: 'name',
     label: 'Name',
@@ -96,27 +83,73 @@ const dataSource: GridDataSource<Product, string, CellTypes> = {
     setValue: (row, name) => ({ ...row, name }),
   }],
   getRowKey: (row) => row.id,
-  getSnapshot: () => snapshot,
-  subscribe(listener) {
-    listeners.add(listener)
-    return () => { listeners.delete(listener) }
+  // Usually supplied by a route loader, server component, or query cache.
+  initialSnapshot: {
+    rows: [
+      { id: 'product-1', name: 'Amber poster' },
+      { id: 'product-2', name: 'Blue card' },
+    ],
+    status: 'ready',
+    version: 'products:41',
+    scope: { kind: 'complete' },
+  },
+  async load({ signal }) {
+    const response = await fetch('/api/products', { signal })
+    if (!response.ok) throw new Error('Products could not be loaded.')
+    return response.json() as Promise<{
+      rows: readonly Product[]
+      version: string
+    }>
   },
   persistence: {
     mode: 'auto-save',
     debounceMs: 500,
-    async commit(request) {
-      // Use request.operationId as the idempotency key for a real write.
-      const applied = {
-        rows: request.rows,
-        status: 'ready',
-        version: Number(snapshot.version) + 1,
-        scope: { kind: 'complete' },
-      } satisfies GridReadyDataSourceSnapshot<Product>
-      publish(applied)
-      return { operationId: request.operationId, applied }
+    async mutate(request) {
+      let response: Response
+      try {
+        response = await fetch('/api/products/grid-changes', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...createGridIdempotencyHeaders(request.operationId),
+          },
+          body: JSON.stringify({
+            operationId: request.operationId,
+            sourceVersion: request.sourceVersion,
+            changes: request.changes,
+          }),
+        })
+      } catch {
+        throw new GridCommitError(
+          'unknown-outcome',
+          'The connection was lost while saving. Retry the same operation.',
+        )
+      }
+      if (response.status === 409) {
+        throw new GridCommitError(
+          'source-version-conflict',
+          'Products changed on the server. Refresh and review the conflicts.',
+        )
+      }
+      if (!response.ok) {
+        throw new GridCommitError(
+          'unknown-outcome',
+          'The server did not confirm whether the changes were saved.',
+        )
+      }
+      const result = await response.json() as {
+        rows: readonly Product[]
+        version: string
+        keyRemap?: readonly { from: string; to: string }[]
+      }
+      return {
+        kind: 'applied',
+        authority: { rows: result.rows, version: result.version },
+        ...(result.keyRemap ? { keyRemap: result.keyRemap } : {}),
+      }
     },
   },
-}
+})
 
 export function ProductEditor() {
   return <div style={{ height: 480, minWidth: 0 }}>
@@ -142,6 +175,36 @@ Practical rules:
 7. Reject failed writes. The grid retains the draft and exposes retry/recovery.
 
 Snapshots distinguish `loading`, `refreshing`, `ready`, and `error` (`error` also requires a user-facing `error` string). Optional `refresh({ signal })` starts a host refresh and publishes its result. Supply `cloneRow(row)` for class instances or other rows that cannot use structured cloning.
+
+### Remote API and database writes
+
+`createRemoteGridDataSource` is the standard adapter for remote state. It intentionally does not
+depend on TanStack Query, SWR, GraphQL, REST, or a database client. Keep the returned object stable;
+publish route/query-cache state with `dataSource.publish(snapshot)`, or provide `load` so Refresh
+and post-mutation reloads can read the authority.
+
+Every `GridCommitRequest` contains both representations of the same accepted proposal:
+
+- `rows`: the complete proposed authority in persistent order, useful for document replacement APIs.
+- `changes.inserted`: new typed rows and their temporary client keys.
+- `changes.updated`: the original row, proposed row, and changed cells with before/after values.
+- `changes.deleted`: deleted keys and original rows.
+- `changes.order`: the before/after key order when persistent order changed.
+
+Apply `changes` in one database transaction using `sourceVersion` for optimistic concurrency. Forward
+`operationId` through every layer (the helper produces the conventional `Idempotency-Key` HTTP
+header), and enforce a unique operation ID in the database or operation ledger. Repeating the same
+ID must return the first operation's result instead of applying the writes again.
+
+After a successful mutation, return one of:
+
+- `{ kind: 'applied', authority }` when the write endpoint returns the exact stored rows and new
+  version. This preserves server defaults, normalization, triggers, calculated values, and permissions.
+- `{ kind: 'reload' }` when the adapter should call `load` and wait for the exact stored authority.
+
+Do not construct a success result from `request.rows` unless those rows are literally the database
+result. If the server replaces a temporary key, include `keyRemap: [{ from, to }]`; queued edits,
+selection, active editing, dirty state, and history are reconciled onto the authoritative key.
 
 A column maps a registered type to business data:
 
@@ -338,38 +401,32 @@ Import `defineCellType` from the package root. Every definition needs `behavior.
 
 ## Messages, surfaces, and theme
 
-The package is i18n-library agnostic. `DataGrid.messages` accepts typed partial overrides for the
-grid shell, and every built-in cell-type factory accepts its own typed partial `messages` object.
-Function-valued messages receive values such as row, cell, or byte counts, so the host can apply
-its own pluralization and number formatting.
+The package is i18n-library agnostic and includes complete English defaults plus the exported
+`zhCN` locale. `DataGrid.messages` accepts typed partial overrides for the grid shell, and every
+built-in cell-type factory accepts its own typed partial `messages` object. Function-valued messages
+receive values such as row, cell, or byte counts, so the host can apply its own pluralization and
+number formatting.
 
 ```tsx
+import { zhCN } from 'data-editor-table/locales/zh-CN'
+
 const registry = createCellTypeRegistry<Product>()
   .register('string', createStringCellType({
-    locale: 'zh-CN',
-    messages: {
-      contains: '包含',
-      notContains: '不包含',
-      equals: '等于',
-      isEmpty: '为空',
-      value: '内容',
-      cancel: '取消',
-      applyToCells: (count) => `应用到 ${count} 个单元格`,
-    },
+    locale: zhCN.code,
+    messages: zhCN.cellTypes.string,
   }))
 
 <DataGrid
   ariaLabel="商品"
   dataSource={dataSource}
   registry={registry}
-  messages={{
-    actionsLabel: '表格操作',
-    filterRowsLabel: '筛选行',
-    saveChanges: '保存更改',
-    rows: (_visible, total) => `共 ${total} 行`,
-  }}
+  messages={zhCN.dataGrid}
 />
 ```
+
+Use `zhCN.cellTypes.number`, `isoDate`, `singleSelect`, `multiSelect`, `boolean`,
+and `image` with their corresponding factories. These are ordinary typed message objects, so an
+application can spread and override individual strings without adopting a particular i18n runtime.
 
 The exported `DataGridMessages`, `GridStringCellTypeMessages`,
 `GridNumberCellTypeMessages`, `GridIsoDateCellTypeMessages`,
@@ -473,7 +530,22 @@ therefore need their global component classes styled as shown above.
 
 ## Advanced integration
 
-Use `createDataGridBinding({ dataSource, registry })` when host UI needs `binding.controller`; render `<DataGrid binding={binding} ariaLabel="Products" />` and call `binding.destroy()` after permanent unmount. One binding drives only one mounted viewport. `useGridSelector` subscribes to controller state. The owned form manages this lifecycle automatically.
+Use `useDataGridBinding` when React host UI needs direct controller access. It creates and destroys
+the binding after React commits, including the development StrictMode setup/cleanup cycle; `null`
+is returned until the binding is ready.
+
+```tsx
+function ProductGrid() {
+  const binding = useDataGridBinding({ dataSource, registry })
+  if (!binding) return <div role="status">Preparing products…</div>
+  return <DataGrid ariaLabel="Products" binding={binding} />
+}
+```
+
+Use `createDataGridBinding({ dataSource, registry })` only outside React lifecycle ownership and call
+`binding.destroy()` after permanent disposal. One binding drives only one mounted viewport.
+`useGridSelector` subscribes host components to controller state. The simpler
+`<DataGrid dataSource={dataSource} registry={registry} />` form owns this lifecycle automatically.
 
 Import React-free data-source, resolver, selection, controller, and persistence contracts from `data-editor-table/engine`; that subpath does not export React views, registries, or hooks.
 
@@ -505,13 +577,14 @@ Demos are integration recipes, not additional API contracts.
 
 - `data-editor-table`: React grid, types, registry, controller, and public contracts
 - `data-editor-table/engine`: React-free engine
+- `data-editor-table/locales/zh-CN`: complete Simplified Chinese messages
 - `data-editor-table/styles.css`: structure plus the default theme
 - `data-editor-table/structure.css`: behavior-critical layout for Tailwind or custom themes
 - `data-editor-table/theme.css`: default visual theme (loaded after `structure.css`)
 
 ## Limits and status
 
-`0.1.0` is the first public test release. It is suitable for integration testing, but its API may
+`0.2.0` is an early public test release. It is suitable for integration testing, but its API may
 still change before `1.0` as real applications exercise the data-source and editing contracts.
 
 - Snapshots currently contain one complete loaded set; there is no pagination/window protocol or row virtualization.

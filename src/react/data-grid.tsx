@@ -629,7 +629,7 @@ function GridToolbarBoundary<
     onDuplicateRows: () => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'rows/duplicate' })),
     onGlobalFilterChange: (value) => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'view/set-global-filter', value })),
     onRedo: () => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'history/redo' })),
-    onSave: () => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'persistence/save' })),
+    onSave: () => saveGridChanges(controller, messages.rejectedAction),
     onUndo: () => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'history/undo' })),
     state,
   }
@@ -805,7 +805,7 @@ function GridContextMenuBoundary<
     id: 'save-changes', group: 'persistence',
     label: commandState.persistenceStatus === 'saving' ? messages.saving : messages.saveChanges,
     disabled: !commandState.canSave || commandState.persistenceStatus === 'saving',
-    run: () => run({ type: 'persistence/save' }),
+    run: () => saveGridChanges(controller, messages.rejectedAction),
   })
   actions.push(...buildContextActions({
     context,
@@ -834,6 +834,27 @@ function GridContextMenuBoundary<
     position: actionSession.menuPosition,
   } satisfies GridContextMenuProps
   return renderer ? renderer(props) : <GridContextMenu {...props} />
+}
+
+function saveGridChanges<
+  Row,
+  RowKey extends GridRowKey,
+  Schema extends GridCellTypeSchema,
+  Effect,
+>(
+  controller: GridController<Row, RowKey, Schema, Effect>,
+  presentRejection: GridRejectedActionPresenter,
+) {
+  if (controller.getSnapshot().edit) {
+    const committed = controller.dispatch({ type: 'edit/commit' })
+    reportRejected(controller, presentRejection, committed)
+    if (!committed.accepted) return
+  }
+  reportRejected(
+    controller,
+    presentRejection,
+    controller.dispatch({ type: 'persistence/save' }),
+  )
 }
 
 function GridBulkDialogBoundary<
@@ -983,7 +1004,7 @@ function selectGridCommandState<
     canUndo: snapshot.draft.undoStack.length > 0,
     canRedo: snapshot.draft.redoStack.length > 0,
     canBulkEdit: Boolean(hasBulkTarget && bulkColumn?.bulkEditable && bulkView?.BulkEditor),
-    canSave: savePlan.canSave,
+    canSave: savePlan.canSave || snapshot.edit !== null,
     showBulkEdit: snapshot.columns.some((column) => Boolean(column.bulkEditable && registry.views.resolve(column.type)?.BulkEditor)),
     persistenceMode: snapshot.persistence.mode,
     persistenceStatus: snapshot.persistence.status,

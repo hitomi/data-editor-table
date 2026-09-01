@@ -2,6 +2,14 @@
   "name": "data-editor-table",
   "version": "0.1.0",
   "description": "Turnkey business-data bulk editor for React",
+  "homepage": "https://hitomi.github.io/data-editor-table/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hitomi/data-editor-table.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hitomi/data-editor-table/issues"
+  },
   "type": "module",
   "sideEffects": [
     "**/*.css"

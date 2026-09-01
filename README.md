@@ -1,6 +1,12 @@
 # data-editor-table
 
+[![npm version](https://img.shields.io/npm/v/data-editor-table.svg)](https://www.npmjs.com/package/data-editor-table)
+[![license](https://img.shields.io/npm/l/data-editor-table.svg)](./LICENSE)
+
 A styled React bulk editor for business data. Applications provide an authoritative data source, explicitly register cell types, and define columns; the grid supplies selection, typed editing, validation, clipboard and fill operations, filtering, sorting, dirty/conflict handling, row operations, history, and persistence.
+
+[Try the live demo](https://hitomi.github.io/data-editor-table/) or browse the
+[source on GitHub](https://github.com/hitomi/data-editor-table).
 
 ## Core capabilities
 
@@ -21,6 +27,8 @@ The initial release renders the complete row set supplied by the data source, us
 ```sh
 pnpm add data-editor-table react react-dom
 ```
+
+The current public release is `0.1.0`.
 
 Import the complete default styles once:
 
@@ -499,11 +507,14 @@ Demos are integration recipes, not additional API contracts.
 
 ## Limits and status
 
+`0.1.0` is the first public test release. It is suitable for integration testing, but its API may
+still change before `1.0` as real applications exercise the data-source and editing contracts.
+
 - Snapshots currently contain one complete loaded set; there is no pagination/window protocol or row virtualization.
 - Rows have fixed height. Interactive column resize, arbitrary frozen columns, and persisted column layout are not in the initial release.
 - Cross-grid Cut is two controller operations, not a globally atomic transaction.
 - The native implementation is the only production path; legacy and `react-data-grid` were removed.
-- M5 is a test candidate awaiting interaction acceptance. Permanent v2 regression coverage is planned for M6.
+- The package is being exercised in real business workflows before the next public release.
 
 See the [native grid v2 plan](docs/native-grid-v2-plan.md) for rationale, detailed concurrency rules, milestones, and acceptance notes.
 

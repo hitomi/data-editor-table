@@ -138,7 +138,7 @@ export function selectGridToolbar<Row, RowKey extends GridRowKey>(snapshot: Grid
     canAdd: snapshot.rowOperations.canAdd,
     canDuplicate: duplicatePlan.canDuplicate,
     canDelete: deletePlan.canDelete,
-    canSave: savePlan.canSave,
+    canSave: savePlan.canSave || snapshot.edit !== null,
     saving: snapshot.persistence.status === 'saving',
   })
 }

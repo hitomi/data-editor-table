@@ -1,4 +1,5 @@
 import type { GridCellTypeSchema, GridColumnForCellTypes } from '../cell-types/contracts.js'
+import type { StandardGridCellTypeSchema } from '../cell-types/standard-contracts.js'
 import type {
   GridPersistenceMode,
   GridRowKey,
@@ -83,13 +84,14 @@ export type RemoteGridDataSource<
  * Creates a stable external store for API/database-backed grids. It keeps
  * loading, refresh, mutation, publication, and commit-receipt semantics in one
  * reusable adapter without depending on a particular query or backend client.
+ * Standard columns use the standard cell-type schema when Schema is omitted.
  */
 export function createRemoteGridDataSource<
   Row,
   RowKey extends GridRowKey,
-  Schema extends GridCellTypeSchema,
+  Schema extends GridCellTypeSchema = StandardGridCellTypeSchema,
 >(
-  options: CreateRemoteGridDataSourceOptions<Row, RowKey, Schema>,
+  options: CreateRemoteGridDataSourceOptions<Row, RowKey, NoInfer<Schema>>,
 ): RemoteGridDataSource<Row, RowKey, Schema> {
   const listeners = new Set<() => void>()
   let snapshot = freezeSnapshot(options.initialSnapshot)

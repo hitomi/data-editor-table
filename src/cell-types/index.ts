@@ -1,4 +1,5 @@
 export * from './contracts.js'
+export * from './standard-contracts.js'
 export * from './react-view-contracts.js'
 export * from './registry.js'
 export * from './standard.js'

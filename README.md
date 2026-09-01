@@ -28,7 +28,7 @@ The initial release renders the complete row set supplied by the data source, us
 pnpm add data-editor-table react react-dom
 ```
 
-This source release is `0.3.0`.
+This source release is `0.3.1`.
 
 Import the complete default styles once:
 
@@ -59,7 +59,6 @@ import {
   createGridColumnHelper,
   createGridIdempotencyHeaders,
   createRemoteGridDataSource,
-  type StandardGridCellTypeSchema,
 } from 'data-editor-table'
 import 'data-editor-table/styles.css'
 
@@ -67,7 +66,7 @@ type Product = { id: string; name: string }
 
 const column = createGridColumnHelper<Product>()
 
-const dataSource = createRemoteGridDataSource<Product, string, StandardGridCellTypeSchema>({
+const dataSource = createRemoteGridDataSource({
   columns: [column.field('name', {
     label: 'Name',
     type: 'string',
@@ -595,7 +594,7 @@ Demos are integration recipes, not additional API contracts.
 
 ## Limits and status
 
-`0.3.0` is an early public test release. It is suitable for integration testing, but its API may
+`0.3.1` is an early public test release. It is suitable for integration testing, but its API may
 still change before `1.0` as real applications exercise the data-source and editing contracts.
 
 - Snapshots currently contain one complete loaded set; there is no pagination/window protocol or row virtualization.

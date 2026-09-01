@@ -11,6 +11,7 @@ test('quick start uses the default registry across desktop widths', async ({ pag
   const grid = page.getByRole('grid', { name: 'Quick-start products' })
   await expect(grid).toBeVisible()
   await expect(page.getByTestId('quick-start-code')).not.toContainText('registry=')
+  await expect(page.getByTestId('quick-start-code')).not.toContainText('StandardGridCellTypeSchema')
 
   const activeCell = grid.locator('[role="gridcell"][data-column-key="active"][data-grid-row-index="0"]')
   const checkbox = activeCell.getByRole('checkbox', { name: 'True' })

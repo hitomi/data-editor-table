@@ -72,6 +72,36 @@ export const remoteDataSource = createRemoteGridDataSource<Row, number, Schema>(
   },
 })
 
+type QuickStartProduct = {
+  id: string
+  name: string
+  active: boolean
+}
+
+const quickStartColumn = createGridColumnHelper<QuickStartProduct>()
+
+/** Standard columns infer the default schema without an explicit registry or schema generic. */
+export const quickStartDataSource = createRemoteGridDataSource({
+  columns: [
+    quickStartColumn.field('name', { label: 'Name', type: 'string' }),
+    quickStartColumn.field('active', { label: 'Active', type: 'boolean' }),
+  ],
+  getRowKey: (row) => row.id,
+  initialSnapshot: {
+    rows: [{ id: 'product-1', name: 'Poster', active: true }],
+    status: 'ready',
+    version: 1,
+    scope: { kind: 'complete' },
+  },
+  persistence: {
+    mode: 'auto-save',
+    mutate: async (request) => ({
+      kind: 'applied',
+      authority: { rows: request.rows, version: 2 },
+    }),
+  },
+})
+
 const invalidDataSource: GridDataSource<Row, number, Schema> = {
   ...dataSource,
   columns: [{

@@ -15,6 +15,10 @@ import type {
   GridValueResult,
 } from './contracts.js'
 import type {
+  GridMultiSelectColumnOptions,
+  GridSingleSelectColumnOptions,
+} from './standard-contracts.js'
+import type {
   GridCellBulkEditorProps,
   GridCellEditorProps,
   GridCellTypeDefinition,
@@ -27,6 +31,11 @@ import { formatDefaultApplyToCells, resolveCellTypeMessages } from './messages.j
 import { defineCellTypeFactory, defineCellTypeFamily } from './registry.js'
 import { GridCellEditorPopover } from '../react/grid-layers.js'
 
+export type {
+  GridMultiSelectColumnOptions,
+  GridSingleSelectColumnOptions,
+} from './standard-contracts.js'
+
 type ChoiceCatalog<Value extends GridChoiceValue> = ReturnType<typeof createChoiceCatalog<Value>>
 
 export type GridSingleSelectCellTypeOptions<Value extends GridChoiceValue> = Readonly<{
@@ -35,13 +44,6 @@ export type GridSingleSelectCellTypeOptions<Value extends GridChoiceValue> = Rea
   emptyValue?: null
   emptyLabel?: string
   messages?: Partial<GridSingleSelectCellTypeMessages>
-}>
-
-export type GridSingleSelectColumnOptions<Value extends GridChoiceValue = GridChoiceValue> = Readonly<{
-  /** Static options shared by editing, filtering, validation, clipboard, and bulk editing. */
-  options: readonly GridChoiceOption<Value>[]
-  nullable?: boolean
-  emptyLabel?: string
 }>
 
 export type GridSingleSelectCellTypeMessages = Readonly<{
@@ -289,12 +291,6 @@ export type GridMultiSelectCellTypeOptions<Value extends GridChoiceValue> = Read
   options: readonly GridChoiceOption<Value>[]
   emptyLabel?: string
   messages?: Partial<GridMultiSelectCellTypeMessages>
-}>
-
-export type GridMultiSelectColumnOptions<Value extends GridChoiceValue = GridChoiceValue> = Readonly<{
-  /** Static options shared by editing, filtering, validation, clipboard, and bulk editing. */
-  options: readonly GridChoiceOption<Value>[]
-  emptyLabel?: string
 }>
 
 export type GridMultiSelectCellTypeMessages = Readonly<{

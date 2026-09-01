@@ -3,7 +3,6 @@ import {
   createGridColumnHelper,
   createRemoteGridDataSource,
   type GridCommitRequest,
-  type StandardGridCellTypeSchema,
 } from 'data-editor-table'
 
 type Product = {
@@ -22,11 +21,7 @@ const initialProducts: readonly Product[] = [
 
 const column = createGridColumnHelper<Product>()
 
-const dataSource = createRemoteGridDataSource<
-  Product,
-  string,
-  StandardGridCellTypeSchema
->({
+const dataSource = createRemoteGridDataSource({
   columns: [
     column.field('name', { label: 'Name', type: 'string', sortable: true }),
     column.field('quantity', {
@@ -74,7 +69,6 @@ const shortestIntegration = `import {
   DataGrid,
   createGridColumnHelper,
   createRemoteGridDataSource,
-  type StandardGridCellTypeSchema,
 } from 'data-editor-table'
 import 'data-editor-table/styles.css'
 
@@ -86,11 +80,7 @@ type Product = {
 
 const column = createGridColumnHelper<Product>()
 
-const dataSource = createRemoteGridDataSource<
-  Product,
-  string,
-  StandardGridCellTypeSchema
->({
+const dataSource = createRemoteGridDataSource({
   columns: [
     column.field('name', { label: 'Name', type: 'string' }),
     column.field('active', { label: 'Active', type: 'boolean' }),

@@ -31,6 +31,9 @@ export type GridKeyboardCommand =
   | 'commit-edit'
   | 'cancel'
   | 'clear'
+  | 'select-all'
+  | 'select-row'
+  | 'select-column'
   | 'undo'
   | 'redo'
 

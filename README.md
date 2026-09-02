@@ -366,6 +366,7 @@ rows: {
 ## Built-in interactions
 
 - Drag cells to select; Shift extends and Ctrl/Command adds ranges. Row indicators, headers, and the corner select rows, columns, or all visible cells.
+- From an active cell, Ctrl/Command+A selects all visible cells, Shift+Space selects its row, and Ctrl/Command+Space selects its column.
 - Clicking the already-active single cell, Enter, F2, or printable input edits when the type allows it.
 - Copy/paste, clear, bulk edit, and fill validate every destination through its type. Fill repeats the source sequence unless the type supplies series behavior.
 - Header buttons filter and sort; clicking the header selects the column.
@@ -399,8 +400,11 @@ const ratingType = defineCellType<Product, number, string>({
   },
   view: {
     Cell: ({ displayText }) => <span>{displayText}</span>,
-    Editor: ({ draft, setDraft, commit, cancel }) => <input
-      aria-label="Rating" autoFocus inputMode="numeric" value={draft}
+    Editor: ({ ariaDescriptionId, ariaInvalid, ariaLabel, draft, setDraft, commit, cancel }) => <input
+      aria-describedby={ariaDescriptionId ?? undefined}
+      aria-invalid={ariaInvalid || undefined}
+      aria-label={ariaLabel}
+      autoFocus inputMode="numeric" value={draft}
       onChange={(event) => { setDraft(event.currentTarget.value) }}
       onKeyDown={(event) => {
         if (event.key === 'Enter') commit()
@@ -414,7 +418,7 @@ const ratingType = defineCellType<Product, number, string>({
 const registry = createCellTypeRegistry<Product>().register('rating', ratingType)
 ```
 
-Import `defineCellType` from the package root. Every definition needs `behavior.value.validate`, `behavior.text.display`, `view.Cell`, and `view.presentation`. `behavior.edit`/`view.Editor` and `behavior.bulk`/`view.BulkEditor` must appear in pairs. Optional `search`, `original`, `equals`, `clipboard`, `clear`, `fill`, `compare`, `filter`, `bulk`, `actions`, and cancellable `effects` add capabilities without grid special cases.
+Import `defineCellType` from the package root. Every definition needs `behavior.value.validate`, `behavior.text.display`, `view.Cell`, and `view.presentation`. `behavior.edit`/`view.Editor` and `behavior.bulk`/`view.BulkEditor` must appear in pairs. Optional `accessible`, `search`, `original`, `equals`, `clipboard`, `clear`, `fill`, `compare`, `filter`, `bulk`, `actions`, and cancellable `effects` add capabilities without grid special cases. Use `text.accessible` when display text is not a useful spoken name, such as an image URL.
 
 ## Messages, surfaces, and theme
 

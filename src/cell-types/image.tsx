@@ -109,6 +109,12 @@ export function createImageCellType<Row, Value>(
     },
     text: {
       display: (value, context) => options.resolveSrc(value, context.row) ?? '',
+      accessible: (value, context) => {
+        const resolved = resolveOptions(context.typeOptions)
+        return value === null
+          ? resolved.label(context.row)
+          : resolved.alt(context.row, value) || resolved.label(context.row)
+      },
       search: (value, context) => options.resolveSrc(value, context.row) ?? '',
       original: (value, context) => options.resolveSrc(value, context.row) ?? '',
     },

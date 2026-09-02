@@ -3,19 +3,24 @@ import { isGridCellSelected, selectedCells, selectedRowKeys } from './selection-
 import { invokeGridCallback } from '../data/safe-callback.js'
 import { encodeCellIdentity } from '../model/cell-identity.js'
 import {
+  accessibleGridCellValue,
   displayGridCellValue,
   resolveGridCellValue,
 } from '../data/runtime-cell-resolver.js'
 import { gridRowKeysEqual } from '../model/row-key.js'
 import { isGridRowOrderDirty } from '../data/row-order.js'
+import { gridSelectorIndex } from './grid-selector-index.js'
 
 export function selectGridCell<Row, RowKey extends GridRowKey>(snapshot: GridControllerSnapshot<Row, RowKey>, point: GridPoint<RowKey>) {
-  const row = snapshot.draft.rows.find((candidate) => gridRowKeysEqual(snapshot.getRowKey(candidate), point.rowKey))
-  const column = snapshot.columns.find((candidate) => candidate.key === point.columnKey)
+  const index = gridSelectorIndex(snapshot)
+  const identity = encodeCellIdentity(point)
+  const row = index.rows.get(point.rowKey)
+  const column = index.columns.get(point.columnKey)
   if (!row || !column) return null
-  const dirty = snapshot.draft.dirtyCells.find((candidate) => samePoint(candidate, point)) ?? null
+  const dirty = index.dirtyCells.get(identity) ?? null
   const resolved = resolveGridCellValue(row, column)
   const displayed = displayGridCellValue(resolved)
+  const accessible = accessibleGridCellValue(resolved)
   const selected = isGridCellSelected(snapshot, point.rowKey, point.columnKey)
   return Object.freeze({
     row,
@@ -28,14 +33,17 @@ export function selectGridCell<Row, RowKey extends GridRowKey>(snapshot: GridCon
       : resolved.valid
         ? 'Invalid value'
         : resolved.fallbackText,
+    accessibleText: accessible.ok
+      ? accessible.value
+      : column.label,
     editable: resolved.valid && column.isEditable(row),
     active: snapshot.interaction.activeCell ? samePoint(snapshot.interaction.activeCell, point) : false,
     selected,
     dirty,
     dirtyOriginalAvailable: dirty !== null
-      && !snapshot.draft.insertedRowKeys.some((rowKey) => gridRowKeysEqual(rowKey, point.rowKey)),
-    validation: snapshot.draft.validationIssues.find((candidate) => samePoint(candidate, point)) ?? (resolved.valid ? null : Object.freeze({ rowKey: point.rowKey, columnKey: point.columnKey, message: resolved.issue.message })),
-    conflict: snapshot.draft.conflicts.find((candidate) => candidate.columnKey === point.columnKey && gridRowKeysEqual(candidate.rowKey, point.rowKey)) ?? null,
+      && !index.insertedRowKeys.has(point.rowKey),
+    validation: index.validationIssues.get(identity) ?? (resolved.valid ? null : Object.freeze({ rowKey: point.rowKey, columnKey: point.columnKey, message: resolved.issue.message })),
+    conflict: index.cellConflicts.get(identity) ?? null,
     tabIndex: snapshot.interaction.activeCell && samePoint(snapshot.interaction.activeCell, point) ? 0 : -1,
   })
 }

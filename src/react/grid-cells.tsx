@@ -8,8 +8,8 @@ import {
   selectGridRowDeleteAvailability,
   type GridRowDeleteAvailability,
 } from '../controller/grid-selectors.js'
+import { gridSelectorIndex } from '../controller/grid-selector-index.js'
 import { isGridCellSelected } from '../controller/selection-model.js'
-import { invokeGridCallback } from '../data/safe-callback.js'
 import type {
   GridCompiledColumn,
   GridControllerSnapshot,
@@ -24,8 +24,6 @@ import {
 } from './controller-react.js'
 import type { GridDomEffectAdapter } from './dom-effect-adapter.js'
 import { GridDirtyCellPopover } from './grid-layers.js'
-
-const missingDraftRow = Symbol('missing-grid-draft-row')
 
 export type GridCellMessages = Readonly<{
   selectAllCells: string
@@ -337,7 +335,7 @@ function GridRowHeaderActionsBoundary<
     snapshot: GridControllerSnapshot<Row, RowKey>,
   ) => selectDraftRow(snapshot, rowKey), [rowKey])
   const row = useGridSelector(controller, selector)
-  if (row === missingDraftRow) return null
+  if (row === null) return null
   const selectRow = () => {
     const snapshot = controller.getSnapshot()
     const firstColumn = snapshot.columns[0]?.key
@@ -436,7 +434,7 @@ function GridCellImpl<
     invalid,
     conflict,
   ].filter(Boolean).join(' ')
-  const accessibleName = status ? `${cell.displayText}. ${status}` : cell.displayText
+  const accessibleName = status ? `${cell.accessibleText}. ${status}` : cell.accessibleText
   return <div
     aria-colindex={columnIndex + 2}
     aria-label={accessibleName}
@@ -498,22 +496,37 @@ export const GridCell = memo(GridCellImpl) as typeof GridCellImpl
 function createCellSelector<Row, RowKey extends GridRowKey>(point: GridPoint<RowKey>) {
   let previous: Readonly<{
     columns: GridControllerSnapshot<Row, RowKey>['columns']
-    draft: GridControllerSnapshot<Row, RowKey>['draft']
-    interaction: GridControllerSnapshot<Row, RowKey>['interaction']
-    view: GridControllerSnapshot<Row, RowKey>['view']
+    rows: GridControllerSnapshot<Row, RowKey>['draft']['rows']
+    dirtyCells: GridControllerSnapshot<Row, RowKey>['draft']['dirtyCells']
+    validationIssues: GridControllerSnapshot<Row, RowKey>['draft']['validationIssues']
+    conflicts: GridControllerSnapshot<Row, RowKey>['draft']['conflicts']
+    insertedRowKeys: GridControllerSnapshot<Row, RowKey>['draft']['insertedRowKeys']
+    activeCell: GridControllerSnapshot<Row, RowKey>['interaction']['activeCell']
+    ranges: GridControllerSnapshot<Row, RowKey>['interaction']['ranges']
+    visibleRowKeys: GridControllerSnapshot<Row, RowKey>['view']['visibleRowKeys']
   }> | null = null
   let selected: ReturnType<typeof selectGridCell<Row, RowKey>> = null
   return (snapshot: GridControllerSnapshot<Row, RowKey>) => {
     if (previous
       && previous.columns === snapshot.columns
-      && previous.draft === snapshot.draft
-      && previous.interaction === snapshot.interaction
-      && previous.view === snapshot.view) return selected
+      && previous.rows === snapshot.draft.rows
+      && previous.dirtyCells === snapshot.draft.dirtyCells
+      && previous.validationIssues === snapshot.draft.validationIssues
+      && previous.conflicts === snapshot.draft.conflicts
+      && previous.insertedRowKeys === snapshot.draft.insertedRowKeys
+      && previous.activeCell === snapshot.interaction.activeCell
+      && previous.ranges === snapshot.interaction.ranges
+      && previous.visibleRowKeys === snapshot.view.visibleRowKeys) return selected
     previous = {
       columns: snapshot.columns,
-      draft: snapshot.draft,
-      interaction: snapshot.interaction,
-      view: snapshot.view,
+      rows: snapshot.draft.rows,
+      dirtyCells: snapshot.draft.dirtyCells,
+      validationIssues: snapshot.draft.validationIssues,
+      conflicts: snapshot.draft.conflicts,
+      insertedRowKeys: snapshot.draft.insertedRowKeys,
+      activeCell: snapshot.interaction.activeCell,
+      ranges: snapshot.interaction.ranges,
+      visibleRowKeys: snapshot.view.visibleRowKeys,
     }
     selected = selectGridCell(snapshot, point)
     return selected
@@ -526,26 +539,36 @@ function selectAllCellsSelected<Row, RowKey extends GridRowKey>(snapshot: GridCo
     && snapshot.view.visibleRowKeys.every((rowKey) => snapshot.columns.every((column) => isGridCellSelected(snapshot, rowKey, column.key)))
 }
 
-function selectColumnHeader<Row, RowKey extends GridRowKey>(snapshot: GridControllerSnapshot<Row, RowKey>, columnKey: string) {
+function selectColumnHeader<Row, RowKey extends GridRowKey>(
+  snapshot: GridControllerSnapshot<Row, RowKey>,
+  columnKey: string,
+) {
+  const index = gridSelectorIndex(snapshot)
   const sort = snapshot.view.sort.find((entry) => entry.columnKey === columnKey)
   return {
-    dirty: snapshot.draft.dirtyCells.some((entry) => entry.columnKey === columnKey),
-    filterCount: snapshot.view.columnFilters.filter((entry) => entry.columnKey === columnKey).length,
+    dirty: index.dirtyColumnKeys.has(columnKey),
+    filterCount: index.filterCounts.get(columnKey) ?? 0,
     selected: snapshot.view.visibleRowKeys.length > 0
-      && snapshot.view.visibleRowKeys.every((rowKey) => isGridCellSelected(snapshot, rowKey, columnKey)),
+      && snapshot.view.visibleRowKeys.every((rowKey) =>
+        isGridCellSelected(snapshot, rowKey, columnKey),
+      ),
     sortDirection: sort?.direction,
   } as const
 }
 
-function selectRowIndicator<Row, RowKey extends GridRowKey>(snapshot: GridControllerSnapshot<Row, RowKey>, rowKey: RowKey) {
-  const conflict = snapshot.draft.conflicts.find((entry) => gridRowKeysEqual(entry.rowKey, rowKey) && entry.columnKey === null)
+function selectRowIndicator<Row, RowKey extends GridRowKey>(
+  snapshot: GridControllerSnapshot<Row, RowKey>,
+  rowKey: RowKey,
+) {
+  const index = gridSelectorIndex(snapshot)
   return {
-    conflict: conflict?.message ?? null,
+    conflict: index.rowConflictMessages.get(rowKey) ?? null,
     deleteAvailability: selectGridRowDeleteAvailability(snapshot, rowKey),
-    dirty: snapshot.draft.insertedRowKeys.some((key) => gridRowKeysEqual(key, rowKey))
-      || snapshot.draft.dirtyCells.some((entry) => gridRowKeysEqual(entry.rowKey, rowKey)),
+    dirty: index.insertedRowKeys.has(rowKey) || index.dirtyRowKeys.has(rowKey),
     selected: snapshot.columns.length > 0
-      && snapshot.columns.every((column) => isGridCellSelected(snapshot, rowKey, column.key)),
+      && snapshot.columns.every((column) =>
+        isGridCellSelected(snapshot, rowKey, column.key),
+      ),
   } as const
 }
 
@@ -553,11 +576,7 @@ function selectDraftRow<Row, RowKey extends GridRowKey>(
   snapshot: GridControllerSnapshot<Row, RowKey>,
   rowKey: RowKey,
 ) {
-  for (const row of snapshot.draft.rows) {
-    const resolved = invokeGridCallback(() => snapshot.getRowKey(row))
-    if (resolved.ok && gridRowKeysEqual(resolved.value, rowKey)) return row
-  }
-  return missingDraftRow
+  return gridSelectorIndex(snapshot).rows.get(rowKey) ?? null
 }
 
 function equalColumnHeader(
@@ -591,6 +610,7 @@ function equalCellSelection<Row, RowKey extends GridRowKey>(
     && left.valid === right.valid
     && Object.is(left.value, right.value)
     && left.displayText === right.displayText
+    && left.accessibleText === right.accessibleText
     && left.editable === right.editable
     && left.active === right.active
     && left.selected === right.selected

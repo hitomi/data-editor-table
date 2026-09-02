@@ -296,6 +296,7 @@ export type DataGridBulkDialogProps = Readonly<{
   ariaLabel: string
   title: ReactNode
   editor: ReactNode
+  onCancel: () => void
 }>
 
 export type DataGridFeedbackProps = Readonly<{
@@ -1032,9 +1033,14 @@ function GridBulkDialogBoundary<
   const view = registry.views.resolve(slice.column.type, slice.column.typeOptions)
   if (!view?.BulkEditor) return null
   const Editor = view.BulkEditor
+  const cancel = () => reportRejected(
+    controller,
+    messages.rejectedAction,
+    controller.dispatch({ type: 'bulk/cancel' }),
+  )
   const editor = <Editor
     apply={() => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'bulk/apply' }))}
-    cancel={() => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'bulk/cancel' }))}
+    cancel={cancel}
     cellCount={slice.bulk.targetCells.length}
     columnKey={slice.column.key}
     draft={slice.bulk.draft}
@@ -1046,8 +1052,12 @@ function GridBulkDialogBoundary<
     ariaLabel: messages.editCells(slice.bulk.targetCells.length),
     title: <strong>{messages.editCells(slice.bulk.targetCells.length)}</strong>,
     editor,
+    onCancel: cancel,
   } satisfies DataGridBulkDialogProps
-  return renderer ? renderer(props) : <GridDialog ariaLabel={props.ariaLabel}>{props.title}{props.editor}</GridDialog>
+  return renderer ? renderer(props) : <GridDialog
+    ariaLabel={props.ariaLabel}
+    onEscape={props.onCancel}
+  >{props.title}{props.editor}</GridDialog>
 }
 
 function GridFilterDialogBoundary<

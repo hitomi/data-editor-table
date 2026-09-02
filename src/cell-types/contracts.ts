@@ -265,6 +265,7 @@ export type GridCellBehavior<
   }>
   text: Readonly<{
     display: (value: Value, context: GridCellValueContext<Row, ColumnOptions>) => string
+    accessible?: (value: Value, context: GridCellValueContext<Row, ColumnOptions>) => string
     search?: (value: Value, context: GridCellValueContext<Row, ColumnOptions>) => string
     original?: (value: Value, context: GridCellValueContext<Row, ColumnOptions>) => string
   }>

@@ -691,6 +691,9 @@ function StandardTextCell<Row, Value>({ displayText }: GridCellViewProps<Row, Va
 }
 
 function StringEditor<Row>({
+  ariaDescriptionId,
+  ariaInvalid,
+  ariaLabel,
   cancel,
   commit,
   commitAndMove,
@@ -701,6 +704,9 @@ function StringEditor<Row>({
   typeOptions,
 }: GridCellEditorProps<Row, string, string, GridStringColumnOptions | undefined>) {
   return <input
+    aria-describedby={ariaDescriptionId ?? undefined}
+    aria-invalid={ariaInvalid || undefined}
+    aria-label={ariaLabel}
     autoFocus
     className="data-grid-cell-editor"
     inputMode={typeOptions?.inputMode ?? 'text'}
@@ -714,6 +720,9 @@ function StringEditor<Row>({
 }
 
 function NumberEditor<Row>({
+  ariaDescriptionId,
+  ariaInvalid,
+  ariaLabel,
   cancel,
   commit,
   commitAndMove,
@@ -724,6 +733,9 @@ function NumberEditor<Row>({
   typeOptions,
 }: GridCellEditorProps<Row, number | null, string, GridNumberColumnOptions | undefined>) {
   return <input
+    aria-describedby={ariaDescriptionId ?? undefined}
+    aria-invalid={ariaInvalid || undefined}
+    aria-label={ariaLabel}
     autoFocus
     className="data-grid-cell-editor data-grid-number-editor"
     inputMode="decimal"
@@ -738,6 +750,9 @@ function NumberEditor<Row>({
 }
 
 function DateEditor<Row>({
+  ariaDescriptionId,
+  ariaInvalid,
+  ariaLabel,
   cancel,
   commit,
   commitAndMove,
@@ -748,6 +763,9 @@ function DateEditor<Row>({
   typeOptions,
 }: GridCellEditorProps<Row, string | null, string, GridIsoDateColumnOptions | undefined>) {
   return <input
+    aria-describedby={ariaDescriptionId ?? undefined}
+    aria-invalid={ariaInvalid || undefined}
+    aria-label={ariaLabel}
     autoFocus
     className="data-grid-cell-editor data-grid-date-editor"
     placeholder={typeOptions?.placeholder}

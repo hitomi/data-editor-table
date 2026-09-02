@@ -366,6 +366,26 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
     if (isRowHeaderActionTarget(event.target)
       || (event.target as Element).closest('button, input, textarea, select, [contenteditable="true"]')) return
     const shortcut = event.metaKey || event.ctrlKey
+    const selectionCommand = shortcut && event.key.toLowerCase() === 'a'
+      ? 'select-all' as const
+      : event.key === ' ' && event.shiftKey && !shortcut
+        ? 'select-row' as const
+        : event.key === ' ' && shortcut && !event.shiftKey
+          ? 'select-column' as const
+          : null
+    if (selectionCommand) {
+      event.preventDefault()
+      const result = dispatch({
+        type: 'keyboard/command',
+        command: selectionCommand,
+      })
+      reportRejected(result)
+      if (result.accepted) {
+        const next = controller.getSnapshot().interaction.activeCell
+        if (next) queueMicrotask(() => { dom.focusCell(next) })
+      }
+      return
+    }
     if (shortcut && event.key.toLowerCase() === 'z') {
       event.preventDefault()
       dispatch({ type: 'keyboard/command', command: event.shiftKey ? 'redo' : 'undo' })
@@ -449,7 +469,9 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
   >
     <div
       aria-colcount={structure.columns.length + 1}
+      aria-keyshortcuts="Control+A Meta+A Shift+Space Control+Space Meta+Space"
       aria-label={ariaLabel}
+      aria-multiselectable="true"
       aria-rowcount={structure.visibleRowKeys.length + 1}
       className="business-grid__scrollport"
       ref={scrollport}
@@ -769,7 +791,9 @@ function GridEditorBoundary<
       reportCommitResult(result)
       if (result.accepted) {
         const active = controller.getSnapshot().interaction.activeCell
-        if (active) queueMicrotask(() => dom.focusCell(active))
+        queueMicrotask(() => {
+          if (!active || !dom.focusCell(active, false)) dom.focusGrid()
+        })
       } else queueMicrotask(() => dom.focusEditor())
     }}
     onDraftChange={onDraftChange}

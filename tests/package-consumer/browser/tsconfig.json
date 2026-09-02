@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "exactOptionalPropertyTypes": true,
+    "jsx": "react-jsx",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": false,
+    "strict": true,
+    "target": "ES2022",
+    "types": []
+  },
+  "include": ["main.tsx", "styles.d.ts"]
+}

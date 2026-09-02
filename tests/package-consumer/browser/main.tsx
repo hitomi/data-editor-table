@@ -53,7 +53,7 @@ function PackedGrid() {
   return <DataGrid
     ariaLabel="打包产物表格"
     binding={binding}
-    className={structureOnly ? 'packed-tailwind-grid' : undefined}
+    {...(structureOnly ? { className: 'packed-tailwind-grid' } : {})}
   />
 }
 

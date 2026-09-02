@@ -592,5 +592,15 @@ function validateKeyRemap<Row, RowKey extends GridRowKey>(
     toKeys.add(item.to)
     return Object.freeze({ from: item.from, to: item.to })
   })
+  for (const insertedRow of request.changes.inserted) {
+    if (
+      !appliedKeys.has(insertedRow.rowKey) &&
+      !fromKeys.has(insertedRow.rowKey)
+    ) {
+      throw new Error(
+        `The applied snapshot replaced or omitted inserted row key "${String(insertedRow.rowKey)}" without a server row-key remap.`,
+      )
+    }
+  }
   return Object.freeze(normalized)
 }

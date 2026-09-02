@@ -143,78 +143,45 @@ export function rebaseGridDraft<Row, RowKey extends GridRowKey>(
           typeOptions: column.typeOptions,
         }),
       )
-      if (
+      let conflictMessage = (
         prior ||
         !remote.valid ||
         !original.ok ||
         !columnValuesEqual(column, remote.value, original.value)
-      ) {
-        conflicts.push(
-          Object.freeze({
-            kind: 'field',
-            rowKey,
-            columnKey: column.key,
-            message: 'This cell changed both locally and remotely.',
-            localValue,
-            remoteValue,
-          }),
-        )
-      }
+      )
+        ? 'This cell changed both locally and remotely.'
+        : null
       if (!local.valid) {
-        conflicts.push(
-          Object.freeze({
-            kind: 'field',
-            rowKey,
-            columnKey: column.key,
-            message: local.issue.message,
-            localValue,
-            remoteValue,
-          }),
-        )
+        conflictMessage = local.issue.message
         merged = localRow
       } else if (column.setValue) {
         const cloned = cloneGridRow(merged, options.cloneRow)
         if (!cloned.ok) {
-          conflicts.push(
-            Object.freeze({
-              kind: 'field',
-              rowKey,
-              columnKey: column.key,
-              message: 'This row could not be cloned safely during refresh.',
-              localValue,
-              remoteValue,
-            }),
-          )
+          conflictMessage = 'This row could not be cloned safely during refresh.'
         } else {
           const set = invokeGridCallback(() =>
             column.setValue!(cloned.value, local.value),
           )
           if (!set.ok) {
-            conflicts.push(
-              Object.freeze({
-                kind: 'field',
-                rowKey,
-                columnKey: column.key,
-                message: set.message,
-                localValue,
-                remoteValue,
-              }),
-            )
+            conflictMessage = set.message
           } else if (!gridRowKeysEqual(options.getRowKey(set.value), rowKey)) {
-            conflicts.push(
-              Object.freeze({
-                kind: 'field',
-                rowKey,
-                columnKey: column.key,
-                message: 'A cell setter cannot change its row key.',
-                localValue,
-                remoteValue,
-              }),
-            )
+            conflictMessage = 'A cell setter cannot change its row key.'
           } else {
             merged = set.value
           }
         }
+      }
+      if (conflictMessage !== null) {
+        conflicts.push(
+          Object.freeze({
+            kind: 'field',
+            rowKey,
+            columnKey: column.key,
+            message: conflictMessage,
+            localValue,
+            remoteValue,
+          }),
+        )
       }
       nextDirty.push(
         Object.freeze({

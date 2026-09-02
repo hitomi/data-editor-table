@@ -247,6 +247,11 @@
   .business-grid__cell:focus-visible {
     box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--grid-accent) 48%, transparent);
   }
+
+  .business-grid__scrollport:focus-visible {
+    outline: 2px solid color-mix(in oklab, var(--grid-accent) 72%, transparent);
+    outline-offset: -2px;
+  }
 }
 
 @layer business-grid.overlays {

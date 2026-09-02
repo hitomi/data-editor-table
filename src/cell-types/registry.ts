@@ -408,6 +408,9 @@ function eraseBehavior<Row>(
     }),
     text: Object.freeze({
       display: (value: unknown, context: GridRuntimeValueContext<Row>) => behavior.text.display(value, context),
+      ...(behavior.text.accessible === undefined ? {} : {
+        accessible: (value: unknown, context: GridRuntimeValueContext<Row>) => behavior.text.accessible!(value, context),
+      }),
       ...(behavior.text.search === undefined ? {} : {
         search: (value: unknown, context: GridRuntimeValueContext<Row>) => behavior.text.search!(value, context),
       }),

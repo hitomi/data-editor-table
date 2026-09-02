@@ -94,27 +94,43 @@ export function createRemoteGridDataSource<
   options: CreateRemoteGridDataSourceOptions<Row, RowKey, NoInfer<Schema>>,
 ): RemoteGridDataSource<Row, RowKey, Schema> {
   const listeners = new Set<() => void>()
+  const commitWaiters = new Set<() => void>()
   let snapshot = freezeSnapshot(options.initialSnapshot)
-  let publicationRevision = 0
+  let activeCommits = 0
+  let commitTail: Promise<void> = Promise.resolve()
+  let authorityRevision = 0
+  let commitSequence = 0
+  let refreshSequence = 0
+  let activeRefresh: Readonly<{
+    id: number
+    before: GridDataSourceSnapshot<Row>
+    startingAuthorityRevision: number
+  }> | null = null
   validateSnapshot(snapshot, options.getRowKey)
 
-  const publish = (next: GridDataSourceSnapshot<Row>) => {
+  const publishSnapshot = (
+    next: GridDataSourceSnapshot<Row>,
+    authoritative: boolean | 'when-changed',
+  ) => {
     const normalized = freezeSnapshot(next)
     validateSnapshot(normalized, options.getRowKey)
-    if (
-      Object.is(snapshot.version, normalized.version) &&
-      !areGridAuthorityRowsEqual(
+    const sameVersion = Object.is(snapshot.version, normalized.version)
+    if (sameVersion) {
+      const sameRows = areGridAuthorityRowsEqual(
         snapshot.rows,
         normalized.rows,
         options.getRowKey,
       )
-    ) {
-      throw new Error(
-        'A remote data source cannot reuse one version for different authoritative rows.',
-      )
+      if (!sameRows) {
+        throw new Error(
+          'A remote data source cannot reuse one version for different authoritative rows.',
+        )
+      }
     }
     snapshot = normalized
-    publicationRevision += 1
+    if (authoritative === true || authoritative === 'when-changed' && !sameVersion) {
+      authorityRevision += 1
+    }
     for (const listener of listeners) {
       try {
         listener()
@@ -123,6 +139,29 @@ export function createRemoteGridDataSource<
         // reaching the remaining subscribers.
       }
     }
+  }
+  const publish = (next: GridDataSourceSnapshot<Row>) => {
+    refreshSequence += 1
+    activeRefresh = null
+    publishSnapshot(next, 'when-changed')
+  }
+  const waitForCommits = (signal: AbortSignal) =>
+    activeCommits === 0 || signal.aborted
+    ? Promise.resolve()
+    : new Promise<void>((resolve) => {
+        const settled = () => {
+          signal.removeEventListener('abort', settled)
+          commitWaiters.delete(settled)
+          resolve()
+        }
+        commitWaiters.add(settled)
+        signal.addEventListener('abort', settled, { once: true })
+      })
+  const settleCommit = () => {
+    activeCommits -= 1
+    if (activeCommits !== 0) return
+    for (const resolve of commitWaiters) resolve()
+    commitWaiters.clear()
   }
 
   const load = async (
@@ -162,26 +201,49 @@ export function createRemoteGridDataSource<
     ...(options.rows ? { rows: options.rows } : {}),
     ...(options.load ? {
       async refresh({ signal }: Readonly<{ signal: AbortSignal }>) {
-        const before = snapshot
-        publish(Object.freeze({
+        while (activeCommits > 0) {
+          await waitForCommits(signal)
+          if (signal.aborted) return
+        }
+        if (signal.aborted) return
+        const before = activeRefresh?.before ?? snapshot
+        const refreshId = ++refreshSequence
+        const startingAuthorityRevision = authorityRevision
+        const startingCommitSequence = commitSequence
+        activeRefresh = Object.freeze({
+          id: refreshId,
+          before,
+          startingAuthorityRevision,
+        })
+        const isCurrent = () =>
+          refreshId === refreshSequence &&
+          authorityRevision === startingAuthorityRevision &&
+          commitSequence === startingCommitSequence
+        publishSnapshot(Object.freeze({
           rows: before.rows,
           version: before.version,
           scope: before.scope,
           status: before.status === 'loading' ? 'loading' : 'refreshing',
-        }))
-        const refreshingRevision = publicationRevision
+        }), false)
         try {
-          publish(await load('refresh', signal))
+          const refreshed = await load('refresh', signal)
+          if (!isCurrent()) return
+          activeRefresh = null
+          publishSnapshot(refreshed, true)
         } catch (error) {
-          if (signal.aborted) return
-          if (publicationRevision !== refreshingRevision) return
-          publish(Object.freeze({
+          if (!isCurrent()) return
+          activeRefresh = null
+          if (signal.aborted) {
+            publishSnapshot(before, false)
+            return
+          }
+          publishSnapshot(Object.freeze({
             rows: snapshot.rows,
             version: snapshot.version,
             scope: snapshot.scope,
             status: 'error',
             error: error instanceof Error ? error.message : String(error),
-          }))
+          }), true)
           throw error
         }
       },
@@ -192,22 +254,51 @@ export function createRemoteGridDataSource<
         ? {}
         : { debounceMs: options.persistence.debounceMs }),
       async commit(request) {
-        const result = await options.persistence.mutate(request)
-        const applied = result.kind === 'applied'
-          ? readySnapshot(result.authority)
-          : await load(
-              'after-mutation',
-              new AbortController().signal,
-              request.operationId,
-            )
-        publish(applied)
-        return Object.freeze({
-          operationId: request.operationId,
-          applied,
-          ...(result.keyRemap === undefined
-            ? {}
-            : { keyRemap: Object.freeze([...result.keyRemap]) }),
-        })
+        const pendingRefresh = activeRefresh
+        refreshSequence += 1
+        activeRefresh = null
+        if (
+          pendingRefresh &&
+          authorityRevision === pendingRefresh.startingAuthorityRevision
+        ) {
+          publishSnapshot(pendingRefresh.before, false)
+        }
+        commitSequence += 1
+        const hasEarlierCommit = activeCommits > 0
+        activeCommits += 1
+        const execute = async () => {
+          const startingAuthorityRevision = authorityRevision
+          const result = await options.persistence.mutate(request)
+          const applied = result.kind === 'applied'
+            ? readySnapshot(result.authority)
+            : await load(
+                'after-mutation',
+                new AbortController().signal,
+                request.operationId,
+              )
+          if (authorityRevision === startingAuthorityRevision) {
+            publishSnapshot(applied, true)
+          }
+          return Object.freeze({
+            operationId: request.operationId,
+            applied,
+            ...(result.keyRemap === undefined
+              ? {}
+              : { keyRemap: Object.freeze([...result.keyRemap]) }),
+          })
+        }
+        const committing = hasEarlierCommit
+          ? commitTail.then(execute)
+          : execute()
+        commitTail = committing.then(
+          () => undefined,
+          () => undefined,
+        )
+        try {
+          return await committing
+        } finally {
+          settleCommit()
+        }
       },
     },
   }

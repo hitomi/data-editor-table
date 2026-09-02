@@ -87,6 +87,7 @@ import { GridPersistenceCoordinator } from './persistence-coordinator.js'
 import {
   activateGridPoint,
   endGridPointer,
+  gridRangeBounds,
   moveGridPoint,
   moveGridPointLinear,
   moveGridPointer,
@@ -384,9 +385,12 @@ export function createGridController<
       case 'edit/commit-and-move': {
         const committed = commitEdit()
         if (!committed.accepted) return committed
-        return intent.direction === 'down'
+        const moved = intent.direction === 'down'
           ? keyboard('move-down', false)
           : moveLinear(intent.direction === 'next' ? 1 : -1)
+        return moved.accepted
+          ? moved
+          : ok({ committed: true, moved: false })
       }
       case 'edit/cancel':
         if (!snapshot.edit) return no('There is no active edit session.')
@@ -669,6 +673,25 @@ export function createGridController<
       if (!committed.accepted) return committed
     }
     const active = snapshot.interaction.activeCell
+    if (
+      command === 'select-all' ||
+      command === 'select-row' ||
+      command === 'select-column'
+    ) {
+      if (command !== 'select-all' && !active) {
+        return no('There is no active cell.')
+      }
+      const range = rangeForHitTarget(
+        command === 'select-all'
+          ? { kind: 'corner' }
+          : command === 'select-row'
+            ? { kind: 'row', rowKey: active!.rowKey }
+            : { kind: 'column', columnKey: active!.columnKey },
+        snapshot.view.visibleRowKeys,
+        columnKeys(),
+      )
+      return range ? setRanges([range], 0) : no('The selection is unavailable.')
+    }
     if (!active) return no('There is no active cell.')
     const next = moveGridPoint(
       active,
@@ -811,6 +834,10 @@ export function createGridController<
   ) => {
     const blocked = draftCommandIssue(owner, 'changing grid data')
     if (blocked) return blocked
+    const limitIssue = mutationLimitIssue(
+      gridTransactionCost(uniqueMutationCount(mutations), 0),
+    )
+    if (limitIssue) return no(limitIssue)
     const attempted = invokeGridCallback(() =>
       applyCellTransaction({
         draft: snapshot.draft,
@@ -907,6 +934,22 @@ export function createGridController<
     label: string
     action: string
   }>) => {
+    const plannedCost = gridTransactionCost(
+      uniqueMutationCount(input.mutations),
+      input.createdRows.length +
+        new Set(input.removedRowKeys ?? []).size +
+        new Set(input.movedRowKeys ?? []).size,
+    )
+    const plannedLimitIssue = mutationLimitIssue(plannedCost)
+    if (plannedLimitIssue) {
+      return Object.freeze({
+        dispatch: no(plannedLimitIssue),
+        commit: null,
+        issues: Object.freeze([
+          transactionIssue<RowKey>('mutation-limit', plannedLimitIssue),
+        ]),
+      })
+    }
     const attempted = invokeGridCallback(() =>
       applyAtomicDraftTransaction({
         draft: input.base.draft,
@@ -1444,8 +1487,11 @@ export function createGridController<
     )
     const startC = cols.indexOf(active.columnKey)
     const missingRows = Math.max(0, startR + matrix.length - visibleKeys.length)
-    const rowLimitIssue = mutationLimitIssue(gridTransactionCost(0, missingRows))
-    if (rowLimitIssue) return no(rowLimitIssue)
+    const plannedCells = matrix.reduce((count, row) => count + row.length, 0)
+    const pasteLimitIssue = mutationLimitIssue(
+      gridTransactionCost(plannedCells, missingRows),
+    )
+    if (pasteLimitIssue) return no(pasteLimitIssue)
     const created: Row[] = []
     const create = options.dataSource.rows?.create
     if (missingRows > 0 && !create)
@@ -1531,6 +1577,18 @@ export function createGridController<
     const source =
       activeIndex === null ? null : snapshot.interaction.ranges[activeIndex]
     if (!source) return no('The fill range is invalid.')
+    const bounds = gridRangeBounds(
+      target,
+      snapshot.view.visibleRowKeys,
+      columnKeys(),
+    )
+    const fillLimitIssue = mutationLimitIssue(
+      gridTransactionCost(
+        bounds === null ? 0 : bounds.rowCount * bounds.columnCount,
+        0,
+      ),
+    )
+    if (fillLimitIssue) return no(fillLimitIssue)
     const planned = invokeGridCallback(() =>
       planGridFill({
         source,
@@ -1550,6 +1608,10 @@ export function createGridController<
     const blocked = draftCommandIssue(externalCommandOwner, 'restoring cells')
     if (blocked) return blocked
     if (targets.length === 0) return no('There are no cells to restore.')
+    const restoreLimitIssue = mutationLimitIssue(
+      gridTransactionCost(uniquePointCount(targets), 0),
+    )
+    if (restoreLimitIssue) return no(restoreLimitIssue)
     const planned = invokeGridCallback(() =>
       planRestoreCells({
         rows: snapshot.draft.rows,
@@ -1619,14 +1681,7 @@ export function createGridController<
 
     const conflicts = snapshot.draft.conflicts.filter((candidate) => candidate !== conflict)
     if (columnKey !== null) {
-      return recoveryTransaction(
-        snapshot.draft.rows,
-        snapshot.draft.insertedRowKeys,
-        snapshot.draft.deletedRowKeys,
-        conflicts,
-        'Keep local cell',
-        [{ rowKey, columnKey }],
-      )
+      return keepLocalConflictCell(conflict, rowKey, columnKey, conflicts)
     }
 
     const baseline = snapshot.draft.baselineRows.some((row) =>
@@ -1694,6 +1749,108 @@ export function createGridController<
     })
   }
 
+  const keepLocalConflictCell = (
+    conflict: typeof snapshot.draft.conflicts[number],
+    rowKey: RowKey,
+    columnKey: string,
+    conflicts: typeof snapshot.draft.conflicts,
+  ) => {
+    const row = rowIndex.byKey.get(rowKey)
+    const column = columnByKey.get(columnKey)
+    if (!row || !column) return no('The conflicted cell no longer exists.')
+    const current = resolveGridCellValue(row, column)
+    const local = invokeGridResult(() =>
+      column.behavior.value.validate(
+        conflict.localValue,
+        context(row, column),
+      ),
+    )
+    if (!local.ok) {
+      if (
+        !current.valid &&
+        Object.is(current.rawValue, conflict.localValue)
+      ) {
+        return recoveryTransaction(
+          snapshot.draft.rows,
+          snapshot.draft.insertedRowKeys,
+          snapshot.draft.deletedRowKeys,
+          conflicts,
+          'Keep local cell',
+          [{ rowKey, columnKey }],
+        )
+      }
+      return no(local.issue.message)
+    }
+    if (
+      current.valid &&
+      areGridValuesEqual(column, current.value, local.value)
+    ) {
+      return recoveryTransaction(
+        snapshot.draft.rows,
+        snapshot.draft.insertedRowKeys,
+        snapshot.draft.deletedRowKeys,
+        conflicts,
+        'Keep local cell',
+        [{ rowKey, columnKey }],
+      )
+    }
+
+    const attempted = invokeGridCallback(() =>
+      applyCellTransaction({
+        draft: snapshot.draft,
+        mutations: [{ cell: { rowKey, columnKey }, value: local.value }],
+        columns,
+        getRowKey: options.dataSource.getRowKey,
+        ...(options.dataSource.cloneRow
+          ? { cloneRow: options.dataSource.cloneRow }
+          : {}),
+        label: 'Keep local cell',
+        transactionId: `tx-${++sequence}`,
+      }),
+    )
+    if (!attempted.ok) return no(attempted.message)
+    if (!attempted.value.ok) {
+      return no(
+        attempted.value.issues[0]?.message ??
+        'The local value could not be restored.',
+      )
+    }
+    if (attempted.value.draft === snapshot.draft) {
+      return recoveryTransaction(
+        snapshot.draft.rows,
+        snapshot.draft.insertedRowKeys,
+        snapshot.draft.deletedRowKeys,
+        conflicts,
+        'Keep local cell',
+        [{ rowKey, columnKey }],
+      )
+    }
+
+    const nextConflicts = Object.freeze([...conflicts])
+    const undoStack = [...attempted.value.draft.undoStack]
+    const latestHistory = undoStack.at(-1)
+    if (latestHistory) {
+      undoStack[undoStack.length - 1] = Object.freeze({
+        ...latestHistory,
+        afterConflicts: nextConflicts,
+      })
+    }
+    const draft = Object.freeze({
+      ...attempted.value.draft,
+      conflicts: nextConflicts,
+      undoStack: Object.freeze(undoStack),
+    })
+    return executeDraftCommand({
+      owner: externalCommandOwner,
+      action: 'keep local cell',
+      draft,
+      affectedCells: attempted.value.changedCells,
+      transactionCost: attempted.value.changedCells.length,
+      publishCommand: publishDraft,
+      payload: { changedCells: attempted.value.changedCells.length },
+    })
+  }
+
   const startBulk = (key = snapshot.interaction.activeCell?.columnKey) => {
     if (snapshot.filterSession)
       return no('Close the filter editor before starting a bulk edit.')
@@ -1713,6 +1870,10 @@ export function createGridController<
       .filter(defined)
       .filter((item) => item.column.isEditable(item.row))
     if (!resolved.length) return no('There are no bulk-editable cells.')
+    const bulkLimitIssue = mutationLimitIssue(
+      gridTransactionCost(resolved.length, 0),
+    )
+    if (bulkLimitIssue) return no(bulkLimitIssue)
     const begun = invokeGridCallback(() =>
       bulk.begin(
         resolved.map((item) => item.value),
@@ -1764,6 +1925,10 @@ export function createGridController<
       publish({ bulk: Object.freeze({ ...session, revision: session.revision + 1, error: reason }) })
       return no(reason)
     }
+    const bulkLimitIssue = mutationLimitIssue(
+      gridTransactionCost(uniquePointCount(session.targetCells), 0),
+    )
+    if (bulkLimitIssue) return no(bulkLimitIssue)
     const mutations: GridCellMutation<RowKey>[] = []
     for (const target of session.targetCells) {
       const resolved = cell(target),
@@ -1974,7 +2139,7 @@ export function createGridController<
     const row = created.value,
       key = options.dataSource.getRowKey(row)
     if (
-      snapshot.draft.rows.some((item) =>
+      [...snapshot.draft.baselineRows, ...snapshot.draft.rows].some((item) =>
         gridRowKeysEqual(options.dataSource.getRowKey(item), key),
       )
     )
@@ -2020,7 +2185,10 @@ export function createGridController<
     if (!duplicated.ok) return no(duplicated.message)
     const copies = duplicated.value,
       copyKeys = copies.map(options.dataSource.getRowKey),
-      existing = new Set(rows.map(options.dataSource.getRowKey))
+      existing = new Set([
+        ...snapshot.draft.baselineRows.map(options.dataSource.getRowKey),
+        ...rows.map(options.dataSource.getRowKey),
+      ])
     if (
       copyKeys.some(
         (key, at) =>
@@ -2251,6 +2419,13 @@ export function createGridController<
       ) {
         return `Filter operator "${filter.operator}" is unavailable for column "${filter.columnKey}".`
       }
+      const operator = column.behavior.filter.operators.find(
+        (candidate) => candidate.id === filter.operator,
+      )!
+      if (operator.validate) {
+        const validated = invokeGridResult(() => operator.validate!(filter.value))
+        if (!validated.ok) return validated.issue.message
+      }
     }
     return null
   }
@@ -2310,6 +2485,20 @@ export function createGridController<
       : null
   const gridTransactionCost = (cellChanges: number, rowChanges: number) =>
     cellChanges + rowChanges
+  const uniquePointCount = (points: readonly GridPoint<RowKey>[]) => {
+    const identities = new Set<string>()
+    for (const point of points) identities.add(encodeCellIdentity(point))
+    return identities.size
+  }
+  const uniqueMutationCount = (
+    mutations: readonly GridCellMutation<RowKey>[],
+  ) => {
+    const identities = new Set<string>()
+    for (const mutation of mutations) {
+      identities.add(encodeCellIdentity(mutation.cell))
+    }
+    return identities.size
+  }
 
   const applyRemote = (remote: GridDataSourceSnapshot<Row>) => {
     if (Object.is(remote.version, snapshot.source.version)) {

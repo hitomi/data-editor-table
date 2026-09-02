@@ -559,6 +559,7 @@ export function GridEditorPortal<Row, RowKey extends GridRowKey>({
   session: GridEditSession<RowKey>
   view: GridRuntimeReactView<Row>
 }) {
+  const errorId = useId()
   const columnLayout = layout.columns.find((candidate) => candidate.key === column.key)
   const Editor = view.Editor
   if (!host || !columnLayout || !Editor) return null
@@ -574,6 +575,9 @@ export function GridEditorPortal<Row, RowKey extends GridRowKey>({
     style={style}
   >
     <Editor
+      ariaDescriptionId={session.error ? errorId : null}
+      ariaInvalid={session.status === 'invalid'}
+      ariaLabel={column.label}
       cancel={onCancel}
       claimInitialActivation={claimInitialActivation}
       columnKey={column.key}
@@ -589,7 +593,7 @@ export function GridEditorPortal<Row, RowKey extends GridRowKey>({
       value={session.originalValue}
     />
     {dirty ? <span aria-hidden="true" className="business-grid__dirty-marker" /> : null}
-    {session.error ? <div className="business-grid__editor-error" role="alert">{session.error}</div> : null}
+    {session.error ? <div className="business-grid__editor-error" id={errorId} role="alert">{session.error}</div> : null}
     <EditorFocusRegistration dom={dom} />
   </div>, host, encodeCellIdentity(session.cell))
 }
@@ -665,6 +669,7 @@ type GridDetachedEditorMode<Row> =
 export function GridDetachedEditorPortal<Row, RowKey extends GridRowKey>(
   props: GridDetachedEditorCommon<RowKey> & GridDetachedEditorMode<Row>,
 ) {
+  const errorId = useId()
   if (!props.host) return null
   if (props.kind === 'editable' && props.view.Editor) {
     const Editor = props.view.Editor
@@ -677,6 +682,9 @@ export function GridDetachedEditorPortal<Row, RowKey extends GridRowKey>(
     >
       <div className="business-grid__detached-editor-main">
         <Editor
+          ariaDescriptionId={props.session.error ? errorId : null}
+          ariaInvalid={props.session.status === 'invalid'}
+          ariaLabel={props.column.label}
           cancel={props.onCancel}
           claimInitialActivation={props.claimInitialActivation}
           columnKey={props.column.key}
@@ -706,7 +714,7 @@ export function GridDetachedEditorPortal<Row, RowKey extends GridRowKey>(
           onClick={props.onCancel}
         >{props.cancelLabel}</button>
       </div>
-      <div className="business-grid__detached-editor-status" role={props.session.error ? 'alert' : 'status'}>
+      <div className="business-grid__detached-editor-status" id={props.session.error ? errorId : undefined} role={props.session.error ? 'alert' : 'status'}>
         {props.session.error ?? props.reason}
       </div>
       <EditorFocusRegistration dom={props.dom} />
@@ -948,10 +956,12 @@ export function GridContextMenu({
 export function GridDialog({
   ariaLabel,
   children,
+  onEscape,
   portalContainer,
 }: {
   ariaLabel: string
   children: ReactNode
+  onEscape?: () => void
   portalContainer?: Element
 }) {
   const portal = useContext(GridPortalThemeContext)
@@ -991,6 +1001,11 @@ export function GridDialog({
     tabIndex={-1}
     onKeyDown={(event) => {
       event.stopPropagation()
+      if (event.key === 'Escape' && onEscape) {
+        event.preventDefault()
+        onEscape()
+        return
+      }
       if (event.key !== 'Tab') return
       const stops = gridDialogTabStops(event.currentTarget)
       if (stops.length === 0) {

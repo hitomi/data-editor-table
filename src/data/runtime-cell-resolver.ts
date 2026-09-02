@@ -79,6 +79,26 @@ export function displayGridCellValue<Row>(
       }
 }
 
+export function accessibleGridCellValue<Row>(
+  resolved: GridResolvedCellValue<Row>,
+): GridValueResult<string> {
+  if (!resolved.valid) return { ok: true, value: resolved.fallbackText }
+  const accessible = invokeGridCallback(() =>
+    (resolved.column.behavior.text.accessible ??
+      resolved.column.behavior.text.display)(resolved.value, {
+      row: resolved.row,
+      columnKey: resolved.column.key,
+      typeOptions: resolved.column.typeOptions,
+    }),
+  )
+  return accessible.ok
+    ? { ok: true, value: accessible.value }
+    : {
+        ok: false,
+        issue: { code: 'accessible-text-exception', message: accessible.message },
+      }
+}
+
 export function fallbackGridCellText(value: unknown) {
   if (value === null || value === undefined) return ''
   if (

@@ -56,7 +56,7 @@
     "test": "vitest run",
     "test:browser": "playwright test",
     "lint": "oxlint src --deny-warnings",
-    "prepublishOnly": "pnpm check && pnpm test && pnpm lint && pnpm demo:build && pnpm check:package"
+    "prepublishOnly": "pnpm check && pnpm test && pnpm lint && pnpm demo:build && pnpm test:browser && pnpm check:package"
   },
   "peerDependencies": {
     "react": "^19.0.0",
@@ -78,5 +78,12 @@
   "engines": {
     "node": ">=22"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "keywords": [],
+  "author": ""
 }

@@ -214,7 +214,10 @@ export function GridFilterDialog({
   onValueChange,
   messages,
 }: GridFilterDialogProps) {
-  return <GridDialog ariaLabel={messages.dialogLabel(draft.columnLabel)}>
+  return <GridDialog
+    ariaLabel={messages.dialogLabel(draft.columnLabel)}
+    onEscape={onCancel}
+  >
     <strong>{messages.title(draft.columnLabel)}</strong>
     {draft.conditions.length > 1 ? <label>{messages.match}<select value={draft.combine} onChange={(event) => onCombineChange(event.currentTarget.value as 'all' | 'any')}>
       <option value="all">{messages.allConditions}</option>

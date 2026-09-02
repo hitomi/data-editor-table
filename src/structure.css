@@ -73,7 +73,6 @@
     position: absolute;
     overflow: auto;
     overscroll-behavior: contain;
-    outline: 0;
     inset: 0;
     user-select: none;
     -webkit-user-select: none;

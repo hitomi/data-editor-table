@@ -306,6 +306,7 @@ export type GridRuntimeCellBehavior<Row> = Readonly<{
   }>
   text: Readonly<{
     display: (value: unknown, context: GridRuntimeValueContext<Row>) => string
+    accessible?: (value: unknown, context: GridRuntimeValueContext<Row>) => string
     search?: (value: unknown, context: GridRuntimeValueContext<Row>) => string
     original?: (value: unknown, context: GridRuntimeValueContext<Row>) => string
   }>

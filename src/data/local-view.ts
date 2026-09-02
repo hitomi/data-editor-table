@@ -25,7 +25,7 @@ export function deriveLocalView<Row, RowKey extends GridRowKey>(
       query &&
       !options.columns.some((column) => {
         const text = textForSearch(column, row)
-        return text === null || text.toLocaleLowerCase().includes(query)
+        return text !== null && text.toLocaleLowerCase().includes(query)
       })
     )
       return false
@@ -127,7 +127,7 @@ function matchesFilter<Row>(
   )
   if (!operator) return null
   const resolved = resolveGridCellValue(row, column)
-  if (!resolved.valid) return null
+  if (!resolved.valid) return false
   if (operator.requiresValue) {
     const validation = operator.validate
       ? invokeGridResult(() => operator.validate!(filter.value))

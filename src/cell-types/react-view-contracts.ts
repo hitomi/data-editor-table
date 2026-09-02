@@ -54,6 +54,9 @@ export type GridCellEditorProps<
   draft: EditDraft
   columnKey: string
   typeOptions: ColumnOptions
+  ariaDescriptionId: string | null
+  ariaInvalid: boolean
+  ariaLabel: string
   composing: boolean
   claimInitialActivation: () => boolean
   setDraft: (draft: EditDraft) => void

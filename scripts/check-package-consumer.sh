@@ -86,6 +86,15 @@ test -f "$package_root/dist/styles.css"
 test -f "$package_root/dist/structure.css"
 test -f "$package_root/dist/theme.css"
 test -f "$package_root/dist/styles-entry.d.ts"
+node -e '
+  const fs = require("node:fs")
+  const path = require("node:path")
+  const root = process.argv[1]
+  const manifest = require(path.join(root, "package.json"))
+  if (!manifest.main || !fs.statSync(path.resolve(root, manifest.main)).isFile()) {
+    throw new Error(`The packed main entry does not exist: ${String(manifest.main)}`)
+  }
+' "$package_root"
 
 node "$repo_root/scripts/verify-headless-bundle.mjs" "$engine_package"
 node --input-type=module -e 'import("node:url").then(({ pathToFileURL }) => import(pathToFileURL(process.argv[1]).href)).then((module) => { if (typeof module.createGridController !== "function") process.exit(1) })' "$engine_package/dist/engine.js"

@@ -1525,10 +1525,10 @@ export function createGridController<
         const columnKey = cols[startC + c]
         if (rowKey === undefined || columnKey === undefined)
           return no('The paste target is outside the grid.')
-        const row = rowByKey.get(rowKey)
+        const row = rowByKey.get(rowKey) as Row
         const column = columns.find((candidate) => candidate.key === columnKey)
         const parse = column?.behavior.clipboard?.parse
-        if (!row || !column || !parse || !column.isEditable(row))
+        if (!rowByKey.has(rowKey) || !column || !parse || !column.isEditable(row))
           return no('A paste target is read-only or incompatible.')
         const parsed = safely(() => parse(matrix[r]![c]!, context(row, column)))
         if (!parsed.ok) return no(parsed.issue.message)
@@ -1755,9 +1755,9 @@ export function createGridController<
     columnKey: string,
     conflicts: typeof snapshot.draft.conflicts,
   ) => {
-    const row = rowIndex.byKey.get(rowKey)
+    const row = rowIndex.byKey.get(rowKey) as Row
     const column = columnByKey.get(columnKey)
-    if (!row || !column) return no('The conflicted cell no longer exists.')
+    if (!rowIndex.byKey.has(rowKey) || !column) return no('The conflicted cell no longer exists.')
     const current = resolveGridCellValue(row, column)
     const local = invokeGridResult(() =>
       column.behavior.value.validate(
@@ -2646,14 +2646,14 @@ export function createGridController<
     sourceRevision: number,
   ): typeof snapshot.edit => {
     if (!session) return null
-    const row = draft.rows.find((candidate) =>
+    const rowPosition = draft.rows.findIndex((candidate) =>
       gridRowKeysEqual(
         options.dataSource.getRowKey(candidate),
         session.cell.rowKey,
       ),
     )
     const column = columns.find((candidate) => candidate.key === session.cell.columnKey)
-    if (!row || !column) {
+    if (rowPosition < 0 || !column) {
       return Object.freeze({
         ...session,
         revision: ++editRevision,
@@ -2661,6 +2661,7 @@ export function createGridController<
         error: 'This edit target was removed remotely. Cancel the edit to continue.',
       })
     }
+    const row = draft.rows[rowPosition] as Row
     const resolved = resolveGridCellValue(row, column)
     if (
       resolved.valid &&
@@ -2916,9 +2917,9 @@ export function createGridController<
   }
 
   const cell = (target: GridPoint<RowKey>) => {
-    const row = rowIndex.byKey.get(target.rowKey),
+    const row = rowIndex.byKey.get(target.rowKey) as Row,
       column = columnByKey.get(target.columnKey)
-    if (!row || !column) return null
+    if (!rowIndex.byKey.has(target.rowKey) || !column) return null
     const resolved = resolveGridCellValue(row, column)
     return resolved.valid
       ? { cell: point(target), row, column, value: resolved.value }

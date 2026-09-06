@@ -70,11 +70,11 @@ export function applyCellTransaction<Row, RowKey extends GridRowKey>(options: Re
   for (const mutation of normalized.values()) {
     const rowIndex = rowIndexByKey.get(mutation.cell.rowKey)
     const column = columnByKey.get(mutation.cell.columnKey)
-    const row = rowIndex === undefined ? undefined : rows[rowIndex]
-    if (rowIndex === undefined || !row || !column) {
+    if (rowIndex === undefined || !column) {
       issues.push(issue(mutation.cell, 'unknown-cell', 'The target cell no longer exists.'))
       continue
     }
+    const row = rows[rowIndex] as Row
     if (!column.setValue || !column.isEditable(row)) {
       issues.push(issue(mutation.cell, 'read-only', 'This cell is read-only.'))
       continue
@@ -161,9 +161,9 @@ export function applyCellTransaction<Row, RowKey extends GridRowKey>(options: Re
   )
   for (const rowKey of affectedRowKeys) {
     const rowIndex = rowIndexByKey.get(rowKey)
-    const row = rowIndex === undefined ? undefined : rows[rowIndex]
-    const beforeRow = rowIndex === undefined ? undefined : options.draft.rows[rowIndex]
-    if (!row || !beforeRow) continue
+    if (rowIndex === undefined) continue
+    const row = rows[rowIndex] as Row
+    const beforeRow = options.draft.rows[rowIndex] as Row
     for (const column of options.columns) {
       const cell = { rowKey, columnKey: column.key }
       const beforeValue = resolveGridCellValue(beforeRow, column)
@@ -171,8 +171,9 @@ export function applyCellTransaction<Row, RowKey extends GridRowKey>(options: Re
       if (areGridResolvedCellValuesEqual(beforeValue, afterValue)) continue
       changedCells.push(Object.freeze(cell))
 
-      const baselineRow = baselineByKey.get(rowKey)
-      const baselineValue = baselineRow
+      const hasBaselineRow = baselineByKey.has(rowKey)
+      const baselineRow = baselineByKey.get(rowKey) as Row
+      const baselineValue = hasBaselineRow
         ? resolveGridCellValue(baselineRow, column)
         : undefined
       const identity = encodeCellIdentity(cell)
@@ -188,7 +189,7 @@ export function applyCellTransaction<Row, RowKey extends GridRowKey>(options: Re
           Object.freeze({
             ...cell,
             originalValue,
-            formattedOriginalValue: baselineRow && baselineValue
+            formattedOriginalValue: baselineValue
               ? baselineValue.valid
                 ? formatOriginal(column, baselineValue.value, baselineRow)
                 : baselineValue.fallbackText
@@ -578,10 +579,11 @@ function rebuildDirty<Row, RowKey extends GridRowKey>(
   const dirty: GridDirtyCell<RowKey>[] = []
   for (const row of rows) {
     const rowKey = getRowKey(row)
-    const original = baseline.get(rowKey)
+    const hasOriginal = baseline.has(rowKey)
+    const original = baseline.get(rowKey) as Row
     for (const column of columns) {
       const value = resolveGridCellValue(row, column)
-      const originalValue = original
+      const originalValue = hasOriginal
         ? resolveGridCellValue(original, column)
         : undefined
       if (
@@ -593,7 +595,7 @@ function rebuildDirty<Row, RowKey extends GridRowKey>(
         rowKey,
         columnKey: column.key,
         originalValue: originalValue?.rawValue,
-        formattedOriginalValue: original && originalValue
+        formattedOriginalValue: originalValue
           ? originalValue.valid
             ? formatOriginal(column, originalValue.value, original)
             : originalValue.fallbackText

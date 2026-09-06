@@ -99,6 +99,51 @@ describe('createRemoteGridDataSource', () => {
     })
   })
 
+  it('keeps an active refresh alive when an external publication is rejected', async () => {
+    let finishLoad!: (
+      authority: Readonly<{ rows: readonly Row[]; version: string }>,
+    ) => void
+    const dataSource = createRemoteGridDataSource<Row, string, Schema>({
+      columns: [nameColumn],
+      getRowKey: (row) => row.id,
+      initialSnapshot: {
+        rows: [{ id: 'row-a', name: 'Initial' }],
+        status: 'ready',
+        version: 'v1',
+        scope: { kind: 'complete' },
+      },
+      load: () => new Promise((resolve) => { finishLoad = resolve }),
+      persistence: {
+        mode: 'manual-save',
+        mutate: async () => ({ kind: 'reload' }),
+      },
+    })
+
+    const refreshing = dataSource.refresh!({
+      signal: new AbortController().signal,
+    })
+    expect(() => dataSource.publish({
+      rows: [{ id: 'row-a', name: 'Invalid same-version update' }],
+      status: 'ready',
+      version: 'v1',
+      scope: { kind: 'complete' },
+    })).toThrow(
+      'A remote data source cannot reuse one version for different authoritative rows.',
+    )
+
+    finishLoad({
+      rows: [{ id: 'row-a', name: 'Refreshed' }],
+      version: 'v2',
+    })
+    await refreshing
+
+    expect(dataSource.getSnapshot()).toMatchObject({
+      rows: [{ id: 'row-a', name: 'Refreshed' }],
+      status: 'ready',
+      version: 'v2',
+    })
+  })
+
   it('does not let a commit completion overwrite an external publication', async () => {
     let finishMutation!: (result: GridRemoteMutationResult<Row, string>) => void
     const mutation = new Promise<GridRemoteMutationResult<Row, string>>(

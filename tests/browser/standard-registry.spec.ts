@@ -135,6 +135,31 @@ test('grid selection and dialogs are fully keyboard operable', async ({ page }) 
   expect(consoleErrors).toEqual([])
 })
 
+test('background saves do not reset context-menu keyboard focus', async ({ page }) => {
+  const consoleErrors = observeBrowserErrors(page)
+  await page.goto('/#/playground')
+  const grid = page.getByRole('grid', { name: 'Inventory items' })
+  const nameCell = grid.locator(
+    '[role="gridcell"][data-column-key="name"][data-grid-row-index="0"]',
+  )
+  await nameCell.dblclick()
+  const editor = page.getByRole('textbox', { name: 'Name' })
+  await editor.fill('Focus remains stable')
+  await editor.press('Enter')
+
+  await nameCell.click({ button: 'right' })
+  const editSelection = page.getByRole('menuitem', { name: 'Edit selection…' })
+  await expect(page.getByRole('menu')).toBeVisible()
+  await page.keyboard.press('ArrowDown')
+  await expect(editSelection).toBeFocused()
+
+  await expect(page.getByText('1 saves', { exact: true })).toBeVisible()
+  await expect(editSelection).toBeFocused()
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('menu')).toHaveCount(0)
+  expect(consoleErrors).toEqual([])
+})
+
 test('image cells use business alt text instead of their data URL', async ({ page }) => {
   const consoleErrors = observeBrowserErrors(page)
   await page.goto('/#/multi-image-import')

@@ -31,6 +31,61 @@ const quantityColumn = column.field('quantity', {
 })
 
 describe('GridController recovery and view boundaries', () => {
+  it('treats falsy primitive rows as present throughout selection and editing', () => {
+    const primitiveRegistry = createStandardCellTypeRegistry<number>()
+    const dataSource: GridDataSource<
+      number,
+      string,
+      StandardGridCellTypeSchema
+    > = {
+      columns: [{
+        key: 'value',
+        label: 'Value',
+        type: 'number',
+        getValue: (row) => row,
+        setValue: (_row, value) => value,
+      }],
+      getRowKey: () => 'only-row',
+      getSnapshot: () => ({
+        rows: [0],
+        status: 'ready',
+        version: 'v1',
+        scope: { kind: 'complete' },
+      }),
+      subscribe: () => () => {},
+      persistence: {
+        mode: 'manual-save',
+        commit: async (request) => ({
+          operationId: request.operationId,
+          applied: {
+            rows: request.rows,
+            status: 'ready',
+            version: 'v2',
+            scope: { kind: 'complete' },
+          },
+        }),
+      },
+    }
+    const controller = createGridController({
+      dataSource,
+      cellBehaviors: primitiveRegistry.behaviors,
+    })
+    const cell = { rowKey: 'only-row', columnKey: 'value' }
+
+    expect(selectGridCell(controller.getSnapshot(), cell)).toMatchObject({
+      row: 0,
+      value: 0,
+      editable: true,
+    })
+    expect(controller.dispatch({
+      type: 'cell/set-value',
+      cell,
+      value: 2,
+    }).accepted).toBe(true)
+    expect(controller.getSnapshot().draft.rows).toEqual([2])
+    controller.destroy()
+  })
+
   it('rejects add and duplicate operations that reuse a deleted baseline key', () => {
     const dataSource = localDataSource(
       [

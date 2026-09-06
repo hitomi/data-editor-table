@@ -284,7 +284,12 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
     const snapshot = controller.getSnapshot()
     const point = target.kind === 'cell' ? target : null
     const column = point && snapshot.columns.find((candidate) => candidate.key === point.columnKey)
-    const row = point && snapshot.draft.rows.find((candidate) => gridRowKeysEqual(snapshot.getRowKey(candidate), point.rowKey))
+    const rowPosition = point
+      ? snapshot.draft.rows.findIndex((candidate) =>
+          gridRowKeysEqual(snapshot.getRowKey(candidate), point.rowKey),
+        )
+      : -1
+    const row = rowPosition < 0 ? undefined : snapshot.draft.rows[rowPosition] as Row
     const supportsActiveCellClick = Boolean(column && views.resolve(column.type, column.typeOptions)?.presentation.editActivation.includes('active-cell-click'))
     activeCellClick.current = point
       && event.isPrimary
@@ -294,8 +299,8 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
       && !event.ctrlKey
       && snapshot.edit === null
       && supportsActiveCellClick
-      && row
-      && column?.isEditable(row)
+      && rowPosition >= 0
+      && column?.isEditable(row as Row)
       && isOnlySelectedCell(snapshot, point)
       ? { pointerId: event.pointerId, point, startX: event.clientX, startY: event.clientY, moved: false }
       : null

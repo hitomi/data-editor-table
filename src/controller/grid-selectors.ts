@@ -14,9 +14,9 @@ import { gridSelectorIndex } from './grid-selector-index.js'
 export function selectGridCell<Row, RowKey extends GridRowKey>(snapshot: GridControllerSnapshot<Row, RowKey>, point: GridPoint<RowKey>) {
   const index = gridSelectorIndex(snapshot)
   const identity = encodeCellIdentity(point)
-  const row = index.rows.get(point.rowKey)
   const column = index.columns.get(point.columnKey)
-  if (!row || !column) return null
+  if (!index.rows.has(point.rowKey) || !column) return null
+  const row = index.rows.get(point.rowKey) as Row
   const dirty = index.dirtyCells.get(identity) ?? null
   const resolved = resolveGridCellValue(row, column)
   const displayed = displayGridCellValue(resolved)

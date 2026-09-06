@@ -79,8 +79,10 @@ export function rebaseGridDraft<Row, RowKey extends GridRowKey>(
 
   for (const remoteRow of options.remoteRows) {
     const rowKey = options.getRowKey(remoteRow)
-    const oldRow = oldBaseline.get(rowKey)
-    const localRow = local.get(rowKey)
+    const hasOldRow = oldBaseline.has(rowKey)
+    const hasLocalRow = local.has(rowKey)
+    const oldRow = oldBaseline.get(rowKey) as Row
+    const localRow = local.get(rowKey) as Row
     if (deleted.has(rowKey)) {
       const prior = priorRowConflicts.get(rowKey)
       if (prior) {
@@ -88,7 +90,7 @@ export function rebaseGridDraft<Row, RowKey extends GridRowKey>(
         nextRows.push(remoteRow)
         continue
       }
-      if (oldRow && rowEqual(oldRow, remoteRow, options.columns)) continue
+      if (hasOldRow && rowEqual(oldRow, remoteRow, options.columns)) continue
       conflicts.push(
         Object.freeze({
           kind: 'local-row-deleted-remote-changed',
@@ -100,7 +102,7 @@ export function rebaseGridDraft<Row, RowKey extends GridRowKey>(
       nextRows.push(remoteRow)
       continue
     }
-    if (inserted.has(rowKey) && localRow) {
+    if (inserted.has(rowKey) && hasLocalRow) {
       if (rowEqual(localRow, remoteRow, options.columns)) {
         nextRows.push(remoteRow)
         continue
@@ -120,7 +122,7 @@ export function rebaseGridDraft<Row, RowKey extends GridRowKey>(
       addRowDirtyCells(nextDirty, rowKey, remoteRow, options.columns)
       continue
     }
-    if (!localRow || !oldRow) {
+    if (!hasLocalRow || !hasOldRow) {
       nextRows.push(remoteRow)
       continue
     }

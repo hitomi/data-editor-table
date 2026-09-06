@@ -35,10 +35,14 @@ export function planGridClear<Row, RowKey extends GridRowKey>(options: Readonly<
   const mutations: GridCellMutation<RowKey>[] = []
   let skippedCells = 0
   for (const target of options.targets) {
-    const row = rows.byKey.get(target.rowKey)
     const column = columns.get(target.columnKey)
     const clear = column?.behavior.clear
-    if (!row || !column || !clear || !column.isEditable(row)) {
+    if (!rows.byKey.has(target.rowKey) || !column || !clear) {
+      skippedCells += 1
+      continue
+    }
+    const row = rows.byKey.get(target.rowKey) as Row
+    if (!column.isEditable(row)) {
       skippedCells += 1
       continue
     }
@@ -83,9 +87,9 @@ export function planGridFill<Row, RowKey extends GridRowKey>(options: Readonly<{
   const rowIndex = createGridRowIndex(options.rows, options.getRowKey)
   const columnIndex = createGridColumnIndex(options.columns)
   const resolve = (target: GridPoint<RowKey>) => {
-    const row = rowIndex.byKey.get(target.rowKey)
     const column = columnIndex.get(target.columnKey)
-    if (!row || !column) return null
+    if (!rowIndex.byKey.has(target.rowKey) || !column) return null
+    const row = rowIndex.byKey.get(target.rowKey) as Row
     const resolved = resolveGridCellValue(row, column)
     return resolved.valid
       ? { cell: target, row, column, value: resolved.value }
@@ -223,10 +227,14 @@ export function planRestoreCells<Row, RowKey extends GridRowKey>(options: Readon
   const restored = new Map<string, GridPoint<RowKey>>()
   for (const target of options.targets) {
     const position = rowIndex.positionByKey.get(target.rowKey)
-    const row = position === undefined ? undefined : rows[position]
-    const original = baseline.byKey.get(target.rowKey)
     const column = columns.get(target.columnKey)
-    if (position === undefined || !row || !original || !column?.setValue) continue
+    if (
+      position === undefined ||
+      !baseline.byKey.has(target.rowKey) ||
+      !column?.setValue
+    ) continue
+    const row = rows[position] as Row
+    const original = baseline.byKey.get(target.rowKey) as Row
     try {
       const cloned = cloneGridRow(row, options.cloneRow)
       if (!cloned.ok) {

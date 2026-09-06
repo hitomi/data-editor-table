@@ -363,7 +363,8 @@ function replayRowsOntoApplied<Row, RowKey extends GridRowKey>(options: Readonly
     const originalRowKey = options.getRowKey(intendedRow)
     const rowKey = logicalKey(intendedRow)
     const wasRemapped = !gridRowKeysEqual(originalRowKey, rowKey)
-    const committedRow = committed.get(rowKey)
+    const hasCommittedRow = committed.has(rowKey)
+    const committedRow = committed.get(rowKey) as Row
     const appliedIndex = rows.findIndex((row) =>
       gridRowKeysEqual(logicalKey(row), rowKey),
     )
@@ -376,7 +377,7 @@ function replayRowsOntoApplied<Row, RowKey extends GridRowKey>(options: Readonly
       )
       continue
     }
-    if (!committedRow) {
+    if (!hasCommittedRow) {
       rows[appliedIndex] = intendedRow
       continue
     }

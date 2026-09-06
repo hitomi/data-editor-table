@@ -108,9 +108,8 @@ export function createRemoteGridDataSource<
   }> | null = null
   validateSnapshot(snapshot, options.getRowKey)
 
-  const publishSnapshot = (
+  const prepareSnapshot = (
     next: GridDataSourceSnapshot<Row>,
-    authoritative: boolean | 'when-changed',
   ) => {
     const normalized = freezeSnapshot(next)
     validateSnapshot(normalized, options.getRowKey)
@@ -127,7 +126,14 @@ export function createRemoteGridDataSource<
         )
       }
     }
-    snapshot = normalized
+    return Object.freeze({ normalized, sameVersion })
+  }
+  const publishPreparedSnapshot = (
+    prepared: ReturnType<typeof prepareSnapshot>,
+    authoritative: boolean | 'when-changed',
+  ) => {
+    snapshot = prepared.normalized
+    const { sameVersion } = prepared
     if (authoritative === true || authoritative === 'when-changed' && !sameVersion) {
       authorityRevision += 1
     }
@@ -140,10 +146,17 @@ export function createRemoteGridDataSource<
       }
     }
   }
+  const publishSnapshot = (
+    next: GridDataSourceSnapshot<Row>,
+    authoritative: boolean | 'when-changed',
+  ) => {
+    publishPreparedSnapshot(prepareSnapshot(next), authoritative)
+  }
   const publish = (next: GridDataSourceSnapshot<Row>) => {
+    const prepared = prepareSnapshot(next)
     refreshSequence += 1
     activeRefresh = null
-    publishSnapshot(next, 'when-changed')
+    publishPreparedSnapshot(prepared, 'when-changed')
   }
   const waitForCommits = (signal: AbortSignal) =>
     activeCommits === 0 || signal.aborted

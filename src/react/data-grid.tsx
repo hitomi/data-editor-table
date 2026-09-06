@@ -317,7 +317,7 @@ export type DataGridSurfaceRenderers = Readonly<{
 const DEFAULT_MESSAGES: DataGridMessages = Object.freeze({
   loadingData: 'Loading data…',
   sourceConfigurationChanged: 'This table’s columns, sizing, or editing limits changed. Reopen it to apply the update. Your current edits remain available with the previous setup.',
-  detachedSourceWork: 'Another set of data has unsaved or in-progress changes. Return to review or save them.',
+  detachedSourceWork: 'Apply, save, or cancel the current table changes before opening another data set.',
   rowsRefreshFailed: 'Rows could not be refreshed.',
   retryRefresh: 'Retry refresh',
   changesSaveFailed: 'Changes could not be saved.',
@@ -430,6 +430,8 @@ export type DataGridProps<
  * React projects its immutable snapshot into one non-virtualized scrollport.
  * A data-source identity owns one controller; its registry, locale, and layout
  * options remain fixed for that identity, while the optional effect port stays live.
+ * If the data-source prop changes with pending input, the current source stays
+ * visible until that work is applied, saved, or cancelled.
  */
 export function DataGrid<
   Row,
@@ -519,28 +521,51 @@ function OwnedDataGrid<
     readonly binding: DataGridBinding<Row, RowKey, Schema, Effect>
     releaseWhenClean: (() => void) | null
   }
-  const pool = useRef<OwnedEntry[]>([])
   const [owned, setOwned] = useState<OwnedEntry | null>(null)
+  const [ownershipRevision, retryOwnership] = useState(0)
   const active = useRef<OwnedEntry | null>(null)
   const destroyEntry = useCallback((entry: OwnedEntry) => {
     entry.releaseWhenClean?.()
     entry.releaseWhenClean = null
-    const index = pool.current.indexOf(entry)
-    if (index >= 0) pool.current.splice(index, 1)
     if (active.current === entry) active.current = null
     entry.binding.destroy()
   }, [])
-  const retainPendingEntry = useCallback((entry: OwnedEntry) => {
+  const retrySourceSwitchWhenClean = useCallback((entry: OwnedEntry) => {
     if (entry.releaseWhenClean) return
     entry.releaseWhenClean = entry.binding.controller.subscribe(() => {
-      if (active.current === entry
+      if (active.current !== entry
         || hasPendingWork(entry.binding.controller.getSnapshot())) return
-      destroyEntry(entry)
+      entry.releaseWhenClean?.()
+      entry.releaseWhenClean = null
+      retryOwnership((revision) => revision + 1)
     })
-  }, [destroyEntry])
+  }, [])
   useLayoutEffect(() => {
     const previous = active.current
-    let next = pool.current.find((candidate) => candidate.dataSource === dataSource)
+    if (
+      previous &&
+      previous.dataSource !== dataSource &&
+      hasPendingWork(previous.binding.controller.getSnapshot())
+    ) {
+      retrySourceSwitchWhenClean(previous)
+      const existing = previous.binding.controller.getSnapshot().feedback.items.find(
+        (item) => item.id === 'grid:detached-source-work',
+      )
+      if (existing?.message !== ownerMessages.detachedSourceWork) {
+        previous.binding.controller.dispatch({
+          type: 'feedback/push',
+          item: {
+            id: 'grid:detached-source-work',
+            kind: 'warning',
+            message: ownerMessages.detachedSourceWork,
+            persistent: true,
+          },
+        })
+      }
+      setOwned((current) => current === previous ? current : previous)
+      return
+    }
+    let next = previous?.dataSource === dataSource ? previous : null
     if (!next) {
       const effectsRef = { current: effects }
       const effectPort: GridEffectPort<Row, RowKey, Effect> = {
@@ -562,7 +587,6 @@ function OwnedDataGrid<
         ...(rowIndicatorWidth === undefined ? {} : { rowIndicatorWidth }),
       })
       next = { dataSource, registry: resolvedRegistry, locale: resolvedLocale, effectsRef, maxMutations, maxClipboardBytes, rowHeight, headerHeight, rowIndicatorWidth, binding, releaseWhenClean: null }
-      pool.current.push(next)
     } else {
       next.releaseWhenClean?.()
       next.releaseWhenClean = null
@@ -586,20 +610,15 @@ function OwnedDataGrid<
       })
     }
     if (previous && previous !== next) {
-      if (hasPendingWork(previous.binding.controller.getSnapshot())) {
-        retainPendingEntry(previous)
-        next.binding.controller.dispatch({
-          type: 'feedback/push',
-          item: {
-            id: 'grid:detached-source-work',
-            kind: 'warning',
-            message: ownerMessages.detachedSourceWork,
-            persistent: true,
-          },
-        })
-      } else {
-        destroyEntry(previous)
-      }
+      destroyEntry(previous)
+    }
+    if (next.binding.controller.getSnapshot().feedback.items.some(
+      (item) => item.id === 'grid:detached-source-work',
+    )) {
+      next.binding.controller.dispatch({
+        type: 'feedback/dismiss',
+        id: 'grid:detached-source-work',
+      })
     }
     active.current = next
     setOwned(next)
@@ -612,26 +631,19 @@ function OwnedDataGrid<
     maxMutations,
     ownerMessages.detachedSourceWork,
     ownerMessages.sourceConfigurationChanged,
+    ownershipRevision,
     locale,
     resolvedLocale,
     resolvedRegistry,
-    retainPendingEntry,
+    retrySourceSwitchWhenClean,
     rowHeight,
     rowIndicatorWidth,
   ])
   useLayoutEffect(() => () => {
-    pool.current.forEach((entry) => {
-      entry.releaseWhenClean?.()
-      entry.releaseWhenClean = null
-      entry.binding.destroy()
-    })
-    pool.current.length = 0
-    active.current = null
+    const entry = active.current
+    if (entry) destroyEntry(entry)
   }, [])
-  const current = owned
-    && owned.dataSource === dataSource
-    ? owned.binding
-    : null
+  const current = owned?.binding ?? null
   if (!current) return <div
     aria-busy="true"
     aria-label={ariaLabel}
@@ -911,14 +923,34 @@ function GridContextMenuBoundary<
   renderer: DataGridSurfaceRenderers['contextMenu'] | undefined
 }) {
   const slice = useGridSelector(controller, selectContextMenuSlice, equalContextMenuSlice)
+  const actionSessionRef = useRef<
+    GridControllerSnapshot<Row, RowKey>['interaction']['actionSession']
+  >(null)
+  actionSessionRef.current = slice?.interaction.actionSession ?? null
+  const closeContextMenu = useCallback<GridContextMenuProps['onClose']>((
+    reason = 'programmatic',
+    action,
+  ) => {
+    const actionSession = actionSessionRef.current
+    if (!actionSession) return
+    const target = actionSession.target
+    const activeCell = controller.getSnapshot().interaction.activeCell
+    controller.dispatch({ type: 'interaction/close-action' })
+    if (reason === 'outside' || action?.focusAfterRun === 'preserve') return
+    queueMicrotask(() => {
+      if (dom.focusCell(target, false)) return
+      if (activeCell && dom.focusCell(activeCell, false)) return
+      dom.focusGrid()
+    })
+  }, [controller, dom])
   if (!slice) return null
   const columnKeys = slice.columns.map((column) => column.key)
   const chosenCells = selectedCells(slice.interaction.ranges, slice.view.visibleRowKeys, columnKeys)
   const rowsByKey = new Map(slice.draft.rows.map((row) => [dataSource.getRowKey(row), row] as const))
   const canClearSelection = chosenCells.some((point) => {
-    const row = rowsByKey.get(point.rowKey)
     const column = slice.columns.find((candidate) => candidate.key === point.columnKey)
-    return Boolean(row && column?.behavior.clear && column.isEditable(row))
+    if (!rowsByKey.has(point.rowKey) || !column?.behavior.clear) return false
+    return column.isEditable(rowsByKey.get(point.rowKey) as Row)
   })
   const canRevertSelection = chosenCells.some((point) => slice.draft.dirtyCells.some((entry) =>
     gridRowKeysEqual(entry.rowKey, point.rowKey) && entry.columnKey === point.columnKey,
@@ -973,17 +1005,7 @@ function GridContextMenuBoundary<
   }))
   const props = {
     actions,
-    onClose: (reason = 'programmatic', action?: GridMenuAction) => {
-      const target = actionSession.target
-      const activeCell = controller.getSnapshot().interaction.activeCell
-      controller.dispatch({ type: 'interaction/close-action' })
-      if (reason === 'outside' || action?.focusAfterRun === 'preserve') return
-      queueMicrotask(() => {
-        if (dom.focusCell(target, false)) return
-        if (activeCell && dom.focusCell(activeCell, false)) return
-        dom.focusGrid()
-      })
-    },
+    onClose: closeContextMenu,
     position: actionSession.menuPosition,
   } satisfies GridContextMenuProps
   return renderer ? renderer(props) : <GridContextMenu {...props} />
@@ -1148,8 +1170,9 @@ function selectGridCommandState<
   const bulkView = bulkColumn ? registry.views.resolve(bulkColumn.type, bulkColumn.typeOptions) : undefined
   const rowsByKey = new Map(snapshot.draft.rows.map((row) => [snapshot.getRowKey(row), row] as const))
   const hasBulkTarget = Boolean(bulkColumn && chosenCells.some((point) => {
-    const row = rowsByKey.get(point.rowKey)
-    return row !== undefined && resolveGridCellValue(row, bulkColumn).valid && bulkColumn.isEditable(row)
+    if (!rowsByKey.has(point.rowKey)) return false
+    const row = rowsByKey.get(point.rowKey) as Row
+    return resolveGridCellValue(row, bulkColumn).valid && bulkColumn.isEditable(row)
   }))
   return {
     globalFilter: snapshot.view.globalFilter,
@@ -1205,9 +1228,12 @@ function resolveCell<Row, RowKey extends GridRowKey>(
   columns: readonly import('../model/grid-model.js').GridCompiledColumn<Row>[],
   getRowKey: (row: Row) => RowKey,
 ) {
-  const row = rows.find((candidate) => gridRowKeysEqual(getRowKey(candidate), point.rowKey))
+  const rowPosition = rows.findIndex((candidate) =>
+    gridRowKeysEqual(getRowKey(candidate), point.rowKey),
+  )
   const column = columns.find((candidate) => candidate.key === point.columnKey)
-  if (!row || !column) return null
+  if (rowPosition < 0 || !column) return null
+  const row = rows[rowPosition] as Row
   return { point, row, column, resolved: resolveGridCellValue(row, column) }
 }
 

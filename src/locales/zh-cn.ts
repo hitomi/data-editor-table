@@ -10,7 +10,7 @@ export const zhCN: DataEditorTableLocale = {
   dataGrid: {
     loadingData: '正在初始化表格…',
     sourceConfigurationChanged: '表格配置已更新。保存当前修改后重新打开表格以应用新配置。',
-    detachedSourceWork: '另一份表格数据仍有未保存或正在处理的修改。',
+    detachedSourceWork: '请先应用、保存或取消当前表格中的修改，再打开另一份数据。',
     rowsRefreshFailed: '数据未能刷新。',
     retryRefresh: '重新读取',
     changesSaveFailed: '修改未能保存。',

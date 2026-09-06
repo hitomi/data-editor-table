@@ -76,8 +76,13 @@ export type RemoteGridDataSource<
   RowKey extends GridRowKey,
   Schema extends GridCellTypeSchema,
 > = GridDataSource<Row, RowKey, Schema> & Readonly<{
-  /** Publish query/cache state without recreating the data-source identity. */
+  /** After a write, changed authority must prove afterOperationId; async reads use beginRead. */
   publish: (snapshot: GridDataSourceSnapshot<Row>) => void
+  /** Capture BEFORE an external async read. False means a write/read superseded it; refetch. */
+  beginRead: () => Readonly<{
+    afterOperationId: string | undefined
+    publish: (snapshot: GridDataSourceSnapshot<Row>) => boolean
+  }>
 }>
 
 /**
@@ -101,6 +106,10 @@ export function createRemoteGridDataSource<
   let authorityRevision = 0
   let commitSequence = 0
   let refreshSequence = 0
+  let readGeneration = 0
+  let confirmedOperationId: string | undefined
+  let confirmedSourceVersion: GridSourceVersion | undefined
+  let pendingAuthorityOperationId: string | undefined
   let activeRefresh: Readonly<{
     id: number
     before: GridDataSourceSnapshot<Row>
@@ -154,8 +163,17 @@ export function createRemoteGridDataSource<
   }
   const publish = (next: GridDataSourceSnapshot<Row>) => {
     const prepared = prepareSnapshot(next)
+    if (confirmedOperationId !== undefined && next.afterOperationId === confirmedOperationId
+      && Object.is(next.version, confirmedSourceVersion) && next.status === 'ready') {
+      throw new Error('The authority read still exposes the base of a confirmed write. Read authority again before publishing it.')
+    }
+    if (activeCommits === 0 && confirmedOperationId !== undefined
+      && !prepared.sameVersion && next.afterOperationId !== confirmedOperationId) {
+      throw new Error('An external publication after a write must include afterOperationId. Use beginRead() before fetching, or refresh through the data source.')
+    }
     refreshSequence += 1
     activeRefresh = null
+    readGeneration += 1
     publishPreparedSnapshot(prepared, 'when-changed')
   }
   const waitForCommits = (signal: AbortSignal) =>
@@ -196,6 +214,10 @@ export function createRemoteGridDataSource<
       ...(operationId === undefined ? {} : { operationId }),
     })
     if (signal.aborted) throw signal.reason
+    if (operationId === confirmedOperationId && confirmedOperationId !== undefined
+      && Object.is(authority.version, confirmedSourceVersion)) {
+      throw new Error('The authority read still exposes the base of a confirmed write. Read authority again before publishing it.')
+    }
     return readySnapshot(authority)
   }
 
@@ -210,6 +232,19 @@ export function createRemoteGridDataSource<
       }
     },
     publish,
+    beginRead() {
+      const generation = ++readGeneration
+      const duringCommit = activeCommits > 0
+      const operationId = confirmedOperationId
+      return Object.freeze({
+        afterOperationId: operationId,
+        publish(next: GridDataSourceSnapshot<Row>) {
+          if (duringCommit || activeCommits > 0 || generation !== readGeneration) return false
+          publish(operationId === undefined ? next : { ...next, afterOperationId: operationId })
+          return true
+        },
+      })
+    },
     ...(options.cloneRow ? { cloneRow: options.cloneRow } : {}),
     ...(options.rows ? { rows: options.rows } : {}),
     ...(options.load ? {
@@ -219,6 +254,7 @@ export function createRemoteGridDataSource<
           if (signal.aborted) return
         }
         if (signal.aborted) return
+        readGeneration += 1
         const before = activeRefresh?.before ?? snapshot
         const refreshId = ++refreshSequence
         const startingAuthorityRevision = authorityRevision
@@ -236,13 +272,16 @@ export function createRemoteGridDataSource<
           rows: before.rows,
           version: before.version,
           scope: before.scope,
+          ...(before.afterOperationId === undefined ? {} : { afterOperationId: before.afterOperationId }),
           status: before.status === 'loading' ? 'loading' : 'refreshing',
         }), false)
         try {
-          const refreshed = await load('refresh', signal)
+          const operationId = pendingAuthorityOperationId ?? confirmedOperationId
+          const refreshed = await load(pendingAuthorityOperationId ? 'after-mutation' : 'refresh', signal, operationId)
           if (!isCurrent()) return
           activeRefresh = null
-          publishSnapshot(refreshed, true)
+          publishSnapshot(operationId ? { ...refreshed, afterOperationId: operationId } : refreshed, true)
+          pendingAuthorityOperationId = undefined
         } catch (error) {
           if (!isCurrent()) return
           activeRefresh = null
@@ -254,6 +293,7 @@ export function createRemoteGridDataSource<
             rows: snapshot.rows,
             version: snapshot.version,
             scope: snapshot.scope,
+            ...(snapshot.afterOperationId === undefined ? {} : { afterOperationId: snapshot.afterOperationId }),
             status: 'error',
             error: error instanceof Error ? error.message : String(error),
           }), true)
@@ -267,6 +307,7 @@ export function createRemoteGridDataSource<
         ? {}
         : { debounceMs: options.persistence.debounceMs }),
       async commit(request) {
+        readGeneration += 1
         const pendingRefresh = activeRefresh
         refreshSequence += 1
         activeRefresh = null
@@ -280,25 +321,54 @@ export function createRemoteGridDataSource<
         const hasEarlierCommit = activeCommits > 0
         activeCommits += 1
         const execute = async () => {
-          const startingAuthorityRevision = authorityRevision
           const result = await options.persistence.mutate(request)
-          const applied = result.kind === 'applied'
-            ? readySnapshot(result.authority)
-            : await load(
-                'after-mutation',
-                new AbortController().signal,
-                request.operationId,
-              )
-          if (authorityRevision === startingAuthorityRevision) {
-            publishSnapshot(applied, true)
+          confirmedOperationId = request.operationId
+          confirmedSourceVersion = request.sourceVersion
+          // Once mutate resolves, read/publication failures must never resend it.
+          let confirmation: Readonly<{ operationId: string; keyRemap?: readonly GridRowKeyRemap<RowKey>[] }> = { operationId: request.operationId }
+          let applied: GridReadyDataSourceSnapshot<Row> | null = null
+          pendingAuthorityOperationId = request.operationId
+          try {
+            confirmation = {
+              ...confirmation,
+              ...(result.keyRemap === undefined ? {} : { keyRemap: Object.freeze([...result.keyRemap]) }),
+            }
+            const received = result.kind === 'applied'
+              ? readySnapshot(result.authority)
+              : await load('after-mutation', new AbortController().signal, request.operationId)
+            validateSnapshot(received, options.getRowKey)
+            if (Object.is(received.version, request.sourceVersion)) {
+              throw new Error('The authority read did not include the confirmed write. Refresh from a source that provides read-after-write consistency.')
+            }
+            applied = received
+            const sameApplied = Object.is(snapshot.version, applied.version)
+            if (sameApplied && !areGridAuthorityRowsEqual(snapshot.rows, applied.rows, options.getRowKey)) {
+              throw new Error('The data source reused one version for different authoritative snapshots.')
+            }
+            const provenLater = snapshot.afterOperationId === request.operationId
+            const ambiguous = !sameApplied && !Object.is(snapshot.version, request.sourceVersion) && !provenLater
+            if (result.kind === 'reload' || !provenLater) {
+              if (ambiguous && result.kind === 'applied' && !options.load) {
+                throw new Error('The write was applied, but concurrent authority could not be ordered. Publish authority read after this operation or configure an authority loader and refresh.')
+              }
+              const latest = ambiguous && result.kind === 'applied'
+                ? await load('after-mutation', new AbortController().signal, request.operationId)
+                : applied
+              if (Object.is(latest.version, request.sourceVersion)) {
+                throw new Error('The authority read did not include the confirmed write. Refresh from a source that provides read-after-write consistency.')
+              }
+              // The loader must read after this write, including on replicas.
+              // External reads crossing this interval need beginRead fencing.
+              if (snapshot.afterOperationId !== request.operationId) {
+                publishSnapshot({ ...latest, afterOperationId: request.operationId }, true)
+              }
+            }
+            pendingAuthorityOperationId = undefined
+            return Object.freeze({ ...confirmation, applied })
+          } catch (error) {
+            const reconciliationError = error instanceof Error ? error.message : String(error)
+            return Object.freeze({ ...confirmation, applied, reconciliationError })
           }
-          return Object.freeze({
-            operationId: request.operationId,
-            applied,
-            ...(result.keyRemap === undefined
-              ? {}
-              : { keyRemap: Object.freeze([...result.keyRemap]) }),
-          })
         }
         const committing = hasEarlierCommit
           ? commitTail.then(execute)
@@ -310,6 +380,7 @@ export function createRemoteGridDataSource<
         try {
           return await committing
         } finally {
+          readGeneration += 1
           settleCommit()
         }
       },
@@ -346,6 +417,7 @@ function freezeSnapshot<Row>(
     rows: Object.freeze([...snapshot.rows]),
     version: snapshot.version,
     scope: Object.freeze({ kind: 'complete' as const }),
+    ...(snapshot.afterOperationId === undefined ? {} : { afterOperationId: snapshot.afterOperationId }),
   }
   return snapshot.status === 'error'
     ? Object.freeze({ ...base, status: 'error' as const, error: snapshot.error })

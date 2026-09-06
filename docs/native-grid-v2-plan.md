@@ -678,7 +678,7 @@ type GridDataSource<Row, RowKey, CellTypes> = {
 - `createRemoteGridDataSource` 为 API/数据库场景提供稳定 external store：mutation 可以直接返回真实 authority，或要求 adapter 等待 `load` 重新读取；query/cache 仍可通过 `publish(snapshot)` 接入，不绑定具体请求库；
 - request 同时包含完整 proposal 和 typed `changes`（inserted/updated/deleted/order），前者适合 document replacement，后者直接映射事务式 CRUD；
 - 服务端为 inserted row 分配新主键时，通过 receipt `keyRemap` 返回 temporary → authoritative key；controller 会把排队修改、selection、edit session 和 history 一起映射，非法 remap 视为已应用但本地无法 reconcile，不得重试写操作；
-- receipt 必须精确回显 request operation ID；controller 先以 `applied` 确认该 proposal，再读取 `getSnapshot()`：若仍是 request source version 则视为尚未 publish 的 stale base 并使用 `applied`（此后 data source 的下一次 publish 必须是 `applied` 或其因果后继，不能再次 publish 已淘汰的 base），若是 `applied` 则直接确认，若是第三个 opaque token，则 data source 必须保证它在因果上发布于 `applied` 之后，controller 才将其作为 latest rebase；opaque token 本身不可比较顺序；
+- receipt 必须精确回显 request operation ID；controller 先以 `applied` 确认 proposal，再采用已验证的 latest：request base 暂未发布时使用 `applied` 并屏蔽旧 base 的状态通知；第三个 opaque token 必须显式携带 `afterOperationId`，不能凭到达顺序推断。remote adapter 遇到顺序不明的并发 publication 时在 mutation 后重新读取；无 loader 或读取失败保留恢复状态。外部异步请求必须在开始时调用 `beginRead()`，跨写入返回的结果不得发布；
 - transient/unknown-outcome retry 冻结原 proposal 并复用 operation ID；明确未应用或 source-version conflict 在 refresh/rebase 后生成新 proposal；
 - complete scope 的默认 filter/sort 是本地 view 能力，不要求宿主为了显示按钮重写 setter；
 - 服务端 filter/sort/window/bulk 作为一个完整 P1 data-source capability 设计，不把其中一部分混进本地首发路径；
@@ -1015,3 +1015,5 @@ M1–M4 的“技术完成”不反向把 M0 标成 `Approved`；breaking major 
 - 2026-08-30：创建提案，记录 v2 产品范围、架构、迁移阶段、验证矩阵与待评审决策。
 - 2026-08-30：根据产品定位修正移除首发超大规模/virtualizer 目标；确认 data-source 协作规模模式、全类型显式注册和 React-free controller。
 - 2026-08-30：确认功能优先、验收后固化测试；确认旧 `src/` 改名为 `src-legacy/`，新实现直接使用最终 `src/`。
+
+保存一致性链路的后续审计、协议修订及永久回归矩阵见 [persistence-consistency.md](persistence-consistency.md)。此前一次性审计脚本不能替代这些回归测试。

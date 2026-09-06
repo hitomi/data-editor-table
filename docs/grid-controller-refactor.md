@@ -99,6 +99,10 @@ operation 使用互斥的 idle、committing、outcome-unknown、rejected、appli
 - 收到匹配 commit 回执后，即使当前 draft revision 已改变，仍确认 proposal 并重放后续编辑。authority version 是 opaque token，不能比较大小；保留 request-base/applied/因果后继的已有协议。
 - source publication 与 commit receipt 的先后顺序、提交期间 authority 的暂存/协调、status-only publication、失败后的刷新与后续保存均有集成测试。
 
+保存协议后续增加了显式 `afterOperationId` 因果证明、外部读取代次，以及确认写入后的读取失败回执。
+`applied-unreconciled` 不能被普通 authority publication 清空；必须成功验证并重放保留回执后 acknowledgment。
+完整链路与永久回归矩阵见 [保存一致性审计](persistence-consistency.md) 及 `persistence-consistency.test.ts`。
+
 | effect | 有效性依据 | 取消/过期 |
 | --- | --- | --- |
 | commit | operation ID + 原 proposal + 数据源实例 | draft revision 变化不作废；destroy 后不发布本地结果，不宣称撤销远端写入 |

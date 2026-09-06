@@ -60,6 +60,8 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
   #sequence = 0
   #operation = initialGridPersistenceOperation<Row, RowKey>()
   #refreshToken: number | null = null
+  #refreshOperationId: string | null = null
+  #awaitingPublication: GridPersistenceMachineState<Row, RowKey>['awaitingPublication'] = null
 
   constructor(options: GridPersistenceCoordinatorOptions<Row, RowKey>) {
     this.#options = options
@@ -70,6 +72,8 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
     this.#operation = state.operation
     this.#scheduleToken = state.scheduleToken
     this.#refreshToken = state.refreshToken
+    this.#refreshOperationId = state.refreshOperationId
+    this.#awaitingPublication = state.awaitingPublication
     this.#sequence = state.sequence
   }
 
@@ -78,6 +82,8 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
       operation: this.#operation,
       scheduleToken: this.#scheduleToken,
       refreshToken: this.#refreshToken,
+      refreshOperationId: this.#refreshOperationId,
+      awaitingPublication: this.#awaitingPublication,
       sequence: this.#sequence,
     })
   }
@@ -208,6 +214,8 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
       return this.#options.no('This data source does not support refresh requests.')
     }
     this.#refreshToken = ++this.#sequence
+    this.#refreshOperationId = this.#operation.status === 'applied-unreconciled'
+      ? this.#operation.proposal.id : null
     this.#options.emitEffect({ type: 'refresh', token: this.#refreshToken })
     return this.#options.ok({ refreshing: true })
   }
@@ -251,8 +259,11 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
         try {
           const remote = this.#options.getPublishedSnapshot()
           assertCompleteDataSourceSnapshot(remote)
-          this.#applyRemoteIfChanged(remote)
-          this.#transition({ type: 'authority-reconciled' })
+          if (this.#requiresRefresh) this.#recoverReceipt(remote, this.#refreshOperationId)
+          else {
+            this.#applyRemoteIfChanged(remote)
+            this.#transition({ type: 'authority-reconciled' })
+          }
           this.schedule()
         } catch (error) {
           this.#reportRefreshFailure(error)
@@ -279,8 +290,8 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
     try {
       const remote = published ?? this.#options.getPublishedSnapshot()
       assertCompleteDataSourceSnapshot(remote)
-      this.#applyRemoteIfChanged(remote)
-      if (this.#requiresRefresh) this.#transition({ type: 'authority-reconciled' })
+      if (this.#requiresRefresh) this.#recoverReceipt(remote)
+      else this.#applyRemoteIfChanged(remote)
       this.schedule()
       return this.#options.ok()
     } catch (error) {
@@ -362,15 +373,19 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
   #settleReceipt(
     proposal: CommitProposal<Row, RowKey>,
     receipt: GridCommitReceipt<Row, RowKey>,
+    recovered?: GridReadyDataSourceSnapshot<Row>,
   ) {
     if (receipt.operationId !== proposal.id) {
       throw new Error('The commit receipt operation ID does not match the request.')
     }
-    assertCompleteDataSourceSnapshot(receipt.applied)
-    if (receipt.applied.status !== 'ready') {
+    if (!recovered && receipt.reconciliationError !== undefined) throw new Error(receipt.reconciliationError)
+    const applied = receipt.applied ?? recovered
+    if (!applied) throw new Error('The write was applied, but its authority must be refreshed before saving again.')
+    assertCompleteDataSourceSnapshot(applied)
+    if (applied.status !== 'ready') {
       throw new Error('A commit receipt must contain a ready applied snapshot.')
     }
-    if (Object.is(receipt.applied.version, proposal.request.sourceVersion)) {
+    if (Object.is(applied.version, proposal.request.sourceVersion)) {
       throw new Error(
         'A committed authority must publish a new opaque source version.',
       )
@@ -378,16 +393,16 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
     const keyRemap = validateKeyRemap(
       receipt.keyRemap ?? [],
       proposal.request,
-      receipt.applied,
+      applied,
       this.#options.getRowKey,
     )
-    const published = this.#options.getPublishedSnapshot()
+    const published = recovered ?? this.#options.getPublishedSnapshot()
     assertCompleteDataSourceSnapshot(published)
     if (
-      Object.is(published.version, receipt.applied.version) &&
+      Object.is(published.version, applied.version) &&
       !areGridAuthorityRowsEqual(
         published.rows,
-        receipt.applied.rows,
+        applied.rows,
         this.#options.getRowKey,
       )
     ) {
@@ -410,25 +425,28 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
         )
       }
     }
-    // Some data sources resolve the commit promise before their subscription
-    // publishes the applied snapshot. In that interval getSnapshot() still
-    // returns the request base; it is stale, not a newer authority. Opaque
-    // versions cannot be ordered, so only this exact base token is ignored.
-    // Any third token is accepted under the data-source contract that it is a
-    // causally later publication than the receipt's applied snapshot.
+    // A third opaque token needs causal evidence, not merely later arrival.
+    if (!recovered && !Object.is(published.version, applied.version)
+      && !Object.is(published.version, proposal.request.sourceVersion)
+      && published.afterOperationId !== proposal.id) {
+      throw new Error('The write was applied, but the published authority is not known to include it. Refresh authority before saving again.')
+    }
     const latest = Object.is(
       published.version,
       proposal.request.sourceVersion,
     )
-      ? receipt.applied
+      ? applied
       : published
     this.#options.applyCommitted(
-      receipt.applied,
+      applied,
       latest,
       proposal.request.rows,
       proposal.request.draftRevision,
       keyRemap,
     )
+    this.#awaitingPublication = Object.is(published.version, proposal.request.sourceVersion)
+      ? { operationId: proposal.id, sourceVersion: proposal.request.sourceVersion, appliedVersion: applied.version }
+      : null
     this.#transition({ type: 'acknowledged', operationId: proposal.id })
     this.#publish({
       ...this.#snapshot().persistence,
@@ -438,6 +456,18 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
       retryOperationId: null,
     })
     this.schedule()
+  }
+
+  #recoverReceipt(remote: GridDataSourceSnapshot<Row>, refreshedOperationId: string | null = null) {
+    const operation = this.#operation
+    if (operation.status !== 'applied-unreconciled' || remote.status !== 'ready') return
+    // A status change or a read started before confirmation cannot recover a
+    // write. Replay the retained proposal/receipt before accepting new saves.
+    if (Object.is(remote.version, operation.proposal.request.sourceVersion)) return
+    if (remote.afterOperationId !== operation.proposal.id
+      && refreshedOperationId !== operation.proposal.id
+      && !Object.is(remote.version, operation.receipt.applied?.version)) return
+    this.#settleReceipt(operation.proposal, operation.receipt, { ...remote, status: 'ready' })
   }
 
   #settleCommitFailure(
@@ -493,8 +523,16 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
   }
 
   #applyRemoteIfChanged(remote: GridDataSourceSnapshot<Row>) {
-    if (this.#inFlight || this.#retry) {
+    if (this.#inFlight || this.#retry || this.#requiresRefresh) {
       return
+    }
+    const waiting = this.#awaitingPublication
+    if (waiting) {
+      if (Object.is(remote.version, waiting.sourceVersion)) return
+      if (!Object.is(remote.version, waiting.appliedVersion)
+        && remote.afterOperationId !== waiting.operationId) {
+        throw new Error('The published authority is not known to include the acknowledged write.')
+      }
     }
     const source = this.#snapshot().source
     if (
@@ -518,9 +556,11 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
         )
       })
     ) {
+      this.#awaitingPublication = null
       return
     }
     this.#options.applyRemote(remote)
+    this.#awaitingPublication = null
   }
 
   #publish(

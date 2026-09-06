@@ -72,6 +72,11 @@ export const remoteDataSource = createRemoteGridDataSource<Row, number, Schema>(
   },
 })
 
+/** Async integrations retain this object from request start through publication. */
+export const remoteRead = remoteDataSource.beginRead()
+export const remoteReadOperation: string | undefined = remoteRead.afterOperationId
+export const publishRemoteRead: (snapshot: GridDataSourceSnapshot<Row>) => boolean = remoteRead.publish
+
 type QuickStartProduct = {
   id: string
   name: string

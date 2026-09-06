@@ -639,34 +639,43 @@ Error messages cross into the UI. Return user-facing recovery text, not raw data
 
 ## 13. Publishing query or route state
 
-`createRemoteGridDataSource` is not tied to a query library. Keep the returned object stable and publish external cache state:
+`createRemoteGridDataSource` is not tied to a query library. Keep the object stable. Prefer its
+`load` integration, or capture an external read before starting the network request:
 
 ```ts
-if (query.isError) {
-  dataSource.publish({
-    rows: previousRows,
-    version: previousVersion,
-    scope: { kind: 'complete' },
-    status: 'error',
-    error: 'Products could not be loaded.',
-  })
-} else {
-  dataSource.publish({
-    rows: query.data?.rows ?? previousRows,
-    version: query.data?.version ?? previousVersion,
-    scope: { kind: 'complete' },
-    status: query.isFetching
-      ? previousRows.length > 0 ? 'refreshing' : 'loading'
-      : 'ready',
-  })
-}
+const read = dataSource.beginRead()
+const authority = await productsApi.load({ afterOperationId: read.afterOperationId })
+const accepted = read.publish({
+  ...authority,
+  scope: { kind: 'complete' },
+  status: 'ready',
+})
+// If false, refetch: this request crossed a write or was superseded by another read.
 ```
 
-The example is conceptual: derive state from the actual query library without inventing a successful version before data exists.
+Do not acquire `beginRead()` in an effect or subscription after a cached request has completed.
+A query integration must retain the read's start context, or use the adapter's `load` function.
+After a write, direct `publish(snapshot)` calls with a different authority version require
+`afterOperationId` proving that the snapshot includes the last confirmed operation. Unproven
+publications throw without modifying the store. Do not stamp old cache data with a current ID.
+Same-version status/error updates may still be published directly using the current rows/version.
 
-Do not recreate the data source whenever the cache emits a new array. Call `publish` instead.
+The read must provide read-after-write consistency for `read.afterOperationId`. Likewise,
+`load({ reason: 'after-mutation', operationId })` must bypass stale caches/replicas or wait for the
+operation to be visible. Opaque version tokens cannot be compared numerically or by arrival order.
+During a mutation, an unproven third version requires a post-mutation authority read. If no loader
+exists, or reconciliation fails, retain the proposal and require recovery rather than guessing.
+A truly later publication can carry `afterOperationId: request.operationId` as causal proof.
 
-If authentication, permissions, or the route key is unresolved, publish an honest loading or error state, or wait before constructing the logical data-set binding. Do not show a false empty state.
+A resolved mutation confirms the write. Subsequent reload/validation failure returns a receipt
+with `reconciliationError`, retaining the exact `applied` snapshot when available, otherwise
+`applied: null`. Never turn that into an unknown write outcome or resubmit it. The controller
+replays the retained proposal and key remaps against recovered ready authority before allowing
+new writes. Loading/error notifications alone cannot unlock the operation. Invalid operation IDs
+or key remaps remain blocked until the integration is corrected; a status change is not a fix.
+
+If authentication, permissions, or the route key is unresolved, publish an honest loading or error
+state, or wait before creating the logical data-set binding. Do not show a false empty state.
 
 ## 14. Row operations
 

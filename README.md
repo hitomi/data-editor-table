@@ -164,7 +164,7 @@ Practical rules:
 3. `getRowKey` must produce a unique, stable string or number.
 4. Treat every published snapshot, rows array, and row value as immutable. Setters return new rows.
 5. `version` is an opaque token. Change it whenever authoritative values or persistent order change; never compare versions by magnitude.
-6. A successful `commit` returns the request's exact `operationId` and the exact applied `ready` snapshot. Publish it, or a causally later snapshot, through the store.
+6. A successful `commit` returns the request's exact `operationId` and the exact applied `ready` snapshot. Publish it, or a causally later snapshot carrying `afterOperationId: request.operationId`, through the store. Arrival order does not establish authority order.
 7. Reject failed writes. The grid retains the draft and exposes retry/recovery.
 
 Snapshots distinguish `loading`, `refreshing`, `ready`, and `error` (`error` also requires a user-facing `error` string). Optional `refresh({ signal })` starts a host refresh and publishes its result. Supply `cloneRow(row)` for class instances or other rows that cannot use structured cloning.
@@ -173,8 +173,30 @@ Snapshots distinguish `loading`, `refreshing`, `ready`, and `error` (`error` als
 
 `createRemoteGridDataSource` is the standard adapter for remote state. It intentionally does not
 depend on TanStack Query, SWR, GraphQL, REST, or a database client. Keep the returned object stable;
-publish route/query-cache state with `dataSource.publish(snapshot)`, or provide `load` so Refresh
-and post-mutation reloads can read the authority.
+provide `load` so Refresh and post-mutation reloads can read the authority, or use `beginRead()`
+before starting an external asynchronous read:
+
+```ts
+const read = dataSource.beginRead()
+const authority = await productsApi.load({ afterOperationId: read.afterOperationId })
+const accepted = read.publish({ ...authority, status: 'ready', scope: { kind: 'complete' } })
+// If false, a write or newer read superseded this request. Refetch; do not republish its result.
+```
+
+Capture the read before the network request, not in a cache subscription after it completes.
+The reader must return authority that includes `read.afterOperationId` when present; forward
+it to an operation-aware API when needed for read-after-write consistency. Prefer the adapter's
+`load` integration when a query library cannot preserve the read's start context.
+After a confirmed write, direct `publish(snapshot)` calls that change the authority version
+must carry the corresponding `afterOperationId`; unproven publications throw without changing
+the store. Same-version status updates remain supported. Do not label an old cached response
+with the current operation ID.
+
+If a different version arrives during a mutation without proof that it includes the operation,
+the adapter reads authority after the mutation before settling. If there is no loader, or that
+read fails, the grid retains the draft and requires authority recovery instead of guessing which
+version is newer. A proven later publication is retained. This also applies when retrying an
+idempotent operation after other server changes have arrived.
 
 Every `GridCommitRequest` contains both representations of the same accepted proposal:
 
@@ -198,6 +220,16 @@ After a successful mutation, return one of:
 Do not construct a success result from `request.rows` unless those rows are literally the database
 result. If the server replaces a temporary key, include `keyRemap: [{ from, to }]`; queued edits,
 selection, active editing, dirty state, and history are reconciled onto the authoritative key.
+
+`load({ reason: 'after-mutation', operationId })` must read authority that includes the confirmed
+write, not an eventually consistent replica or stale cache. For `{ kind: 'reload' }`, it also
+supplies the authority used to acknowledge the proposal; preserve operation-specific key remaps.
+The adapter returns a receipt with `applied: null` and `reconciliationError` if a confirmed write's
+authority read fails. If the exact applied snapshot is available but latest-authority reconciliation
+fails, the receipt retains `applied` and includes `reconciliationError`. These are confirmed writes:
+the controller preserves the proposal, queued edits and remaps, and offers Refresh rather than Retry
+save. Custom data sources must use the same distinction. Refreshing only a loading/error status
+cannot clear this recovery state.
 
 A column maps a registered type to business data:
 

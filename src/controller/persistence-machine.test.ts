@@ -38,7 +38,8 @@ describe('persistence operation state machine', () => {
     const state = transition(committing(), { type: 'unreconciled', operationId: proposal.id, receipt, error: 'invalid remap' })
     expect(state).toEqual({ status: 'applied-unreconciled', proposal, receipt, error: 'invalid remap' })
     expect(transition(state, { type: 'start', proposal })).toBe(state)
-    expect(transition(state, { type: 'authority-reconciled' })).toEqual({ status: 'idle' })
+    expect(transition(state, { type: 'authority-reconciled' })).toBe(state)
+    expect(transition(state, { type: 'acknowledged', operationId: proposal.id })).toEqual({ status: 'idle' })
   })
 
   it('distinguishes definitive rejection from an unknown result and allows a new proposal', () => {

@@ -1,5 +1,5 @@
 import type { GridCommitReceipt, GridCommitRequest } from '../data/data-source.js'
-import type { GridRowKey } from '../model/grid-model.js'
+import type { GridRowKey, GridSourceVersion } from '../model/grid-model.js'
 
 export type GridCommitProposal<Row, RowKey extends GridRowKey> = Readonly<{
   request: GridCommitRequest<Row, RowKey>
@@ -30,13 +30,20 @@ export type GridPersistenceMachineState<Row, RowKey extends GridRowKey> = Readon
   operation: GridPersistenceOperation<Row, RowKey>
   scheduleToken: number | null
   refreshToken: number | null
+  refreshOperationId: string | null
+  awaitingPublication: Readonly<{
+    operationId: string
+    sourceVersion: GridSourceVersion
+    appliedVersion: GridSourceVersion
+  }> | null
   sequence: number
 }>
 
 export function initialGridPersistenceMachineState<Row, RowKey extends GridRowKey>(): GridPersistenceMachineState<Row, RowKey> {
   return Object.freeze({
     operation: initialGridPersistenceOperation<Row, RowKey>(),
-    scheduleToken: null, refreshToken: null, sequence: 0,
+    scheduleToken: null, refreshToken: null, refreshOperationId: null,
+    awaitingPublication: null, sequence: 0,
   })
 }
 
@@ -51,7 +58,7 @@ export function transitionGridPersistenceOperation<Row, RowKey extends GridRowKe
 ): GridPersistenceOperation<Row, RowKey> {
   if (event.type === 'authority-reconciled') {
     // A refresh cannot establish whether an unknown operation was applied.
-    return current.status === 'rejected' || current.status === 'applied-unreconciled'
+    return current.status === 'rejected'
       ? initialGridPersistenceOperation() : current
   }
   if (event.type === 'start') {
@@ -59,6 +66,8 @@ export function transitionGridPersistenceOperation<Row, RowKey extends GridRowKe
     if (current.status === 'outcome-unknown' && current.proposal !== event.proposal) return current
     return Object.freeze({ status: 'committing', proposal: event.proposal })
   }
+  if (current.status === 'applied-unreconciled' && event.type === 'acknowledged'
+    && current.proposal.id === event.operationId) return initialGridPersistenceOperation()
   if (current.status !== 'committing' || current.proposal.id !== event.operationId) return current
   switch (event.type) {
     case 'acknowledged': return initialGridPersistenceOperation()

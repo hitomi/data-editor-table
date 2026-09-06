@@ -144,7 +144,7 @@ describe('createRemoteGridDataSource', () => {
     })
   })
 
-  it('does not let a commit completion overwrite an external publication', async () => {
+  it('does not overwrite an external publication proven to include the operation', async () => {
     let finishMutation!: (result: GridRemoteMutationResult<Row, string>) => void
     const mutation = new Promise<GridRemoteMutationResult<Row, string>>(
       (resolve) => { finishMutation = resolve },
@@ -168,6 +168,7 @@ describe('createRemoteGridDataSource', () => {
       rows: [{ id: 'row-a', name: 'Externally newer' }],
       status: 'ready',
       version: 'v3',
+      afterOperationId: 'operation-1',
       scope: { kind: 'complete' },
     })
     finishMutation({
@@ -179,7 +180,7 @@ describe('createRemoteGridDataSource', () => {
     })
     const receipt = await committing
 
-    expect(receipt.applied.version).toBe('v2')
+    expect(receipt.applied?.version).toBe('v2')
     expect(dataSource.getSnapshot()).toMatchObject({
       rows: [{ id: 'row-a', name: 'Externally newer' }],
       version: 'v3',
@@ -252,7 +253,7 @@ describe('createRemoteGridDataSource', () => {
       },
     })
     const first = dataSource.persistence.commit(commitRequest('operation-1'))
-    const second = dataSource.persistence.commit(commitRequest('operation-2'))
+    const second = dataSource.persistence.commit({ ...commitRequest('operation-2'), sourceVersion: 'v2' })
 
     expect(calls).toEqual(['operation-1'])
     finishes.get('operation-1')!({

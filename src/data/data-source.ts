@@ -12,6 +12,8 @@ type GridDataSourceSnapshotBase<Row> = Readonly<{
   rows: readonly Row[]
   version: GridSourceVersion
   scope: GridCompleteScope
+  /** The authority includes this operation, or a causally later server state. */
+  afterOperationId?: string
 }>
 
 export type GridDataSourceSnapshot<Row> =
@@ -98,10 +100,20 @@ export type GridCommitReceipt<
   RowKey extends GridRowKey = never,
 > = Readonly<{
   operationId: string
-  applied: GridReadyDataSourceSnapshot<Row>
   /** Maps temporary inserted-row keys to keys assigned by the authority. */
   keyRemap?: readonly GridRowKeyRemap<RowKey>[]
-}>
+}> & (
+  | Readonly<{
+      applied: GridReadyDataSourceSnapshot<Row>
+      /** Write confirmed, but the latest authority still requires reconciliation. */
+      reconciliationError?: string
+    }>
+  | Readonly<{
+      /** Write confirmed; a subsequent authority read failed. Never resend it. */
+      applied: null
+      reconciliationError: string
+    }>
+)
 
 export type GridPersistenceCapability<Row, RowKey extends GridRowKey> = Readonly<{
   mode: GridPersistenceMode
@@ -109,10 +121,12 @@ export type GridPersistenceCapability<Row, RowKey extends GridRowKey> = Readonly
   /**
    * Resolve with the exact applied authority. At resolution getSnapshot() may
    * still expose the request's sourceVersion, may expose applied, or may expose
-   * a causally later snapshot. If it exposes any third opaque version, that
-   * snapshot must have been published after applied; opaque versions are not
-   * otherwise orderable by the controller. After a stale request base is
-   * observed at settlement, the next publication must be applied or later.
+   * a causally later snapshot. A third opaque version must carry
+   * afterOperationId matching this request; arrival order proves nothing.
+   * After a stale request base is observed at settlement, publish applied or
+   * a proven successor. Async readers must fence reads crossing a write.
+   * A confirmed write whose authority cannot be read returns applied: null
+   * and reconciliationError instead of rejecting as an unknown write outcome.
    */
   commit: (
     request: GridCommitRequest<Row, RowKey>,

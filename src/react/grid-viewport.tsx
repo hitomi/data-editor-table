@@ -16,7 +16,7 @@ import {
 import type { GridCellTypeSchema } from '../cell-types/contracts.js'
 import type { GridCellViewPort } from '../cell-types/react-view-contracts.js'
 import type { GridController, GridDispatchResult } from '../controller/grid-controller.js'
-import { selectedCells } from '../controller/selection-model.js'
+import { selectedCells } from '../model/range-geometry.js'
 import {
   fallbackGridCellText,
   resolveGridCellValue,

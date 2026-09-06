@@ -18,11 +18,15 @@ import { selectGridSavePlan } from './grid-selectors.js'
 import { areGridAuthorityRowsEqual } from '../data/authority-snapshot.js'
 import { gridRowKeysEqual } from '../model/row-key.js'
 import { createGridChangeSet } from '../data/change-set.js'
+import type { GridPersistenceEffect, GridPersistenceEvent } from './persistence-effects.js'
 
-type CommitProposal<Row, RowKey extends GridRowKey> = Readonly<{
-  request: GridCommitRequest<Row, RowKey>
-  id: string
-}>
+import {
+  initialGridPersistenceOperation,
+  transitionGridPersistenceOperation,
+  type GridCommitProposal as CommitProposal,
+  type GridPersistenceOperationEvent,
+  type GridPersistenceMachineState,
+} from './persistence-machine.js'
 
 export type GridPersistenceCoordinatorOptions<
   Row,
@@ -32,12 +36,8 @@ export type GridPersistenceCoordinatorOptions<
   getRowKey: (row: Row) => RowKey
   getControllerSnapshot: () => GridControllerSnapshot<Row, RowKey>
   getPublishedSnapshot: () => GridDataSourceSnapshot<Row>
-  commit: (
-    request: GridCommitRequest<Row, RowKey>,
-  ) => Promise<GridCommitReceipt<Row, RowKey>>
-  requestRefresh?: (context: Readonly<{ signal: AbortSignal }>) =>
-    | Promise<void>
-    | void
+  canRefresh: boolean
+  emitEffect: (effect: GridPersistenceEffect<Row, RowKey>) => void
   reportRefreshError: (message: string) => void
   debounceMs?: number
   publish: (persistence: GridPersistenceState) => void
@@ -56,14 +56,30 @@ export type GridPersistenceCoordinatorOptions<
 
 export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
   readonly #options: GridPersistenceCoordinatorOptions<Row, RowKey>
-  #timer: ReturnType<typeof setTimeout> | null = null
-  #inFlight: CommitProposal<Row, RowKey> | null = null
-  #retry: CommitProposal<Row, RowKey> | null = null
-  #refresh: AbortController | null = null
-  #requiresRefresh = false
+  #scheduleToken: number | null = null
+  #sequence = 0
+  #operation = initialGridPersistenceOperation<Row, RowKey>()
+  #refreshToken: number | null = null
 
   constructor(options: GridPersistenceCoordinatorOptions<Row, RowKey>) {
     this.#options = options
+  }
+
+  /** Working state is copied in per Runtime input; this coordinator is not its owner. */
+  restoreState(state: GridPersistenceMachineState<Row, RowKey>) {
+    this.#operation = state.operation
+    this.#scheduleToken = state.scheduleToken
+    this.#refreshToken = state.refreshToken
+    this.#sequence = state.sequence
+  }
+
+  captureState(): GridPersistenceMachineState<Row, RowKey> {
+    return Object.freeze({
+      operation: this.#operation,
+      scheduleToken: this.#scheduleToken,
+      refreshToken: this.#refreshToken,
+      sequence: this.#sequence,
+    })
   }
 
   setMode(mode: GridPersistenceMode) {
@@ -132,9 +148,7 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
       return
     }
     if (snapshot.persistence.mode === 'immediate') {
-      queueMicrotask(() => {
-        if (!this.#options.isDestroyed()) this.save()
-      })
+      this.#scheduleEffect(0, false)
       return
     }
     this.#clearTimer()
@@ -143,13 +157,10 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
       status: 'scheduled',
       pendingDraftRevision: snapshot.draft.revision,
     })
-    this.#timer = setTimeout(() => {
-      this.#timer = null
-      if (!this.#options.isDestroyed()) this.save()
-    }, this.#options.debounceMs ?? 800)
+    this.#scheduleEffect(this.#options.debounceMs ?? 800, false)
   }
 
-  save(next = this.#proposal()) {
+  save() {
     if (this.#requiresRefresh) {
       return this.#options.no(
         'The previous save was applied, but the latest authority could not be reconciled. Refresh before saving again.',
@@ -159,6 +170,7 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
       this.schedule()
       return this.#options.ok({ queued: true })
     }
+    const next = this.#retry ?? this.#proposal()
     if (!next) {
       this.schedule()
       return isDraftDirty(this.#snapshot())
@@ -169,8 +181,7 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
     }
 
     this.#clearTimer()
-    this.#inFlight = next
-    this.#retry = null
+    this.#transition({ type: 'start', proposal: next })
     this.#publish({
       ...this.#snapshot().persistence,
       status: 'saving',
@@ -180,89 +191,96 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
       retryOperationId: null,
     })
 
-    void Promise.resolve()
-      .then(() => this.#options.commit(next.request))
-      .then(
-        (receipt) => {
-          if (this.#options.isDestroyed() || this.#inFlight?.id !== next.id)
-            return
-          try {
-            this.#settleReceipt(next, receipt)
-          } catch (error) {
-            // A receipt confirms that the authority applied this operation.
-            // Local reconciliation failure must never resubmit that operation.
-            this.#inFlight = null
-            this.#retry = null
-            this.#requiresRefresh = true
-            this.#publish({
-              ...this.#snapshot().persistence,
-              status: 'failed',
-              inFlightOperationId: null,
-              pendingDraftRevision: this.#snapshot().draft.revision,
-              error: error instanceof Error ? error.message : String(error),
-              retryOperationId: null,
-            })
-          }
-        },
-        (error: unknown) => this.#settleCommitFailure(next, error),
-      )
+    this.#options.emitEffect({ type: 'commit', proposal: next })
     return this.#options.ok({ operationId: next.id })
   }
 
   retry() {
     return this.#retry
-      ? this.save(this.#retry)
+      ? this.save()
       : this.#options.no(
           'This save was definitively rejected. Refresh or resolve conflicts, then save a new proposal.',
         )
   }
 
   refresh() {
-    if (!this.#options.requestRefresh) {
+    if (!this.#options.canRefresh) {
       return this.#options.no('This data source does not support refresh requests.')
     }
-    this.#refresh?.abort()
-    const active = new AbortController()
-    this.#refresh = active
-    void Promise.resolve()
-      .then(() => this.#options.requestRefresh?.({ signal: active.signal }))
-      .then(() => {
-        if (active.signal.aborted || this.#options.isDestroyed()) return
-        this.#refresh = null
-        const remote = this.#options.getPublishedSnapshot()
-        assertCompleteDataSourceSnapshot(remote)
-        this.#applyRemoteIfChanged(remote)
-        this.#requiresRefresh = false
-        this.schedule()
-      })
-      .catch((error: unknown) => {
-        if (active.signal.aborted || this.#options.isDestroyed()) return
-        this.#refresh = null
-        try {
-          const remote = this.#options.getPublishedSnapshot()
-          if (remote.status === 'error') this.#applyRemoteIfChanged(remote)
-          else {
-            this.#options.reportRefreshError(
-              error instanceof Error ? error.message : String(error),
-            )
-          }
-        } catch (readError) {
-          this.#options.reportRefreshError(
-            readError instanceof Error
-              ? readError.message
-              : String(readError),
-          )
-        }
-      })
+    this.#refreshToken = ++this.#sequence
+    this.#options.emitEffect({ type: 'refresh', token: this.#refreshToken })
     return this.#options.ok({ refreshing: true })
   }
 
-  syncPublished() {
+  handleEvent(event: GridPersistenceEvent<Row, RowKey>) {
+    if (this.#options.isDestroyed()) return
+    switch (event.type) {
+      case 'schedule/due':
+        if (event.token !== this.#scheduleToken) return
+        this.#scheduleToken = null
+        if (event.retry) this.retry()
+        else this.save()
+        return
+      case 'commit/failed':
+        this.#settleCommitFailure(event.proposal, event.error)
+        return
+      case 'commit/received': {
+        const { proposal, receipt } = event
+        if (this.#inFlight?.id !== proposal.id) return
+        const committing = this.#operation
+        try {
+          this.#settleReceipt(proposal, receipt)
+        } catch (error) {
+          // A receipt confirms application; local failure must never resend it.
+          this.#operation = committing
+          this.#transition({ type: 'unreconciled', operationId: proposal.id, receipt, error })
+          this.#publish({
+            ...this.#snapshot().persistence,
+            status: 'failed',
+            inFlightOperationId: null,
+            pendingDraftRevision: this.#snapshot().draft.revision,
+            error: error instanceof Error ? error.message : String(error),
+            retryOperationId: null,
+          })
+        }
+        return
+      }
+      case 'refresh/completed':
+        if (event.token !== this.#refreshToken) return
+        this.#refreshToken = null
+        try {
+          const remote = this.#options.getPublishedSnapshot()
+          assertCompleteDataSourceSnapshot(remote)
+          this.#applyRemoteIfChanged(remote)
+          this.#transition({ type: 'authority-reconciled' })
+          this.schedule()
+        } catch (error) {
+          this.#reportRefreshFailure(error)
+        }
+        return
+      case 'refresh/failed':
+        if (event.token !== this.#refreshToken) return
+        this.#refreshToken = null
+        this.#reportRefreshFailure(event.error)
+    }
+  }
+
+  #reportRefreshFailure(error: unknown) {
     try {
       const remote = this.#options.getPublishedSnapshot()
+      if (remote.status === 'error') this.#applyRemoteIfChanged(remote)
+      else this.#options.reportRefreshError(error instanceof Error ? error.message : String(error))
+    } catch (readError) {
+      this.#options.reportRefreshError(readError instanceof Error ? readError.message : String(readError))
+    }
+  }
+
+  syncPublished(published?: GridDataSourceSnapshot<Row>) {
+    try {
+      const remote = published ?? this.#options.getPublishedSnapshot()
       assertCompleteDataSourceSnapshot(remote)
       this.#applyRemoteIfChanged(remote)
-      if (this.#requiresRefresh) this.#requiresRefresh = false
+      if (this.#requiresRefresh) this.#transition({ type: 'authority-reconciled' })
       this.schedule()
       return this.#options.ok()
     } catch (error) {
@@ -275,13 +293,20 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
     }
   }
 
-  destroy() {
-    this.#clearTimer()
-    this.#inFlight = null
-    this.#retry = null
-    this.#requiresRefresh = false
-    this.#refresh?.abort()
-    this.#refresh = null
+  #transition(event: GridPersistenceOperationEvent<Row, RowKey>) {
+    this.#operation = transitionGridPersistenceOperation(this.#operation, event)
+  }
+
+  get #inFlight() {
+    return this.#operation.status === 'committing' ? this.#operation.proposal : null
+  }
+
+  get #retry() {
+    return this.#operation.status === 'outcome-unknown' ? this.#operation.proposal : null
+  }
+
+  get #requiresRefresh() {
+    return this.#operation.status === 'applied-unreconciled'
   }
 
   #proposal(): CommitProposal<Row, RowKey> | null {
@@ -404,8 +429,7 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
       proposal.request.draftRevision,
       keyRemap,
     )
-    this.#inFlight = null
-    this.#retry = null
+    this.#transition({ type: 'acknowledged', operationId: proposal.id })
     this.#publish({
       ...this.#snapshot().persistence,
       status: 'idle',
@@ -424,12 +448,11 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
       this.#options.isDestroyed() ||
       this.#inFlight?.id !== proposal.id
     ) return
-    this.#inFlight = null
     const definitive =
       isGridCommitError(error) &&
       (error.kind === 'source-version-conflict' ||
         error.kind === 'not-applied')
-    this.#retry = definitive ? null : proposal
+    this.#transition({ type: 'failed', operationId: proposal.id, error, definitive })
     if (definitive) {
       try {
         const remote = this.#options.getPublishedSnapshot()
@@ -513,8 +536,13 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
   }
 
   #clearTimer() {
-    if (this.#timer) clearTimeout(this.#timer)
-    this.#timer = null
+    this.#scheduleToken = null
+    this.#options.emitEffect({ type: 'cancel-schedule' })
+  }
+
+  #scheduleEffect(delay: number, retry: boolean) {
+    this.#scheduleToken = ++this.#sequence
+    this.#options.emitEffect({ type: 'schedule', token: this.#scheduleToken, delay, retry })
   }
 
   #scheduleRetry(mode: GridPersistenceMode) {
@@ -527,9 +555,7 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
       return
     }
     if (mode === 'immediate') {
-      queueMicrotask(() => {
-        if (!this.#options.isDestroyed()) this.retry()
-      })
+      this.#scheduleEffect(0, true)
       return
     }
     this.#clearTimer()
@@ -538,10 +564,7 @@ export class GridPersistenceCoordinator<Row, RowKey extends GridRowKey> {
       status: 'scheduled',
       pendingDraftRevision: snapshot.draft.revision,
     })
-    this.#timer = setTimeout(() => {
-      this.#timer = null
-      if (!this.#options.isDestroyed()) this.retry()
-    }, this.#options.debounceMs ?? 800)
+    this.#scheduleEffect(this.#options.debounceMs ?? 800, true)
   }
 }
 

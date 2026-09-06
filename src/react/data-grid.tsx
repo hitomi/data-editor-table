@@ -12,7 +12,7 @@ import {
   type GridDispatchResult,
   type GridEffectPort,
 } from '../controller/grid-controller.js'
-import { selectedCells } from '../controller/selection-model.js'
+import { selectedCells } from '../model/range-geometry.js'
 import type { GridDataSource } from '../data/data-source.js'
 import type { DataEditorTableLocale } from '../locales/contracts.js'
 import { resolveGridCellValue } from '../data/runtime-cell-resolver.js'

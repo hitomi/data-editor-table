@@ -1,5 +1,6 @@
 import type { GridControllerSnapshot, GridPoint, GridRange, GridRowKey } from '../model/grid-model.js'
-import { isGridCellSelected, selectedCells, selectedRowKeys } from './selection-model.js'
+import { isGridCellSelected, selectedRowKeys } from './selection-model.js'
+import { selectedCells } from '../model/range-geometry.js'
 import { invokeGridCallback } from '../data/safe-callback.js'
 import { encodeCellIdentity } from '../model/cell-identity.js'
 import {

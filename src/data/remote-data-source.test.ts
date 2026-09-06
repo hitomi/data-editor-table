@@ -587,7 +587,7 @@ describe('createRemoteGridDataSource', () => {
     controller.destroy()
   })
 
-  it('reuses operationId after an unknown outcome and adopts reloaded authority', async () => {
+  it.each(['persistence/retry', 'persistence/save'] as const)('reuses operationId after an unknown outcome via %s and adopts reloaded authority', async (retryIntent) => {
     const operationIds: string[] = []
     let mutationAttempt = 0
     const dataSource = createRemoteGridDataSource<Row, string, Schema>({
@@ -630,7 +630,7 @@ describe('createRemoteGridDataSource', () => {
     await vi.waitFor(() => {
       expect(controller.getSnapshot().persistence.status).toBe('failed')
     })
-    expect(controller.dispatch({ type: 'persistence/retry' }).accepted).toBe(true)
+    expect(controller.dispatch({ type: retryIntent }).accepted).toBe(true)
     await vi.waitFor(() => {
       expect(controller.getSnapshot().persistence.status).toBe('idle')
     })
@@ -690,6 +690,7 @@ describe('createRemoteGridDataSource', () => {
     expect(persistence.error).toContain('does not contain remapped row key')
     expect(persistence.retryOperationId).toBeNull()
     expect(controller.dispatch({ type: 'persistence/retry' }).accepted).toBe(false)
+    expect(controller.dispatch({ type: 'persistence/save' }).accepted).toBe(false)
     expect(mutationCount).toBe(1)
     controller.destroy()
   })

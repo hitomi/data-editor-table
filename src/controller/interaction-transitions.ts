@@ -337,57 +337,6 @@ export function moveGridPointLinear<RowKey extends GridRowKey>(
   })
 }
 
-export type GridRangeBounds = Readonly<{
-  minRow: number
-  maxRow: number
-  minColumn: number
-  maxColumn: number
-  rowCount: number
-  columnCount: number
-}>
-
-export function gridRangeBounds<RowKey extends GridRowKey>(
-  range: GridRange<RowKey>,
-  rows: readonly RowKey[],
-  columns: readonly string[],
-): GridRangeBounds | null {
-  const rowA = rows.findIndex((key) =>
-    gridRowKeysEqual(key, range.anchor.rowKey),
-  )
-  const rowB = rows.findIndex((key) =>
-    gridRowKeysEqual(key, range.focus.rowKey),
-  )
-  const columnA = columns.indexOf(range.anchor.columnKey)
-  const columnB = columns.indexOf(range.focus.columnKey)
-  if (rowA < 0 || rowB < 0 || columnA < 0 || columnB < 0) return null
-  const minRow = Math.min(rowA, rowB)
-  const maxRow = Math.max(rowA, rowB)
-  const minColumn = Math.min(columnA, columnB)
-  const maxColumn = Math.max(columnA, columnB)
-  return {
-    minRow,
-    maxRow,
-    minColumn,
-    maxColumn,
-    rowCount: maxRow - minRow + 1,
-    columnCount: maxColumn - minColumn + 1,
-  }
-}
-
-export function gridFillDirection(
-  source: GridRangeBounds,
-  target: GridRangeBounds,
-) {
-  if (target.maxRow < source.minRow) return 'up' as const
-  if (target.minRow > source.maxRow) return 'down' as const
-  if (target.maxColumn < source.minColumn) return 'left' as const
-  if (target.minColumn > source.maxColumn) return 'right' as const
-  return null
-}
-
-export function positiveModulo(value: number, divisor: number) {
-  return ((value % divisor) + divisor) % divisor
-}
 
 function resolveFillTarget<RowKey extends GridRowKey>(
   source: GridRange<RowKey>,
@@ -539,3 +488,4 @@ function freezeInteraction<RowKey extends GridRowKey>(
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value))
 }
+import { gridRangeBounds } from '../model/range-geometry.js'

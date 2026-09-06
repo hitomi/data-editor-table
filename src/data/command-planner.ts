@@ -11,8 +11,8 @@ import {
   gridFillDirection,
   gridRangeBounds,
   positiveModulo,
-} from '../controller/interaction-transitions.js'
-import { selectedCells } from '../controller/selection-model.js'
+  selectedCells,
+} from '../model/range-geometry.js'
 import { createGridColumnIndex, createGridRowIndex } from './runtime-index.js'
 import { cloneGridRow, invokeGridResult } from './safe-callback.js'
 import { resolveGridCellValue } from './runtime-cell-resolver.js'

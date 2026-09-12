@@ -592,3 +592,7 @@
   .business-grid__workspace > p[role='alert'] { color: var(--grid-invalid); }
   .business-grid__workspace fieldset { border: 1px solid var(--grid-border); border-radius: var(--grid-radius); padding: 12px; }
 }
+
+@layer business-grid.theme {
+  .business-grid__workspace-editor { border: 1px solid var(--grid-border-strong); border-radius: var(--grid-radius); background: var(--grid-surface); color: var(--grid-text); }
+}

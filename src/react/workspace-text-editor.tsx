@@ -45,7 +45,7 @@ export function WorkspaceTextEditor({ workspace, viewId, target, label, codecs, 
   const row = snapshot.projection.rows.find(row => row.entityId === field?.entityId && row.existence !== 'pending-delete')
   const matches = session && encodedValuesEqual(ownEncodedValue(session.target), ownEncodedValue(target))
   const owns = matches && session.editor?.viewId === viewId
-  useEffect(() => { if (owns) document.getElementById(inputId)?.focus() }, [workspace, owns, session?.id, inputId])
+  useEffect(() => { if (owns) document.getElementById(inputId)?.focus({ preventScroll: true }) }, [workspace, owns, session?.id, inputId])
   const input = owns ? snapshot.editorInput?.input ?? session.rawInput : null
   const matrix = readMatrixInput(input)
   const text = matrix ? matrix.text : input?.kind === 'encoded' && typeof input.value === 'string' ? input.value : null

@@ -78,7 +78,7 @@ different dispositions. Navigation must respect the confirmed result.
 
 ## Editing and host composition
 
-- Cell and range selection, typed and bulk editing, matrix copy/paste and
+- Mouse-drag and Shift range selection, double-click/Enter/F2 editing, bulk editing, matrix copy/paste and
   opt-in clearing retain original input until it is applied or discarded.
 - String, decimal number, ISO date, boolean, single-choice and multi-choice
   codecs separate authoring text, validation and stored values.
@@ -94,7 +94,7 @@ different dispositions. Navigation must respect the confirmed result.
   does not erase a file or pretend already-started work never happened.
 
 Context menus, remaining drag interactions, richer recovery surfaces and large
-row-set performance are still under audit. Current views render their complete
+row-set performance are still under audit; see the [interaction acceptance gaps](docs/demo-interaction-audit.md). Current views render their complete
 visible row set; do not assume virtualized rendering or automatic pagination.
 
 ## Examples

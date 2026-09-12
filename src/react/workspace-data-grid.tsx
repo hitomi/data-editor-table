@@ -49,6 +49,8 @@ export function WorkspaceDataGrid({ workspace, viewId, caption, columns, editors
   const observed = useWorkspaceSnapshot(workspace, serverSnapshot)
   const scopeKey = rowScope ? canonicalEncodedValue(ownEncodedValue(rowScope)) : ''
   const snapshot = useMemo(() => rowScope ? { ...observed, view: scopeView(observed.view, observed.projection, workspace.schema, rowScope) } : observed, [observed, workspace, rowScope, scopeKey])
+  const [editFailure, setEditFailure] = useState<Workspace | null>(null)
+  const openingCell = useRef(false)
   const copyAttempt = useRef(0)
   const clearing = useRef(new Set<Workspace>())
   type FillGesture = Readonly<{ token: string; workspace: Workspace; viewId: ViewId; scopeKey: string; snapshot: WorkspaceSnapshot;
@@ -208,6 +210,24 @@ export function WorkspaceDataGrid({ workspace, viewId, caption, columns, editors
       if (text !== null) void openMatrix(text, activeMenu.cell)
     } else if (menuEditText !== null) void openInput(menuTarget, { kind: 'encoded', value: menuEditText })
   }
+  async function editCell(cell: WorkspaceGridCell) {
+    const current = workspace.getSnapshot()
+    // A gesture cannot replace an existing session, including detached/rejected input.
+    if (openingCell.current || current !== observed || current.state.session || current.ingress.pending.length
+      || current.capabilities.close.lifecycle !== 'open' || current.storage && current.storage.kind !== 'idle' || current.recovery.running) return
+    const display = columns.find(column => column.id === cell.columnId)
+    if (!display) return
+    const target = { kind: 'cell' as const, field: { entityId: cell.entityId, fieldId: display.fieldId } }
+    if (!review(target)) return
+    openingCell.current = true
+    try {
+      const binding = reviewBindings.get(display.fieldId)!, row = reviewRows.get(cell.entityId)!.row
+      const text = definitions.get(display.fieldId)!.codec.format(readDocument(row.preview!, binding.path))
+      setEditFailure(null)
+      const result = await openInput(target, { kind: 'encoded', value: text })
+      if (result.kind === 'rejected') setEditFailure(workspace)
+    } catch { setEditFailure(workspace) } finally { openingCell.current = false }
+  }
   function copyMatrix(cell: WorkspaceGridCell): string | null {
     copyAttempt.current++
     // Preserve captured membership/order, including filtered-out members. A
@@ -276,11 +296,12 @@ export function WorkspaceDataGrid({ workspace, viewId, caption, columns, editors
       { kind: 'encoded', value: { format: 'workspace-matrix:1', text, layout } })
   }
   async function openInput(target: Extract<SessionTarget, { kind: 'cell' | 'bulk' }>, input: OwnedInput) {
-    await workspace.dispatch({ kind: 'session-opened', revision: snapshot.state.revision,
+    return await workspace.dispatch({ kind: 'session-opened', revision: snapshot.state.revision,
       sessionId: kernelId<'session'>(crypto.randomUUID()), inputId: kernelId<'input'>(crypto.randomUUID()),
       viewId, target, reads: [], input })
   }
   return <div className={['business-grid__workspace', className].filter(Boolean).join(' ')}>
+    {editFailure === workspace ? <p role="alert">{messages.editor.failed}</p> : null}
     {activeFill ? <p role="status" className="business-grid__fill-status">{messages.fill.help}</p> : null}
     {fillFailure === workspace ? <p role="alert">{messages.fill.failed}</p> : null}
     {copyFeedback?.workspace === workspace ? <p role={copyFeedback.kind === 'failed' ? 'alert' : 'status'}>{copyFeedback.kind === 'failed' ? messages.copyFailed : copyFeedback.kind === 'pending' ? messages.copying : messages.copied}</p> : null}
@@ -306,26 +327,29 @@ export function WorkspaceDataGrid({ workspace, viewId, caption, columns, editors
     {filters.map(filter => <WorkspaceFilterEditor key={filter.columnId} workspace={workspace} viewId={viewId} {...filter} messages={filter.messages ?? locale.filter} {...observation} />)}
     {columns.some(column => column.sortable) ? <p>{messages.sort.help}</p> : null}
     {sortFeedback?.workspace === workspace && sortFeedback.failed && sortFeedback.version === snapshot.state.view.version ? <p role="alert">{messages.sort.failed}</p> : null}
+    <div className={session?.editor?.viewId === viewId && session.target.kind !== 'filter' ? 'business-grid__workspace-editor' : undefined}>
+      {target && supported && editorLabel ? <WorkspaceTextEditor workspace={workspace} viewId={viewId} target={target} label={editorLabel} codecs={codecs} messages={messages.editor} {...(resourceTask ? { resource: { task: resourceTask, messages: messages.resource } } : {})} {...observation} {...(replacement ? { replacement } : {})} {...(currentReview ? { currentReview } : {})} />
+        : session?.target.kind === 'filter' && filterIds.has(session.target.columnId) ? null : session ? <section aria-label={messages.retainedInput}>
+          <p role="alert">{messages.inputUnavailable}</p>
+          {raw?.kind === 'encoded' ? <textarea aria-label={messages.retainedInput} readOnly value={typeof raw.value === 'string' ? raw.value : canonicalEncodedValue(raw.value)} /> : null}
+        </section> : <p>{messages.selectCell}</p>}
+    </div>
     <WorkspaceGridViewport {...(rowHeader ? { rowHeader } : {})} {...(rowScope ? { rowScope } : {})} workspace={workspace} caption={caption} columns={columns} messages={messages.viewport} {...observation}
+      editing={session?.editor?.viewId === viewId && targets[0] ? { entityId: targets[0].entityId, columnId: columns.find(column => column.fieldId === targets[0]?.fieldId)?.id ?? '' } : null}
       fill={{ source: fillSource, enabled: !session && !!replacement && supported, token: activeFill?.token ?? null,
         start: startFill, cancel: cancelFill, drop: (cell, token) => { void finishFill(cell, token) } }}
       sorting={{ sort: snapshot.state.view.sort, disabled: sortingDisabled, label: messages.sort.label, priority: messages.sort.priority,
         describe: messages.sort.describe,
         toggle: (fieldId, additive) => { void toggleSort(fieldId, additive) } }}
-      interaction={{ selected, onContextMenu: (cell, anchor) => setMenu({ workspace, viewId, scopeKey, snapshot: observed, columns, editors, selection, cell, anchor }), onClear: cell => { void clearSelection(cell) }, onCopyShortcut: cell => { void copyShortcut(cell) }, onCopy: copyMatrix, onPaste: (cell, text) => { void openMatrix(text, cell) }, members: range ?? { rows: selected ? [selected.entityId] : [], columns: selected ? [selected.columnId] : [] }, onSelectExtent: (extent, cell) => {
+      interaction={{ selected, anchor: range?.anchor ?? selected, onEdit: cell => { void editCell(cell) }, onContextMenu: (cell, anchor) => setMenu({ workspace, viewId, scopeKey, snapshot: observed, columns, editors, selection, cell, anchor }), onClear: cell => { void clearSelection(cell) }, onCopyShortcut: cell => { void copyShortcut(cell) }, onCopy: copyMatrix, onPaste: (cell, text) => { void openMatrix(text, cell) }, members: range ?? { rows: selected ? [selected.entityId] : [], columns: selected ? [selected.columnId] : [] }, onSelectExtent: (extent, cell) => {
         const rows = snapshot.view.rows.map(row => row.entityId), ids = columns.map(column => column.id)
         if (!rows.length || !ids.length) return
         const anchor = { entityId: extent === 'row' ? cell.entityId : rows[0]!, columnId: extent === 'column' ? cell.columnId : ids[0]! }
         const focus = { entityId: extent === 'row' ? cell.entityId : rows.at(-1)!, columnId: extent === 'column' ? cell.columnId : ids.at(-1)! }
         setSelection({ workspace, viewId, scopeKey, range: { ...selectWorkspaceRange(rows, ids, focus, anchor), focus: cell } })
-      }, onSelect: (cell, extend) => {
-        const next = selectWorkspaceRange(snapshot.view.rows.map(row => row.entityId), columns.map(column => column.id), cell, extend ? range?.anchor ?? selected ?? cell : cell)
+      }, onSelect: (cell, extend, anchor) => {
+        const next = selectWorkspaceRange(snapshot.view.rows.map(row => row.entityId), columns.map(column => column.id), cell, anchor ?? (extend ? range?.anchor ?? selected ?? cell : cell))
         setSelection({ workspace, viewId, scopeKey, range: next })
       } }} />
-    {target && supported && editorLabel ? <WorkspaceTextEditor workspace={workspace} viewId={viewId} target={target} label={editorLabel} codecs={codecs} messages={messages.editor} {...(resourceTask ? { resource: { task: resourceTask, messages: messages.resource } } : {})} {...observation} {...(replacement ? { replacement } : {})} {...(currentReview ? { currentReview } : {})} />
-      : session?.target.kind === 'filter' && filterIds.has(session.target.columnId) ? null : session ? <section aria-label={messages.retainedInput}>
-        <p role="alert">{messages.inputUnavailable}</p>
-        {raw?.kind === 'encoded' ? <textarea aria-label={messages.retainedInput} readOnly value={typeof raw.value === 'string' ? raw.value : canonicalEncodedValue(raw.value)} /> : null}
-      </section> : <p>{messages.selectCell}</p>}
   </div>
 }

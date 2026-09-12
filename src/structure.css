@@ -1114,6 +1114,8 @@
     width: 100%;
     min-width: 0;
     min-height: 0;
+    max-height: 100%;
+    overflow: auto;
     gap: 12px;
     padding: 12px;
     border: 1px solid;
@@ -1131,7 +1133,7 @@
   .business-grid__workspace button { align-self: flex-start; cursor: pointer; }
   .business-grid__workspace button:disabled { cursor: not-allowed; }
   .business-grid__workspace [role='toolbar'] p { margin: 0; flex-basis: 100%; }
-  .business-grid__workspace-viewport { overflow: auto; }
+  .business-grid__workspace-viewport { min-height: 120px; overflow: auto; }
   .business-grid__workspace table { width: 100%; border-collapse: collapse; }
   .business-grid__workspace caption { text-align: start; font-weight: 600; padding-block: 8px; }
   .business-grid__workspace th,
@@ -1150,4 +1152,15 @@
   .business-grid__fill-handle { position: absolute; inset-inline-end: 0; inset-block-end: 0; width: 8px; height: 8px; background: var(--grid-accent, #2563eb); cursor: crosshair; }
   .business-grid__fill-handle:not([draggable='true']) { display: none; }
   .business-grid__fill-status { position: fixed; inset-inline-start: 16px; inset-block-end: 16px; max-width: min(480px, calc(100vw - 32px)); padding: 10px; z-index: var(--grid-z-menu, 100); background: var(--grid-surface, white); border: 1px solid var(--grid-border, #ccc); pointer-events: none; }
+}
+
+@layer business-grid.layout {
+  .business-grid__workspace-editor { padding: 12px; }
+  .business-grid__workspace-editor > section { max-width: 560px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .business-grid__workspace-editor > section > label,
+  .business-grid__workspace-editor > section > p,
+  .business-grid__workspace-editor > section > output { flex-basis: 100%; margin: 0; }
+  .business-grid__workspace-editor > section > input,
+  .business-grid__workspace-editor > section > select,
+  .business-grid__workspace-editor > section > textarea { width: 100%; }
 }

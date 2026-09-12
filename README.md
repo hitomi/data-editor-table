@@ -3,11 +3,11 @@
 A React table editor with an explicit Workspace that owns edits, history,
 persistence, file tasks and recovery independently of mounted views.
 
-This branch introduces a **breaking Workspace API**. The previous controller,
+Version 0.4.0 introduces a **breaking Workspace API**. The previous controller,
 data-source adapter, binding and cell-type registry APIs have been removed.
 The implementation is still completing its interaction and recovery audit;
 see the [progress record](./docs/state-kernel-progress.md) for remaining work.
-The published npm package and hosted demo may represent an earlier release.
+Users upgrading from 0.3.x should follow the [migration guide](./docs/workspace-migration.md).
 
 ## Install and render
 

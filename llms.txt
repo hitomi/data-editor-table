@@ -1,7 +1,7 @@
 # data-editor-table: current Workspace integration
 
-This source tree introduces a breaking Workspace API. The published npm release
-0.3.1 uses the previous API; do not assume the current source matches that package.
+Version 0.4.0 introduces a breaking Workspace API. Release 0.3.1 uses the previous
+API; do not mix its integration examples with the current package.
 The old integration guide is retained at docs/archive/llms-v0.3.1.txt.
 
 Start with README.md and docs/workspace-migration.md for current integration.

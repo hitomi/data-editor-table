@@ -1,11 +1,12 @@
-# Workspace API migration
+# Workspace API migration — 0.4.0
 
 The public entry now uses the new state kernel. This is a breaking API change;
 the old controller and data-source constructors are no longer public exports.
-The migration is in progress: Quick start, Playground, multi-image import and
-cross-grid drag use the new API. All browser fixtures also use the new API; the legacy state implementation has
-been removed. Remaining interactions, recovery surfaces and the final acceptance
-audit must complete before release. The isolated package consumer exercises the new API.
+Quick start, Playground, multi-image import and cross-grid drag use the new API,
+as do the browser fixtures and isolated package consumers. The legacy state
+implementation has been removed. This guide describes the current integration;
+the [acceptance index](state-kernel-acceptance.md) tracks remaining design work.
+Use the [API navigation](workspace-api.md) to locate public types and methods.
 
 Quick start uses an IndexedDB product authority whose transactions persist both
 product documents and exact operation outcomes. This is browser-local example
@@ -26,8 +27,10 @@ survive reopening. Sorting and the current Name filter change only the view quer
 Its image conversion service stores the exact request and validated ArrayBuffer
 bytes in IndexedDB before conversion. It retains exact outcomes; lookup can finish
 the same accepted conversion after a restart. Missing executions stay unknown.
-This is a local conversion example with no remote upload side effect. Remaining
-filter variants, context menus and drag interactions are still migration work.
+This is a local conversion example with no remote upload side effect. Context
+menus, retained paste/clear, literal/custom fill and partition drag are connected
+to Workspace; their contracts are described below. These examples do not provide
+a general remote upload service or transactions across independent backends.
 
 ## Entry points
 
@@ -56,8 +59,9 @@ import {
 // options contains the application's fixed scope, schema, policy and source.
 export async function openEditor(options: WorkspaceOptions) {
   const workspace = new Workspace(options)
-  await workspace.refresh()
-  return workspace
+  const result = await workspace.refresh()
+  // Keep the owner available for retry; the host must inspect result.kind.
+  return { workspace, result }
 }
 
 const fieldId = kernelId<'field'>('name')

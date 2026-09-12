@@ -1,5 +1,8 @@
 # data-editor-table: agent integration guide
 
+ARCHIVED: this guide describes release 0.3.1 and removed APIs. For 0.4.0,
+use ../README.md and ../workspace-migration.md. Instructions below are historical.
+
 > Use this document when adding `data-editor-table` to an application. It describes the supported public API, the authority and persistence model, extension points, styling, and the mistakes an implementation agent must avoid.
 
 Package: `data-editor-table`

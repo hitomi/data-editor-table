@@ -1,5 +1,7 @@
 # 状态内核重构进展
 
+本文是按时间追加的实施日志，包含已被后续实现替代的阶段方案和测试计数，不是当前 API 参考。接入从 [文档索引](README.md) 开始，最新测试增删及恢复验证见 [测试审计](test-suite-audit.md)，未完成要求见 [验收索引](state-kernel-acceptance.md)。
+
 设计基线：[state-kernel-redesign.md](state-kernel-redesign.md)。允许 breaking change。
 更新日期：2026-09-12。Goal 保持 active。
 

@@ -124,6 +124,13 @@ contracts.
 | `data-editor-table/structure.css` | Structural rules for a custom theme |
 | `data-editor-table/theme.css` | Default theme rules |
 
+## Documentation
+
+Start with the [documentation index](./docs/README.md),
+[0.4.0 migration guide](./docs/workspace-migration.md), and
+[public API navigation](./docs/workspace-api.md). Historical controller designs
+are archived and do not describe the current API.
+
 ## Development and verification
 
 Use the repository package manager and configured Node.js version.

@@ -36,4 +36,4 @@
 
 `tests/browser/persistence-consistency.spec.ts` 覆盖编辑、受控服务器写入、旧读/读失败/更晚外部更新、恢复及重开编辑器，同时断言提交次数。`tests/browser/review-regressions.spec.ts` 覆盖权限恢复、主键冲突显式替换与完整隐藏字段保存。三浏览器配置见 `playwright.config.ts`。
 
-`pnpm test:mutations` 在隔离源码副本中注入九类语义错误，要求正常基线通过且每种错误触发具体测试失败。它补充回归敏感性证据，不证明任意后端正确。运行结果及仍待补齐的场景见 [验收索引](state-kernel-acceptance.md)；本文不代表全部验收已完成。
+`pnpm test:mutations` 在隔离源码副本中注入十类语义错误，要求正常基线通过且每种错误触发具体测试失败。它补充回归敏感性证据，不证明任意后端正确。运行结果及仍待补齐的场景见 [测试审计](test-suite-audit.md) 和 [验收索引](state-kernel-acceptance.md)；本文不代表全部验收已完成。

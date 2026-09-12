@@ -569,4 +569,26 @@
   .business-grid__workspace [aria-selected='true'] { background: var(--grid-selection-fill); }
   .business-grid__workspace :focus-visible { outline: 2px solid var(--grid-accent); outline-offset: 2px; }
   .business-grid__workspace [role='alert'] { color: var(--grid-invalid); }
+  .business-grid__workspace button {
+    border: 1px solid var(--grid-border-strong);
+    border-radius: 6px;
+    background: var(--grid-surface);
+    color: var(--grid-text);
+    line-height: 1.5;
+    font-weight: 500;
+  }
+  .business-grid__workspace button:hover:not(:disabled) { background: var(--grid-hover); border-color: var(--grid-accent); }
+  .business-grid__workspace button:disabled { color: var(--grid-muted); background: var(--grid-subtle-surface); opacity: .55; }
+  .business-grid__workspace button[aria-pressed='true'] { background: var(--grid-accent-soft); border-color: var(--grid-accent); color: var(--grid-accent-strong); }
+  .business-grid__workspace th[scope="col"] button { border: 0; border-radius: 0; background: transparent; color: inherit; }
+  .business-grid__workspace th[scope="col"] button:hover:not(:disabled) { background: transparent; color: var(--grid-accent-strong); }
+  .business-grid__workspace input:not([type='checkbox']):not([type='radio']),
+  .business-grid__workspace select, .business-grid__workspace textarea {
+    border: 1px solid var(--grid-border-strong); border-radius: 6px;
+    padding: 6px 8px; background: var(--grid-surface); color: var(--grid-text);
+  }
+  .business-grid__workspace input[type='checkbox'], .business-grid__workspace input[type='radio'] { accent-color: var(--grid-accent); }
+  .business-grid__workspace > p { color: var(--grid-muted); font-size: 12px; }
+  .business-grid__workspace > p[role='alert'] { color: var(--grid-invalid); }
+  .business-grid__workspace fieldset { border: 1px solid var(--grid-border); border-radius: var(--grid-radius); padding: 12px; }
 }

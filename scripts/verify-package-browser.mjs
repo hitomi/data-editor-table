@@ -114,9 +114,16 @@ async function verifyBrowser(name, browserType) {
         const style = await page.locator('.business-grid__workspace').evaluate(element => {
           const computed = getComputedStyle(element)
           return { accent: computed.getPropertyValue('--grid-accent').trim(), borderColor: computed.borderColor,
-            borderStyle: computed.borderStyle, display: computed.display, width: element.getBoundingClientRect().width }
+            borderStyle: computed.borderStyle, width: element.getBoundingClientRect().width }
         })
-        if (style.display !== 'grid' || style.borderStyle === 'none' || style.width < width - 60) throw new Error(`Packed layout failed at ${width}px: ${JSON.stringify(style)}`)
+        if (style.borderStyle === 'none' || style.width < width - 60) throw new Error(`Packed layout failed at ${width}px: ${JSON.stringify(style)}`)
+        const refresh = page.getByRole('button', { name: '刷新数据', exact: true })
+        const refreshBox = (await refresh.boundingBox())
+        const gridBox = (await grid.boundingBox())
+        if (!refreshBox || !gridBox || refreshBox.width >= gridBox.width / 2 || gridBox.y <= refreshBox.y)
+          throw new Error('Packed actions must stay compact above the grid.')
+        if (!structureOnly && await refresh.evaluate(element => parseFloat(getComputedStyle(element).borderRadius)) <= 0)
+          throw new Error('Packed default controls are missing their theme.')
         const overflow = await page.evaluate(() => ({ horizontal: document.documentElement.scrollWidth - document.documentElement.clientWidth,
           vertical: document.documentElement.scrollHeight - document.documentElement.clientHeight }))
         if (overflow.horizontal > 0 || overflow.vertical > 0) throw new Error(`Packed page overflowed at ${width}px: ${JSON.stringify(overflow)}`)

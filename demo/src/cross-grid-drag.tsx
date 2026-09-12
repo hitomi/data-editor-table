@@ -94,9 +94,9 @@ function Lists({ owner }: { owner: Owner }) {
     if (unavailable) { setError('Wait for the current operation, then drop the rows again.'); return }
     void apply(text, side, position, trusted)
   }
-  return <main className="quick-start-page">
+  return <main className="demo-example-page">
     <h1>Transfer inventory between lists</h1><p>Both lists share one save and undo history. Select rows, then drag a handle or choose a destination below. Protected rows can be copied or reordered.</p>
-    <section aria-label="Transfer controls">
+    <section className="demo-row-actions" aria-label="Transfer controls">
       <button aria-pressed={mode === 'copy'} onClick={() => setMode('copy')}>Copy</button><button aria-pressed={mode === 'move'} onClick={() => setMode('move')}>Move</button>
       <label>Destination list <select value={target} disabled={unavailable} onChange={event => { setTarget(event.target.value as Side); setBefore(null) }}><option value="left">Left</option><option value="right">Right</option></select></label>
       <label>Insert before <select value={before ?? ''} disabled={unavailable} onChange={event => setBefore(event.target.value ? kernelId<'entity'>(event.target.value) : null)}>

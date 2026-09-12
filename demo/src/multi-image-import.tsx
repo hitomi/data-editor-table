@@ -71,10 +71,10 @@ function ImportPage({ owner }: { owner: Owner }) {
     } catch (error) { setError(error instanceof Error ? error.message : 'Could not prepare the image import.') }
     finally { setBusy(false) }
   }
-  return <main className="quick-start-page" onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = unavailable ? 'none' : 'copy' } }}
+  return <main className="demo-example-page" onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = unavailable ? 'none' : 'copy' } }}
     onDrop={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); void importFiles(Array.from(event.dataTransfer.files)) } }}>
     <header><h1>Import images</h1><p>Choose or drop up to 24 images, 8 MiB each and 48 MiB total. Review replacements and new rows before applying; save to keep the changes.</p></header>
-    <section aria-label="Choose import files"><label>Import starting row <select value={start ?? ''} disabled={unavailable} onChange={event => setStart(event.target.value || null)}>
+    <section className="demo-row-actions" aria-label="Choose import files"><label>Import starting row <select value={start ?? ''} disabled={unavailable} onChange={event => setStart(event.target.value || null)}>
       <option value="">First visible row</option>{snapshot.view.rows.map((row, index) => <option key={row.entityId} value={row.entityId}>{String(row.preview?.name || `Row ${index + 1}`)}</option>)}</select></label>
       <label>Choose images to import <input type="file" multiple accept="image/*" disabled={unavailable} onChange={event => { void importFiles(Array.from(event.currentTarget.files ?? []), event.currentTarget) }} /></label>
       {busy ? <p role="status">Retaining image files…</p> : null}{error ? <p role="alert">{error}</p> : null}

@@ -284,19 +284,21 @@ export function WorkspaceDataGrid({ workspace, viewId, caption, columns, editors
     {activeFill ? <p role="status" className="business-grid__fill-status">{messages.fill.help}</p> : null}
     {fillFailure === workspace ? <p role="alert">{messages.fill.failed}</p> : null}
     {copyFeedback?.workspace === workspace ? <p role={copyFeedback.kind === 'failed' ? 'alert' : 'status'}>{copyFeedback.kind === 'failed' ? messages.copyFailed : copyFeedback.kind === 'pending' ? messages.copying : messages.copied}</p> : null}
-    <WorkspaceToolbar workspace={workspace} messages={messages.toolbar} {...observation}
-      renderAdditionalActions={actions => activeMenu ? <WorkspaceContextMenu anchor={activeMenu.anchor} label={messages.menu.label} close={closeMenu} isCurrent={() => workspace.getSnapshot() === activeMenu.snapshot}
-        actions={[
-          { id: 'edit', label: messages.editor.edit, disabled: !menuCanEdit || menuTarget?.kind === 'cell' && menuEditText === null, run: editFromMenu },
-          { id: 'copy', label: messages.menu.copy, disabled: false, run: () => { void copyShortcut(activeMenu.cell) } },
-          { id: 'paste', label: messages.paste, disabled: !menuCanEdit, run: () => { void openMatrix('', activeMenu.cell) } },
-          { id: 'clear', label: messages.clear, disabled: !menuCanEdit || !menuFields?.every(field => definitions.get(field.fieldId)?.clearInput !== undefined), run: () => { void clearSelection(activeMenu.cell) } },
-          ...actions,
-        ]} /> : null} />
-    {!session && candidate ? <button type="button" disabled={!supported || !replacement || snapshot.capabilities.close.lifecycle !== 'open'} onClick={() => openMatrix('')}>{messages.paste}</button> : null}
-    {!session && candidate && editors.some(editor => editor.clearInput !== undefined) ? <button type="button" disabled={!canClear || !replacement || snapshot.capabilities.close.lifecycle !== 'open'} onClick={() => { void clearSelection() }}>{messages.clear}</button> : null}
-    <button type="button" disabled={!!session || !replacement || !supported} aria-pressed={!!activeFill}
-      onClick={event => { if (activeFill) cancelFill(); else if (startFill()) event.currentTarget.closest('.business-grid__workspace')?.querySelector<HTMLElement>('[role="gridcell"][tabindex="0"]')?.focus() }}>{messages.fill.label}</button>
+    <div className="business-grid__workspace-actions">
+      <WorkspaceToolbar workspace={workspace} messages={messages.toolbar} {...observation}
+        renderAdditionalActions={actions => activeMenu ? <WorkspaceContextMenu anchor={activeMenu.anchor} label={messages.menu.label} close={closeMenu} isCurrent={() => workspace.getSnapshot() === activeMenu.snapshot}
+          actions={[
+            { id: 'edit', label: messages.editor.edit, disabled: !menuCanEdit || menuTarget?.kind === 'cell' && menuEditText === null, run: editFromMenu },
+            { id: 'copy', label: messages.menu.copy, disabled: false, run: () => { void copyShortcut(activeMenu.cell) } },
+            { id: 'paste', label: messages.paste, disabled: !menuCanEdit, run: () => { void openMatrix('', activeMenu.cell) } },
+            { id: 'clear', label: messages.clear, disabled: !menuCanEdit || !menuFields?.every(field => definitions.get(field.fieldId)?.clearInput !== undefined), run: () => { void clearSelection(activeMenu.cell) } },
+            ...actions,
+          ]} /> : null} />
+      {!session && candidate ? <button type="button" disabled={!supported || !replacement || snapshot.capabilities.close.lifecycle !== 'open'} onClick={() => openMatrix('')}>{messages.paste}</button> : null}
+      {!session && candidate && editors.some(editor => editor.clearInput !== undefined) ? <button type="button" disabled={!canClear || !replacement || snapshot.capabilities.close.lifecycle !== 'open'} onClick={() => { void clearSelection() }}>{messages.clear}</button> : null}
+      <button type="button" disabled={!!session || !replacement || !supported} aria-pressed={!!activeFill}
+        onClick={event => { if (activeFill) cancelFill(); else if (startFill()) event.currentTarget.closest('.business-grid__workspace')?.querySelector<HTMLElement>('[role="gridcell"][tabindex="0"]')?.focus() }}>{messages.fill.label}</button>
+    </div>
     <WorkspaceTaskRecovery {...(renderActionCandidate ? { renderActionCandidate } : {})} workspace={workspace} snapshot={snapshot} viewId={viewId} messages={messages.resource} {...(supported && currentReview ? { review: currentReview } : {})} />
     <WorkspaceDecisionRecovery workspace={workspace} snapshot={snapshot} viewId={viewId} {...(supported && replacement ? { target: replacement } : {})} messages={messages.recovery} resourceMessages={messages.resource} />
     <WorkspaceStoredFiles workspace={workspace} snapshot={snapshot} messages={messages.files} />

@@ -112,4 +112,11 @@ fi
   cd -- "$react_consumer/browser"
   "$repo_root/node_modules/.bin/vite" build --outDir dist --emptyOutDir
 )
-node --experimental-transform-types "$repo_root/scripts/verify-package-browser.mjs" "$react_consumer/browser/dist"
+# Compile the verifier and its TypeScript fixture before running Node. The
+# supported Node range must not depend on experimental TypeScript CLI flags.
+# Verifier dependencies stay separate from the isolated package consumers.
+browser_verifier="$temp_root/browser-verifier"
+"$repo_root/node_modules/.bin/tsc" -p "$repo_root/scripts/tsconfig.package-browser.json" --outDir "$browser_verifier"
+printf '{"type":"module"}\n' > "$browser_verifier/package.json"
+ln -s "$repo_root/node_modules" "$browser_verifier/node_modules"
+node "$browser_verifier/scripts/verify-package-browser.mjs" "$react_consumer/browser/dist"

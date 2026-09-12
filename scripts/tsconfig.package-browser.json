@@ -1,0 +1,14 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "rootDir": "..",
+    "allowJs": true,
+    "checkJs": false,
+    "rewriteRelativeImportExtensions": true,
+    "noEmitOnError": true,
+    "types": []
+  },
+  "include": ["verify-package-browser.mjs"]
+}

@@ -1,47 +1,16 @@
-import {
-  createGridController,
-  createRemoteGridDataSource,
-  type GridCellBehaviorPort,
-  type GridCellTypeSignature,
-} from 'data-editor-table/engine'
+import { Workspace, kernelId, defineKernelSchema, prepareRowAction, type PersistenceSource, type WorkspaceOptions } from 'data-editor-table/engine'
 
-type Row = Readonly<{ id: number; name: string }>
-type Schema = Readonly<{
-  string: GridCellTypeSignature<string>
-}>
-
-const dataSource = createRemoteGridDataSource<Row, number, Schema>({
-  columns: [
-    {
-      key: 'name',
-      label: 'Name',
-      type: 'string',
-      getValue: (row) => row.name,
-      setValue: (row, name) => ({ ...row, name }),
-    },
-  ],
-  getRowKey: (row) => row.id,
-  initialSnapshot: {
-    rows: [{ id: 1, name: 'Engine only' }],
-    status: 'ready',
-    version: 1,
-    scope: { kind: 'complete' },
-  },
-  persistence: {
-    mode: 'manual-save',
-    mutate: async (request) => ({
-      kind: 'applied',
-      authority: {
-        rows: request.rows,
-        version: Number(request.sourceVersion) + 1,
-      },
-    }),
-  },
-})
-
-declare const behaviors: GridCellBehaviorPort<Row>
-
-export const controller = createGridController<Row, number, Schema>({
-  dataSource,
-  cellBehaviors: behaviors,
-})
+export const schema = defineKernelSchema({ version: kernelId<'schema-version'>('products-v1'), codec: kernelId<'codec-version'>('json-v1'),
+  fields: [{ id: kernelId<'field'>('name'), path: ['name'], readonly: false }], validate: () => [] })
+export function createEditor(source: PersistenceSource) {
+  const options: WorkspaceOptions = { source, scope: { sourceId: source.id, id: kernelId<'scope'>('products'), epoch: kernelId<'scope-epoch'>('v1') }, schema,
+    policy: { version: kernelId<'policy-version'>('v1'), create: true, order: true, defaultEntity: { write: true, replace: true, delete: true, readonlyPaths: [] }, entities: [] } }
+  return new Workspace(options)
+}
+export const prepare = prepareRowAction
+// @ts-expect-error Entity identity cannot substitute for a field identity.
+const invalidField: typeof schema.fields[number]['id'] = kernelId<'entity'>('row')
+void invalidField
+// @ts-expect-error Backends must guarantee exact operation lookup.
+const unsupported: PersistenceSource['capabilities']['durableOperationLookup'] = false
+void unsupported

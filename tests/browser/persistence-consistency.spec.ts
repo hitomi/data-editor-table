@@ -1,55 +1,82 @@
-import { expect, test } from '@playwright/test'
+import { fulfillExpectedFailure, expect, test, type Page } from './test.js'
+import { SourceFixture, deferred } from '../kernel/source-fixture.js'
+import { kernelId } from '../../src/kernel/model.js'
 
+async function mount(page: Page, name: string, restore: boolean) {
+  await page.goto('/')
+  await page.evaluate(async ({ name, restore }) => {
+    document.body.replaceChildren()
+    await (await import('/src/test-fixtures/durable-workspace.ts')).startDurableWorkspace(name, restore)
+    const container = document.createElement('div'); document.body.append(container)
+    ;(await import('/src/test-fixtures/persistence-consistency.tsx')).mountPersistenceConsistencyFixture(container)
+  }, { name, restore })
+}
 for (const scenario of ['intermediate', 'later', 'reload-failure'] as const) {
-  test(`saved authority survives ${scenario}, delayed cache reads and reopening`, async ({ page }) => {
-    const errors: string[] = []
-    page.on('pageerror', (error) => { errors.push(error.message) })
-    page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()) })
-    await page.goto('/')
-    await page.evaluate(async (scenario) => {
-      document.body.replaceChildren()
-      const container = document.createElement('div')
-      document.body.append(container)
-      const fixture = await import('/src/test-fixtures/persistence-consistency.tsx')
-      fixture.mountPersistenceConsistencyFixture(container, scenario)
-    }, scenario)
-    const grid = page.getByRole('grid', { name: 'Persistence consistency' })
-    await grid.getByRole('gridcell', { name: 'Initial', exact: true }).click()
-    await page.keyboard.press('Enter')
-    const editor = grid.getByRole('textbox', { name: 'Name', exact: true })
-    await editor.fill(scenario === 'reload-failure' ? 'Submitted' : '  Submitted  ')
-    await editor.press('Enter')
+  test(`saved authority survives ${scenario}, stale reads and durable reopening`, async ({ page, context }) => {
+    const name = `consistency-${scenario}-${crypto.randomUUID()}`
+    const source = new SourceFixture({ sourceId: name, id: kernelId<'scope'>('scope'), epoch: kernelId<'scope-epoch'>('epoch') }, { a: { value: 'Initial', hidden: { retained: 7 } } })
+    const stale = source.snapshot(), response = deferred<void>()
+    source.normalize = document => ({ ...document, value: String(document.value).trim() })
+    source.submitHook = async (_request, execute) => {
+      const applied = execute()
+      await response.promise
+      return applied
+    }
+    let failReads = false
+    await context.route('**/__kernel-source/*', async route => {
+      const path = new URL(route.request().url()).pathname, body = route.request().postDataJSON()
+      if (path.endsWith('/read') && failReads) { await fulfillExpectedFailure(route, { status: 503, body: 'Authority read unavailable' }); return }
+      const result = path.endsWith('/read') ? await source.readAtLeast() : path.endsWith('/lookup') ? await source.lookupOperation(body) : await source.submit(body)
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify(result) })
+    })
+    const errors: string[] = []; page.on('pageerror', error => errors.push(error.message))
+    await mount(page, name, false)
+    const cell = page.getByRole('grid', { name: 'Persistence consistency' }).getByRole('gridcell')
+    await expect(cell).toHaveText('Initial')
+    await page.getByRole('button', { name: 'Edit value', exact: true }).click()
+    await page.getByRole('textbox', { name: 'Name', exact: true }).fill('  Submitted  ')
+    await page.getByRole('button', { name: 'Apply value', exact: true }).click()
     await page.getByRole('button', { name: 'Save changes', exact: true }).click()
-    await expect.poll(() => diagnostics(page).then((value) => value.writes)).toBe(1)
-    await page.getByRole('button', { name: 'Deliver save response' }).click()
-
-    if (scenario === 'reload-failure') {
-      await expect(page.getByText('Authority read unavailable', { exact: true })).toBeVisible()
-      await expect(grid.getByRole('gridcell', { name: /^Submitted/ })).toBeVisible()
-      await expect(page.getByRole('button', { name: 'Retry save', exact: true })).toHaveCount(0)
-      await page.getByRole('button', { name: 'Restore reads' }).click()
-      await page.getByRole('button', { name: 'Refresh data', exact: true }).click()
-      await expect(page.getByText('Authority read unavailable', { exact: true })).toHaveCount(0)
+    await expect.poll(() => source.writes).toBe(1)
+    // The backend has committed, but its exact receipt has not reached the owner.
+    expect(source.snapshot().rows[0]!.document).toEqual({ value: 'Submitted', hidden: { retained: 7 } })
+    if (scenario === 'later') source.external({ a: { value: 'Later server edit', hidden: { retained: 8 } } })
+    if (scenario === 'intermediate') source.readHook = async () => stale
+    if (scenario === 'reload-failure') failReads = true
+    response.resolve()
+    if (scenario !== 'later') {
+      await expect(page.getByRole('button', { name: 'Check pending results', exact: true })).toBeEnabled()
+      await expect(page.getByRole('button', { name: 'Save changes', exact: true })).toBeDisabled()
+      await expect(cell).not.toHaveText('Initial')
+      // A crash here must retain the exact receipt and never create another write.
+      source.readHook = null; failReads = false
+      await mount(page, name, true)
+      const check = page.getByRole('button', { name: 'Check pending results', exact: true })
+      await expect(check).toBeEnabled()
+      await check.click()
     }
     const expected = scenario === 'later' ? 'Later server edit' : 'Submitted'
-    await expect(grid.getByRole('gridcell', { name: expected, exact: true })).toBeVisible()
+    await expect(cell).toHaveText(expected)
+    await expect.poll(() => page.evaluate(async () => {
+      const snapshot = (await import('/src/test-fixtures/durable-workspace.ts')).workspaceForReactFixture().getSnapshot()
+      return { candidates: snapshot.recovery.plan.candidates.map(item => item.kind), storage: snapshot.storage?.kind, read: snapshot.state.authority.read.kind }
+    })).toEqual({ candidates: [], storage: 'idle', read: 'idle' })
+    await expect(page.getByRole('button', { name: 'Refresh rows', exact: true })).toBeEnabled()
     await expect(page.getByRole('button', { name: 'Save changes', exact: true })).toBeDisabled()
-    await page.getByRole('button', { name: 'Deliver old cache read' }).click()
-    expect((await diagnostics(page)).cacheAccepted).toBe(false)
-    await expect(grid.getByRole('gridcell', { name: expected, exact: true })).toBeVisible()
-    await page.getByRole('button', { name: 'Reopen table' }).click()
-    await grid.getByRole('gridcell', { name: expected, exact: true }).click()
-    await page.keyboard.press('Enter')
-    await expect(editor).toHaveValue(expected)
-    await editor.press('Escape')
-    expect((await diagnostics(page)).writes).toBe(1)
+    const authorityBeforeOldRead = await page.evaluate(async () => (await import('/src/test-fixtures/durable-workspace.ts')).workspaceForReactFixture().getState().authority.content)
+    source.readHook = async () => stale
+    await page.getByRole('button', { name: 'Refresh rows', exact: true }).click()
+    await expect(page.getByRole('button', { name: 'Refresh rows', exact: true })).toBeEnabled()
+    await expect(cell).toHaveText(expected)
+    expect(await page.evaluate(async () => (await import('/src/test-fixtures/durable-workspace.ts')).workspaceForReactFixture().getState().authority.content)).toEqual(authorityBeforeOldRead)
+    source.readHook = null
+    await mount(page, name, true)
+    await expect(cell).toHaveText(expected)
+    await page.getByRole('button', { name: 'Edit value', exact: true }).click()
+    await expect(page.getByRole('textbox', { name: 'Name', exact: true })).toHaveValue(expected)
+    expect(source.requests).toHaveLength(1)
+    expect(source.writes).toBe(1)
+    expect(source.snapshot().rows[0]!.document.hidden).toEqual({ retained: scenario === 'later' ? 8 : 7 })
     expect(errors).toEqual([])
-  })
-}
-
-async function diagnostics(page: import('@playwright/test').Page) {
-  return page.evaluate(async () => {
-    const fixture = await import('/src/test-fixtures/persistence-consistency.tsx')
-    return fixture.persistenceConsistencyDiagnostics()
   })
 }

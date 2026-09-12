@@ -1,357 +1,153 @@
-import { useRef, useSyncExternalStore } from 'react'
-import {
-  DataGrid,
-  GridCommitError,
-  createBooleanCellType,
-  createDataGridBinding,
-  createGridColumnHelper,
-  createImageCellType,
-  createStandardCellTypeRegistry,
-  useGridSelector,
-  type GridCellTypeSchemaOf,
-  type GridController,
-  type GridDataSource,
-  type GridDataSourceSnapshot,
-  type GridPersistenceMode,
-  type GridReadyDataSourceSnapshot,
-} from 'data-editor-table'
+import { WorkspaceOpenError } from './workspace-open-error.js'
+import { useEffect, useRef, useState } from 'react'
+import { DataGrid, Workspace, kernelId, defineKernelSchema, openIndexedDbRecovery, useWorkspaceSnapshot, prepareRowAction,
+  createStringCodec, createNumberCodec, createIsoDateCodec, createSingleChoiceCodec, createMultiChoiceCodec, createBooleanChoiceCodec, workspaceEn,
+  type Document, type RowCommand, type WorkspaceGridColumn, type WorkspaceGridEditor, type WorkspaceGridFilter, type WorkspaceTextCodec } from 'data-editor-table'
+import { openDemoSource, type DemoSource } from './demo-source.js'
+import { openImageTask } from './image-task.js'
+import { initialRows } from './playground-data.js'
 
-type DemoRow = {
-  id: string
-  image: string | null
-  name: string
-  quantity: number
-  deliveryDate: string
-  status: 'draft' | 'ready' | 'archived'
-  tags: readonly ('featured' | 'seasonal' | 'wholesale' | 'legacy')[]
-  active: boolean
+const messages = workspaceEn.values
+const imageCodec: WorkspaceTextCodec = {
+  format: value => value.kind === 'missing' || value.value === null ? '' : String(value.value),
+  parse: text => !text || /^(data:image\/|https?:\/\/)/.test(text) ? { kind: 'valid', value: { kind: 'value', value: text || null } }
+    : { kind: 'invalid', message: 'Paste an image URL or data URL.' },
 }
-
-const initialRows: readonly DemoRow[] = [
-  { id: 'row-1', image: null, name: 'Amber poster', quantity: 12, deliveryDate: '2026-09-02', status: 'ready', tags: ['featured', 'seasonal', 'wholesale'], active: true },
-  { id: 'row-2', image: null, name: 'Blue card', quantity: 14, deliveryDate: '2026-09-05', status: 'draft', tags: ['wholesale'], active: false },
-  { id: 'row-3', image: null, name: 'Cedar label', quantity: 16, deliveryDate: '2026-09-08', status: 'archived', tags: ['legacy'], active: false },
-  { id: 'row-4', image: null, name: 'Dune notebook', quantity: 18, deliveryDate: '2026-09-12', status: 'ready', tags: ['featured'], active: true },
-  { id: 'row-5', image: null, name: 'Ember envelope', quantity: 20, deliveryDate: '2026-09-16', status: 'draft', tags: [], active: true },
-  { id: 'row-6', image: null, name: 'Fern calendar', quantity: 22, deliveryDate: '2026-09-21', status: 'ready', tags: ['seasonal'], active: true },
-  ...[
-    'Granite folio', 'Harbor postcard', 'Indigo planner', 'Juniper tag', 'Kite memo pad',
-    'Linen folder', 'Moss invitation', 'Navy bookmark', 'Ochre sketchbook', 'Pine notecard',
-    'Quartz print', 'Reed journal', 'Sienna sticker', 'Tide envelope', 'Umber catalogue',
-    'Vale gift card', 'Willow checklist', 'Xenia place card', 'Yarrow receipt', 'Zinc sleeve',
-    'Alpine ticket', 'Birch sign', 'Clay swatch', 'Drift brochure', 'Elm index card',
-    'Flint label', 'Grove workbook', 'Haze menu', 'Iris voucher', 'Jade booklet',
-  ].map((name, index): DemoRow => ({
-    id: `row-${index + 7}`,
-    image: null,
-    name,
-    quantity: 24 + index * 2,
-    deliveryDate: `2026-10-${String(index % 28 + 1).padStart(2, '0')}`,
-    status: index % 3 === 0 ? 'draft' : 'ready',
-    tags: index % 4 === 0 ? ['featured', 'wholesale'] : index % 3 === 0 ? ['seasonal'] : [],
-    active: index % 5 !== 0,
-  })),
+const definitions: readonly WorkspaceGridEditor[] = [
+  { fieldId: kernelId<'field'>('image'), label: 'Image', clearInput: '', codec: imageCodec },
+  { fieldId: kernelId<'field'>('name'), label: 'Name', clearInput: '', codec: createStringCodec({ invalid: 'Enter a name.' }) },
+  { fieldId: kernelId<'field'>('quantity'), label: 'Quantity', codec: createNumberCodec({ invalid: 'Enter a non-negative number.', minimum: 0 }) },
+  { fieldId: kernelId<'field'>('deliveryDate'), label: 'Delivery date', codec: createIsoDateCodec({ invalid: messages.date }) },
+  { fieldId: kernelId<'field'>('status'), label: 'Status', codec: createSingleChoiceCodec({ invalid: messages.choice, placeholder: 'Choose status', options: [
+    { value: 'draft', label: 'Draft' }, { value: 'ready', label: 'Ready' }, { value: 'archived', label: 'Archived', disabled: true }] }) },
+  { fieldId: kernelId<'field'>('tags'), label: 'Tags', clearInput: '[]', codec: createMultiChoiceCodec({ invalid: messages.choices, placeholder: 'No tags', options: [
+    { value: 'featured', label: 'Featured' }, { value: 'seasonal', label: 'Seasonal' }, { value: 'wholesale', label: 'Wholesale' }, { value: 'legacy', label: 'Legacy', disabled: true }] }) },
+  { fieldId: kernelId<'field'>('active'), label: 'Active', codec: createBooleanChoiceCodec({ invalid: messages.boolean, placeholder: 'Choose active state', trueLabel: 'Active', falseLabel: 'Inactive' }) },
 ]
-
-const registry = createStandardCellTypeRegistry<DemoRow>()
-  .replace('boolean', createBooleanCellType({ trueLabel: 'Active', falseLabel: 'Inactive' }))
-  .register('image', createImageCellType<DemoRow, string>({
-    alt: (row) => row.name,
-    label: (row) => row.image ? 'Replace image' : 'Add image',
-    validate: (value) => typeof value === 'string'
-      ? { ok: true, value }
-      : {
-          ok: false,
-          issue: {
-            code: 'invalid-image-value',
-            message: 'The image value must be a URL or data URL.',
-          },
-        },
-    resolveSrc: (value) => value,
-    upload: ({ file, signal }) => fileToDataUrl(file, signal),
-    parseClipboard: (text) => text === '' || /^(data:image\/|https?:\/\/)/.test(text)
-      ? { ok: true, value: text || null }
-      : {
-          ok: false,
-          issue: {
-            code: 'invalid-image-source',
-            message: 'Paste an image URL or data URL.',
-          },
-        },
-  }))
-
-type DemoSchema = GridCellTypeSchemaOf<typeof registry>
-const column = createGridColumnHelper<DemoRow, DemoSchema>()
-
-class DemoStore {
-  readonly listeners = new Set<() => void>()
-  snapshot: GridDataSourceSnapshot<DemoRow> = {
-    rows: initialRows,
-    status: 'ready',
-    version: 0,
-    scope: { kind: 'complete' },
-  }
-  nextId = 37
-  failNextSave = false
-  saveCount = 0
-
-  subscribe = (listener: () => void) => {
-    this.listeners.add(listener)
-    return () => { this.listeners.delete(listener) }
-  }
-
-  publish(next: GridDataSourceSnapshot<DemoRow>) {
-    this.snapshot = next
-    this.listeners.forEach((listener) => { listener() })
-  }
+const schema = defineKernelSchema({ version: kernelId<'schema-version'>('inventory-v1'), codec: kernelId<'codec-version'>('json-v1'),
+  fields: definitions.map(editor => ({ id: editor.fieldId, path: [editor.fieldId], readonly: false })), validate: document => {
+    const errors = []
+    for (const editor of definitions) {
+      try { const parsed = editor.codec.parse(editor.codec.format({ kind: 'value', value: document[editor.fieldId] ?? null }))
+        if (parsed.kind === 'invalid') errors.push({ code: 'invalid-value', message: parsed.message })
+      } catch { errors.push({ code: 'invalid-value', message: `Invalid ${editor.label}.` }) }
+    }
+    return errors
+  } })
+const scope = { sourceId: 'playground-inventory-v1', id: kernelId<'scope'>('inventory'), epoch: kernelId<'scope-epoch'>('v1') }
+const policy = { version: kernelId<'policy-version'>('v1'), create: true, order: true,
+  defaultEntity: { write: true, replace: true, delete: true, readonlyPaths: [] }, entities: [] }
+type Owner = { workspace: Workspace; source: DemoSource; editors: readonly WorkspaceGridEditor[] }
+let opening: Promise<Owner> | null = null
+function openInventory() {
+  opening ??= (async () => {
+    const source = await openDemoSource(scope, initialRows, document => { if (schema.validate(document, { entityId: kernelId<'entity'>('validation'), mutation: 'update' }).length) throw new Error('Invalid inventory values.') }, true)
+    const imageTask = await openImageTask('playground-image-tasks-v1')
+    const session = await openIndexedDbRecovery({ databaseName: 'playground-workspace-v1', workspace: { id: kernelId<'workspace'>('playground'), scope, schema: schema.version, codec: schema.codec } })
+    let workspace: Workspace
+    let restore: boolean
+    try { restore = (await session.load()) !== null; workspace = await Workspace.openDurable({ scope, schema, policy, source, session, restore, tasks: [imageTask], recovery: 'manual' }) }
+    catch (error) { await session.release(); throw error }
+    await workspace.refresh()
+    if (!restore) await workspace.setSaveSchedule({ mode: 'debounced', debounceMs: 700 })
+    const editors: readonly WorkspaceGridEditor[] = definitions.map(editor => editor.fieldId !== 'image' ? editor : { ...editor, resourceTask: { kind: 'durable', definition: imageTask.ref } })
+    return { workspace, source, editors }
+  })().catch(error => { opening = null; throw error })
+  return opening
 }
-
-const store = new DemoStore()
-
-const dataSource: GridDataSource<DemoRow, string, DemoSchema> = {
-  columns: [
-    column.field('image', {
-      label: 'Image',
-      type: 'image',
-      layout: { basis: 116, min: 96 },
-      filterable: true,
-    }),
-    column.field('name', {
-      label: 'Name',
-      type: 'string',
-      layout: { basis: 260, min: 180, flex: 2 },
-      sortable: true,
-      filterable: true,
-      bulkEditable: true,
-    }),
-    column.field('quantity', {
-      label: 'Quantity',
-      type: 'number',
-      typeOptions: { minimum: 0 },
-      layout: { basis: 150, min: 120, flex: 1 },
-      sortable: true,
-      filterable: true,
-      bulkEditable: true,
-    }),
-    column.field('deliveryDate', {
-      label: 'Delivery date',
-      type: 'date',
-      layout: { basis: 190, min: 160, flex: 1 },
-      sortable: true,
-      filterable: true,
-      bulkEditable: true,
-    }),
-    column.field('status', {
-      label: 'Status',
-      type: 'singleSelect',
-      options: [
-        { value: 'draft', label: 'Draft' },
-        { value: 'ready', label: 'Ready' },
-        { value: 'archived', label: 'Archived', disabled: true },
-      ],
-      layout: { basis: 150, min: 120, flex: 1 },
-      sortable: true,
-      filterable: true,
-      bulkEditable: true,
-    }),
-    column.field('tags', {
-      label: 'Tags',
-      type: 'multiSelect',
-      options: [
-        { value: 'featured', label: 'Featured' },
-        { value: 'seasonal', label: 'Seasonal' },
-        { value: 'wholesale', label: 'Wholesale' },
-        { value: 'legacy', label: 'Legacy', disabled: true },
-      ],
-      layout: { basis: 250, min: 180, flex: 2 },
-      sortable: true,
-      filterable: true,
-      bulkEditable: true,
-    }),
-    column.field('active', {
-      label: 'Active',
-      type: 'boolean',
-      layout: { basis: 110, min: 90 },
-      sortable: true,
-      filterable: true,
-      bulkEditable: true,
-    }),
-  ],
-  getRowKey: (row) => row.id,
-  getSnapshot: () => store.snapshot,
-  subscribe: store.subscribe,
-  refresh: () => { store.publish(store.snapshot) },
-  persistence: {
-    mode: 'auto-save',
-    debounceMs: 700,
-    commit: async (request) => {
-      await wait(280)
-      if (store.failNextSave) {
-        store.failNextSave = false
-        throw new Error('The simulated save failed. Retry when ready.')
-      }
-      if (!Object.is(request.sourceVersion, store.snapshot.version)) {
-        throw new GridCommitError(
-          'source-version-conflict',
-          'Remote data changed before this save completed.',
-        )
-      }
-      store.saveCount += 1
-      const next = {
-        rows: request.rows,
-        status: 'ready',
-        version: Number(request.sourceVersion) + 1,
-        scope: { kind: 'complete' },
-      } satisfies GridReadyDataSourceSnapshot<DemoRow>
-      store.publish(next)
-      return { operationId: request.operationId, applied: next }
-    },
-  },
-  rows: {
-    create: () => ({
-      id: `row-${store.nextId++}`,
-      image: null,
-      name: 'Untitled item',
-      quantity: 0,
-      deliveryDate: '2026-09-30',
-      status: 'draft',
-      tags: [],
-      active: true,
-    }),
-    duplicate: (row) => ({
-      ...row,
-      id: `row-${store.nextId++}`,
-      name: `${row.name} copy`,
-      tags: [...row.tags],
-    }),
-    canDelete: () => true,
-  },
-}
-
-const binding = createDataGridBinding({ dataSource, registry })
-if (import.meta.hot) import.meta.hot.dispose(() => { binding.destroy() })
+const columns: readonly WorkspaceGridColumn[] = definitions.map(editor => ({
+  ...(editor.fieldId === 'quantity' ? { fill: ({ sourceValues, targetIndex }: import('data-editor-table').WorkspaceFillContext) => {
+    const numbers = sourceValues.map(value => {
+      if (value.kind !== 'value' || typeof value.value !== 'number') throw new Error('Quantity fill requires numbers.')
+      return value.value
+    })
+    return { kind: 'value' as const, value: numbers[0]! + targetIndex * (numbers.length > 1 ? numbers[1]! - numbers[0]! : 1) }
+  } } : {}),
+  id: editor.fieldId, fieldId: editor.fieldId, header: editor.label, label: editor.label, sortable: true,
+  render: ({ value, document }) => editor.fieldId === 'image' ? value.kind === 'value' && typeof value.value === 'string' && value.value
+    ? <img src={value.value} alt={String(document.name)} style={{ maxWidth: 96, maxHeight: 64 }} /> : 'No image'
+    : (editor.codec.display ?? editor.codec.format)(value) }))
+const filters: readonly WorkspaceGridFilter[] = [{ columnId: 'name', label: 'Name filter', codec: {
+  format: predicate => predicate?.kind === 'compare' && typeof predicate.value === 'string' ? predicate.value : '',
+  parse: text => ({ kind: 'valid', predicate: text ? { kind: 'compare', fieldId: kernelId<'field'>('name'), operator: 'contains', value: text } : null }),
+} }]
 
 export function PlaygroundPage() {
-  const controller = binding.controller
-  const authoritative = useSyncExternalStore(
-    store.subscribe,
-    () => store.snapshot,
-    () => store.snapshot,
-  )
-  const snapshot = useGridSelector(controller, (value) => value)
-  const saveCount = useSyncExternalStore(
-    store.subscribe,
-    () => store.saveCount,
-    () => store.saveCount,
-  )
-
-  return (
-    <main className="demo-shell">
-      <header className="demo-header">
-        <h1>Inventory bulk editor</h1>
-        <div className="demo-header-actions">
-          <PersistenceMode controller={controller} mode={snapshot.persistence.mode} />
-          <button type="button" onClick={() => { store.failNextSave = true }}>
-            Fail next save
-          </button>
-          <button type="button" onClick={simulateRemoteChange}>
-            Simulate remote change
-          </button>
-          <span>{saveCount} saves</span>
-        </div>
-      </header>
-      <section className="demo-grid-panel">
-        <DataGrid ariaLabel="Inventory items" binding={binding} />
-      </section>
-      <aside className="demo-inspector">
-        <JsonPanel title="Authoritative JSON" value={authoritative.rows} />
-        <JsonPanel title="Dirty" value={snapshot.draft.dirtyCells} />
-        <JsonPanel title="Conflicts" value={snapshot.draft.conflicts} />
-      </aside>
-    </main>
-  )
+  const [owner, setOwner] = useState<Owner | null>(null), [failed, setFailed] = useState(false), [attempt, setAttempt] = useState(0)
+  useEffect(() => { let attached = true
+    void openInventory().then(value => { if (attached) setOwner(value) }, () => { if (attached) setFailed(true) })
+    return () => { attached = false }
+  }, [attempt])
+  if (!owner) return <main>{failed ? <WorkspaceOpenError databaseName="playground-workspace-v1" message="Could not open inventory. Stored input is retained." retryLabel="Retry opening inventory" retry={() => { setFailed(false); setAttempt(value => value + 1) }} /> : <p role="status">Opening inventory…</p>}</main>
+  return <Inventory owner={owner} />
 }
-
-function PersistenceMode({ controller, mode }: {
-  controller: GridController<DemoRow, string, DemoSchema>
-  mode: GridPersistenceMode
-}) {
-  const timing = useRef<Exclude<GridPersistenceMode, 'manual-save'>>('auto-save')
-  const autoSave = mode !== 'manual-save'
-  const selectedTiming = autoSave ? mode : timing.current
-  return (
-    <span className="demo-persistence-controls">
-      <label className="demo-auto-save-toggle">
-        <input
-          aria-label="Auto-save"
-          checked={autoSave}
-          role="switch"
-          type="checkbox"
-          onChange={(event) => {
-            if (!event.currentTarget.checked) timing.current = selectedTiming
-            controller.dispatch({
-              type: 'persistence/set-mode',
-              mode: event.currentTarget.checked ? timing.current : 'manual-save',
-            })
-          }}
-        />
-        <span>Auto-save</span>
-      </label>
-      <label className="demo-auto-save-timing">
-        <span>Auto-save timing</span>
-        <select
-          aria-label="Auto-save timing"
-          disabled={!autoSave}
-          value={selectedTiming}
-          onChange={(event) => {
-            const next = event.currentTarget.value as Exclude<
-              GridPersistenceMode,
-              'manual-save'
-            >
-            timing.current = next
-            controller.dispatch({ type: 'persistence/set-mode', mode: next })
-          }}
-        >
-          <option value="immediate">Immediately</option>
-          <option value="auto-save">After a pause</option>
-        </select>
-      </label>
-    </span>
-  )
-}
-
-function JsonPanel({ title, value }: { title: string; value: unknown }) {
-  return (
-    <section className="json-panel">
-      <h2>{title}</h2>
-      <pre>{JSON.stringify(value, null, 2)}</pre>
+function Inventory({ owner: { workspace, source, editors } }: { owner: Owner }) {
+  const snapshot = useWorkspaceSnapshot(workspace), { state } = snapshot
+  const [target, setTarget] = useState(''), [deleteReview, setDeleteReview] = useState<{ target: string; revision: number } | null>(null)
+  const timing = useRef<'immediate' | 'debounced'>('debounced')
+  const [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null)
+  const row = snapshot.view.rows.find(row => row.entityId === target) ?? snapshot.view.rows[0]
+  const unavailable = busy || state.authority.content.kind !== 'complete' || snapshot.capabilities.close.lifecycle !== 'open'
+    || snapshot.ingress.pending.length > 0 || (snapshot.storage !== null && snapshot.storage.kind !== 'idle') || snapshot.recovery.running
+  async function run(operation: () => Promise<void>) {
+    if (unavailable) return
+    setBusy(true); setError(null)
+    try { await operation() } catch { setError('The action did not complete. Review retained work before trying again.') }
+    finally { setBusy(false) }
+  }
+  async function configure(mode: 'manual' | 'immediate' | 'debounced') {
+    const result = await workspace.setSaveSchedule({ mode, debounceMs: mode === 'debounced' ? 700 : 0 }, state.schedule.token)
+    if (result.kind !== 'accepted') throw new Error('Unconfirmed save mode')
+  }
+  async function rowAction(kind: 'add' | 'duplicate' | 'delete' | 'up' | 'down') {
+    const commands: RowCommand[] = []
+    if (kind === 'add' || kind === 'duplicate') {
+      const document: Document = kind === 'duplicate' && row?.preview ? { ...row.preview, id: crypto.randomUUID(), name: `${row.preview.name} copy` }
+        : { id: crypto.randomUUID(), image: null, name: 'Untitled item', quantity: 0, deliveryDate: '2026-09-30', status: 'draft', tags: [], active: true }
+      commands.push({ kind: 'create', entityId: kernelId<'entity'>(crypto.randomUUID()), document })
+    } else if (row && kind === 'delete') {
+      if (deleteReview?.target !== row.entityId || deleteReview.revision !== state.revision) throw new Error('Review deletion again')
+      commands.push({ kind: 'delete', entityId: row.entityId })
+    } else if (row) {
+      const desired = [...snapshot.projection.order.preview], index = desired.indexOf(row.entityId), destination = index + (kind === 'up' ? -1 : 1)
+      if (index < 0 || destination < 0 || destination >= desired.length) return
+      ;[desired[index], desired[destination]] = [desired[destination]!, desired[index]!]
+      commands.push({ kind: 'order', desired })
+    }
+    const prepared = prepareRowAction(state, { action: { id: kernelId<'action'>(crypto.randomUUID()), applicationId: kernelId<'application'>(crypto.randomUUID()), label: kind, saveAtomicity: 'transaction' },
+      commands: commands.map(command => ({ id: kernelId<'intent'>(crypto.randomUUID()), command, inputs: [], dependencies: [] })), inputs: [], cause: 'user' }, schema)
+    if ((await workspace.dispatch({ kind: 'prepared-action', prepared })).kind !== 'accepted') throw new Error('Unconfirmed row action')
+    setDeleteReview(null)
+  }
+  return <main className="demo-shell workspace-playground">
+    <header className="demo-header"><h1>Inventory bulk editor</h1><div className="demo-header-actions">
+      <label>Auto-save <input role="switch" aria-label="Auto-save" type="checkbox" checked={state.schedule.mode !== 'manual'} disabled={unavailable}
+        onChange={event => { const enabled = event.target.checked; if (state.schedule.mode !== 'manual') timing.current = state.schedule.mode
+          void run(() => configure(enabled ? timing.current : 'manual')) }} /></label>
+      <label>Auto-save timing <select aria-label="Auto-save timing" disabled={unavailable || state.schedule.mode === 'manual'} value={state.schedule.mode === 'manual' ? timing.current : state.schedule.mode}
+        onChange={event => { const mode = event.target.value === 'immediate' ? 'immediate' : 'debounced'; timing.current = mode; void run(() => configure(mode)) }}>
+        <option value="immediate">Immediately</option><option value="debounced">After a pause</option></select></label>
+      <button disabled={unavailable} onClick={() => source.failNextSave()}>Fail next save</button>
+      <button disabled={unavailable} onClick={() => { void run(async () => {
+        const authority = await source.readAtLeast(scope, []), first = authority.rows[0]
+        if (first) await source.changeDocument(first.identity, document => ({ ...document, name: `Remote amber ${authority.version.token}` }))
+        if ((await workspace.refresh()).kind !== 'accepted') throw new Error('Refresh unconfirmed')
+      }) }}>Simulate remote change</button><span>{state.commits.length} saves</span>
+    </div></header>
+    <section className="demo-row-actions" aria-label="Row actions"><label>Row action target <select aria-label="Row action target" value={row?.entityId ?? ''} disabled={unavailable} onChange={event => { setTarget(event.target.value); setDeleteReview(null) }}>
+      {snapshot.view.rows.map(row => <option key={row.entityId} value={row.entityId}>{String(row.preview?.name)}</option>)}</select></label>
+      <button disabled={unavailable} onClick={() => { void run(() => rowAction('add')) }}>Add row</button>
+      <button disabled={unavailable || !row} onClick={() => { void run(() => rowAction('duplicate')) }}>Duplicate row</button>
+      <button disabled={unavailable || !row || state.view.sort.length > 0 || state.view.filters.length > 0} onClick={() => { void run(() => rowAction('up')) }}>Move row up</button>
+      <button disabled={unavailable || !row || state.view.sort.length > 0 || state.view.filters.length > 0} onClick={() => { void run(() => rowAction('down')) }}>Move row down</button>
+      <label><input type="checkbox" disabled={unavailable || !row} checked={!!row && deleteReview?.target === row.entityId && deleteReview.revision === state.revision}
+        onChange={event => setDeleteReview(event.target.checked && row ? { target: row.entityId, revision: state.revision } : null)} />Delete the selected row: {String(row?.preview?.name ?? '')}</label>
+      <button disabled={unavailable || !row || deleteReview?.target !== row.entityId || deleteReview.revision !== state.revision} onClick={() => { void run(() => rowAction('delete')) }}>Delete row</button>
+      {error ? <p role="alert">{error}</p> : null}
     </section>
-  )
+    <section className="demo-grid-panel" style={{ overflow: 'auto' }}><DataGrid workspace={workspace} viewId={kernelId<'view'>('inventory')} columns={columns} editors={editors} filters={filters} caption="Inventory items" /></section>
+    <aside className="demo-inspector"><JsonPanel title="Authoritative JSON" value={state.authority.content.kind === 'complete' ? state.authority.content.snapshot.entities.map(entity => entity.document) : null} />
+      <JsonPanel title="Dirty" value={snapshot.projection.changes} /><JsonPanel title="Conflicts" value={snapshot.projection.rows.filter(row => row.issues.length > 0)} /></aside>
+  </main>
 }
-
-function simulateRemoteChange() {
-  store.publish({
-    rows: store.snapshot.rows.map((row) => row.id === 'row-1'
-      ? { ...row, name: `Remote amber ${Number(store.snapshot.version) + 1}` }
-      : row),
-    status: 'ready',
-    version: Number(store.snapshot.version) + 1,
-    scope: { kind: 'complete' },
-  })
-}
-
-function wait(ms: number) {
-  return new Promise<void>((resolve) => { window.setTimeout(resolve, ms) })
-}
-
-function fileToDataUrl(file: File, signal: AbortSignal) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader()
-    const abort = () => reader.abort()
-    signal.addEventListener('abort', abort, { once: true })
-    reader.onload = () => resolve(String(reader.result))
-    reader.onerror = () => reject(reader.error)
-    reader.onabort = () => reject(signal.reason)
-    reader.readAsDataURL(file)
-  })
-}
+function JsonPanel({ title, value }: { title: string; value: unknown }) { return <section className="json-panel"><h2>{title}</h2><pre>{JSON.stringify(value, null, 2)}</pre></section> }

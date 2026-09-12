@@ -1,157 +1,28 @@
-import {
-  DataGrid,
-  createCellTypeRegistry,
-  createGridColumnHelper,
-  createRemoteGridDataSource,
-  createStringCellType,
-  useDataGridBinding,
-  type GridCellTypeSchemaOf,
-  type GridDataSource,
-  type GridDataSourceSnapshot,
-  type GridReadyDataSourceSnapshot,
-} from 'data-editor-table'
-import { zhCN } from 'data-editor-table/locales/zh-CN'
-import { createGridController } from 'data-editor-table/engine'
+import { createElement } from 'react'
+import { DataGrid, WorkspaceCloseControls, useWorkspaceSnapshot, kernelId, createStringCodec, createNumberCodec,
+  createSingleChoiceCodec, createMultiChoiceCodec, workspaceEn, type Workspace, type DataGridProps } from 'data-editor-table'
+import { workspaceZhCN } from 'data-editor-table/locales/zh-CN'
+import { Workspace as HeadlessWorkspace } from 'data-editor-table/engine'
 import 'data-editor-table/styles.css'
 import 'data-editor-table/structure.css'
 import 'data-editor-table/theme.css'
 
-type Row = { id: number; name: string }
-
-export const registry = createCellTypeRegistry<Row>()
-  .register('string', createStringCellType())
-
-type Schema = GridCellTypeSchemaOf<typeof registry>
-
-let snapshot: GridDataSourceSnapshot<Row> = {
-  rows: [{ id: 1, name: 'Ada' }],
-  status: 'ready',
-  version: 1,
-  scope: { kind: 'complete' },
+export function ProductGrid({ workspace }: { workspace: Workspace }) {
+  const snapshot = useWorkspaceSnapshot(workspace)
+  const props: DataGridProps = { workspace, viewId: kernelId<'view'>('products'), caption: 'Products', locale: workspaceZhCN,
+    columns: [{ id: 'name', fieldId: kernelId<'field'>('name'), header: 'Name', label: 'Name', render: ({ value }) => value.kind === 'missing' ? '' : String(value.value) }],
+    editors: [{ fieldId: kernelId<'field'>('name'), label: 'Name', codec: createStringCodec({ invalid: workspaceEn.values.string }) }] }
+  const sameOwner: HeadlessWorkspace = workspace
+  void sameOwner; void snapshot
+  return createElement(DataGrid, props)
 }
-
-export const dataSource: GridDataSource<Row, number, Schema> = {
-  columns: [{
-    key: 'name',
-    label: 'Name',
-    type: 'string',
-    getValue: (row) => row.name,
-    setValue: (row, name) => ({ ...row, name }),
-  }],
-  getRowKey: (row) => row.id,
-  getSnapshot: () => snapshot,
-  subscribe: () => () => undefined,
-  persistence: {
-    mode: 'manual-save',
-    commit: async (request) => {
-      const next = { rows: request.rows, status: 'ready', version: Number(request.sourceVersion) + 1, scope: { kind: 'complete' } } satisfies GridReadyDataSourceSnapshot<Row>
-      snapshot = next
-      return { operationId: request.operationId, applied: next }
-    },
-  },
-}
-
-export const headlessController = createGridController<Row, number, Schema>({ dataSource, cellBehaviors: registry.behaviors })
-export const TurnkeyGrid = DataGrid<Row, number, Schema>
-export const createBindingHook = useDataGridBinding<Row, number, Schema>
-export const chineseGridMessages = zhCN.dataGrid
-
-export const remoteDataSource = createRemoteGridDataSource<Row, number, Schema>({
-  columns: dataSource.columns,
-  getRowKey: dataSource.getRowKey,
-  initialSnapshot: snapshot,
-  persistence: {
-    mode: 'manual-save',
-    mutate: async (request) => ({
-      kind: 'applied',
-      authority: {
-        rows: request.rows,
-        version: Number(request.sourceVersion) + 1,
-      },
-    }),
-  },
-})
-
-/** Async integrations retain this object from request start through publication. */
-export const remoteRead = remoteDataSource.beginRead()
-export const remoteReadOperation: string | undefined = remoteRead.afterOperationId
-export const publishRemoteRead: (snapshot: GridDataSourceSnapshot<Row>) => boolean = remoteRead.publish
-
-type QuickStartProduct = {
-  id: string
-  name: string
-  active: boolean
-}
-
-const quickStartColumn = createGridColumnHelper<QuickStartProduct>()
-
-/** Standard columns infer the default schema without an explicit registry or schema generic. */
-export const quickStartDataSource = createRemoteGridDataSource({
-  columns: [
-    quickStartColumn.field('name', { label: 'Name', type: 'string' }),
-    quickStartColumn.field('active', { label: 'Active', type: 'boolean' }),
-  ],
-  getRowKey: (row) => row.id,
-  initialSnapshot: {
-    rows: [{ id: 'product-1', name: 'Poster', active: true }],
-    status: 'ready',
-    version: 1,
-    scope: { kind: 'complete' },
-  },
-  persistence: {
-    mode: 'auto-save',
-    mutate: async (request) => ({
-      kind: 'applied',
-      authority: { rows: request.rows, version: 2 },
-    }),
-  },
-})
-
-const invalidDataSource: GridDataSource<Row, number, Schema> = {
-  ...dataSource,
-  columns: [{
-    key: 'name', label: 'Name', type: 'string',
-    // @ts-expect-error A registered string column cannot expose a number value.
-    getValue: () => 42,
-    setValue: (row, name) => ({ ...row, name }),
-  }],
-}
-void invalidDataSource
-
-type ChoiceRow = {
-  status: 'draft' | 'ready'
-  nullableStatus: 'draft' | 'ready' | null
-  tags: readonly ('featured' | 'seasonal')[]
-}
-
-const choiceColumn = createGridColumnHelper<ChoiceRow>()
-choiceColumn.field('status', {
-  label: 'Status',
-  type: 'singleSelect',
-  options: [
-    { value: 'draft', label: 'Draft' },
-    { value: 'ready', label: 'Ready' },
-  ],
-})
-choiceColumn.field('tags', {
-  label: 'Tags',
-  type: 'multiSelect',
-  options: [
-    { value: 'featured', label: 'Featured' },
-    { value: 'seasonal', label: 'Seasonal' },
-  ],
-})
-choiceColumn.field('status', {
-  label: 'Invalid status',
-  type: 'singleSelect',
-  options: [
-    // @ts-expect-error Column options must fit the exact field value union.
-    { value: 'archived', label: 'Archived' },
-  ],
-})
-// @ts-expect-error Nullable select fields must opt in explicitly.
-choiceColumn.field('nullableStatus', {
-  label: 'Nullable status',
-  type: 'singleSelect',
-  options: [{ value: 'draft', label: 'Draft' }],
-})
+export const close = (workspace: Workspace) => createElement(WorkspaceCloseControls, { workspace, checkpoint: true, messages: workspaceZhCN.close,
+  onClosed: (owner, result) => { const closed: 'closed' = result.kind; void closed; void owner } })
+export const number = createNumberCodec({ invalid: workspaceEn.values.number, empty: 'null' })
+export const choice = createSingleChoiceCodec({ invalid: workspaceEn.values.choice, placeholder: 'None', options: [{ value: 1, label: 'Number' }, { value: '1', label: 'Text' }] })
+export const choices = createMultiChoiceCodec({ invalid: workspaceEn.values.choices, placeholder: 'None', options: [{ value: 1, label: 'Number' }] })
+// @ts-expect-error The public DataGrid no longer accepts implicit data-source ownership.
+const obsolete: DataGridProps = { dataSource: {} }
+void obsolete
+// @ts-expect-error Choice identities are typed scalars, not arbitrary objects.
+createSingleChoiceCodec({ invalid: 'Invalid', placeholder: 'None', options: [{ value: {}, label: 'Invalid' }] })

@@ -1,14 +1,12 @@
 export * from './engine.js'
-export * from './cell-types/index.js'
-export * from './react/data-grid.js'
-export * from './react/controller-react.js'
-export { GridFilterDialog, GridFooter, GridToolbar } from './react/grid-surfaces.js'
-export type {
-  GridFilterDialogProps,
-  GridFilterDraft,
-  GridFooterProps,
-  GridToolbarProps,
-  GridToolbarState,
-} from './react/grid-surfaces.js'
-export type { GridContextMenuProps, GridMenuAction } from './react/grid-layers.js'
-export type { DataEditorTableLocale } from './locales/contracts.js'
+export { WorkspaceDataGrid as DataGrid } from './react/workspace-data-grid.js'
+export type { WorkspaceDataGridProps as DataGridProps, WorkspaceGridEditor, WorkspaceGridFilter, WorkspaceGridMessages } from './react/workspace-data-grid.js'
+export * from './react/workspace-react.js'
+export * from './react/workspace-grid-viewport.js'
+export * from './react/workspace-toolbar.js'
+export * from './react/workspace-close-controls.js'
+export * from './react/workspace-filter-editor.js'
+export * from './react/workspace-resource-input.js'
+export type { WorkspaceLocale } from './locales/workspace-contracts.js'
+export { workspaceEn } from './locales/workspace-en.js'
+export type { WorkspaceFill, WorkspaceFillContext } from './react/workspace-fill.js'

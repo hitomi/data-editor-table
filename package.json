@@ -30,7 +30,7 @@
       "import": "./dist/engine.js"
     },
     "./locales/zh-CN": {
-      "types": "./dist/locales/zh-cn.d.ts",
+      "types": "./dist/locales/workspace-zh-cn.d.ts",
       "import": "./dist/locales/zh-CN.js"
     },
     "./styles.css": {
@@ -54,9 +54,11 @@
     "check:boundaries": "bash scripts/check-v2-import-boundary.sh",
     "check:package": "bash scripts/check-package-consumer.sh",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:mutations": "node scripts/check-kernel-mutations.mjs",
     "test:browser": "playwright test",
     "lint": "oxlint src --deny-warnings",
-    "prepublishOnly": "pnpm check && pnpm test && pnpm lint && pnpm demo:build && pnpm test:browser && pnpm check:package"
+    "prepublishOnly": "pnpm check && pnpm test && pnpm test:mutations && pnpm lint && pnpm demo:build && pnpm test:browser && pnpm check:package"
   },
   "peerDependencies": {
     "react": "^19.0.0",
@@ -67,6 +69,7 @@
     "@tanstack/react-router": "^1.170.32",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
+    "@vitest/coverage-v8": "4.1.11",
     "oxlint": "^1.78.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

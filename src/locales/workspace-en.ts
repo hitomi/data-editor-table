@@ -1,0 +1,38 @@
+import type { WorkspaceLocale } from './workspace-contracts.js'
+
+export const workspaceEn: WorkspaceLocale = {
+  close: {
+    review: 'Review before closing', label: 'Close workspace', clean: 'Close workspace', checkpoint: 'Keep changes and close',
+    checkpointHelp: 'Keep edits and recoverable input for reopening. This does not save changes to the data source.',
+    discard: 'Discard unsaved work and close', discardConsent: 'Discard the unsaved changes and recoverable input listed above.',
+    keepEditing: 'Keep editing', changed: 'Work has changed. Review again before choosing how to close.',
+    failed: 'Closing did not complete. Stay on this page and review again to retry.', pending: 'Closing workspace…', closed: 'Workspace closed.',
+    blockers: { intent: 'Unsaved changes', session: 'Unfinished editing input', task: 'Unconfirmed task results', 'task-result': 'Task material awaiting a decision',
+      submission: 'Unconfirmed save results', ingress: 'Retained rejected requests', storage: 'Unconfirmed local storage', recovery: 'Recoverable input', resource: 'Files awaiting a decision', runtime: 'Work still running' },
+  },
+  grid: {
+    fill: { label: 'Fill selection', help: 'Choose a destination cell, or use the arrow keys and press Enter. Escape cancels filling.', failed: 'Could not prepare the fill. Select a consecutive visible range and try again.' },
+    menu: { label: 'Cell actions', copy: 'Copy selection' },
+    recovery: { label: 'Recovered decision input', source: 'Starting text', blank: 'Start a new edit', review: 'Review recovery target', confirm: 'Open reviewed recovery edit', retained: 'All original inputs are retained in this edit.', failed: 'The recovery edit could not be opened. Review the input and target again.', bundle: index => `Recovery bundle ${index}`, input: index => `Original input ${index}` },
+    files: { label: 'Unused stored files', review: 'I no longer need this stored file.', release: 'Remove stored file', failed: 'The file could not be removed. Review its current use and try again.', preparing: 'Preparing download…', unavailable: 'The stored file is unavailable.', download: name => `Download ${name}` },
+    sort: { label: column => `Sort ${column}`, priority: position => `Priority ${position}`, describe: (direction, position) => `${direction === 'asc' ? 'Ascending' : 'Descending'}, priority ${position}`, help: 'Select a column heading to cycle ascending, descending, and unsorted. Hold Shift to sort by multiple fields.', failed: 'The sort order could not be confirmed. Check pending results before trying again.' },
+    resource: { preparingDownload: 'Preparing download…', cancel: 'Cancel task', cancelHelp: 'Stops this task from updating your edit. Focus this task panel and press Escape to cancel. Work already sent may still complete.', status: { queued: 'Task is queued.', running: 'Task is running.', unknown: 'Task result is awaiting confirmation.', 'result-ready': 'Task result is ready.', blocked: 'Task result needs review.', failed: 'Task failed. Its input is retained.', superseded: 'Task belongs to an earlier input.', cancelled: 'Task will not update your edit. Its material is retained.', consumed: 'Task result was applied.' }, recovery: 'Retained task material', input: 'Original task input', currentTarget: 'Target of this edit', unavailable: 'The retained file is unavailable.', task: index => `Retained task ${index}`, download: name => `Download ${name}`, result: 'Retained file result', reapply: 'Use result in this edit', reviewInput: 'Current input to replace', choose: 'Choose a file', pending: 'Processing the file…', failed: 'The file result could not be applied. Retained input is still available.' },
+    viewport: { unavailable: 'Rows have not been loaded.', loading: 'Loading rows…', refreshing: 'Refreshing rows…',
+      loadFailed: 'Could not load rows.', refreshFailed: 'Could not refresh rows. Previous rows are still available.', empty: 'No rows yet.', noMatches: 'No matching rows.' },
+    clear: 'Clear selection…', copying: 'Copying selection…', copied: 'Selection copied.', copyFailed: 'Could not copy the selection. Check clipboard access and selected cells, then try again.', paste: 'Paste into selection', bulkLabel: count => `Edit ${count} selected fields`, selectCell: 'Select a cell to edit.', inputUnavailable: 'This input needs its original editor.', retainedInput: 'Retained input', targetLabel: (column, row) => `${column}, row ${row}`,
+    ingress: { archive: 'Keep requests in archive', archiveLabel: 'Archived requests', exportRequest: 'Download complete request', label: 'Rejected requests', explanation: 'These requests were rejected. Copy or download any input you need before discarding the listed requests.',
+      noInput: 'This request contains no new input. The active edit remains retained.', discard: 'Discard listed rejected requests', changed: 'The requests could not be discarded. They remain retained.',
+      preparingDownload: 'Preparing download…', resourceUnavailable: 'The retained file is not available to download.', request: index => `Rejected request ${index}`, input: index => `Retained input ${index}`, download: name => `Download ${name}` },
+    editor: { edit: 'Edit value', apply: 'Apply value', discard: 'Discard input', resume: 'Resume editing', unavailable: 'Review the changed field before applying.',
+      otherEditor: 'Another editor owns the input.', pending: 'Input is awaiting confirmation.', unsupported: 'This input needs a different editor.', failed: 'Could not apply the change. Your input is retained.',
+      currentValue: 'Current field value', reconfirm: 'Use the reviewed field context', retarget: label => `Move input to ${label}` },
+    toolbar: { label: 'Workspace actions', save: 'Save changes', undo: 'Undo', redo: 'Redo', refresh: 'Refresh rows', checkResults: 'Check pending results',
+      awaitingAuthority: 'Changes reached the server. Waiting for updated rows.', awaitingReceipt: 'Changes reached the server. Waiting for save details.',
+      working: 'Working…', failed: 'The action could not complete. Your changes are retained.', notApplied: 'Changes were not saved.', unresolved: 'The save result is unknown. Check pending results.',
+      partialSave: 'Some changes remain unsaved.', recoveryIncomplete: 'Some results are still pending. Your input is retained.' },
+  },
+  filter: { edit: 'Filter values', apply: 'Apply filter', discard: 'Discard filter input', resume: 'Resume filter editing', pending: 'Filter input is awaiting confirmation.',
+    changed: 'Review the changed filter before applying.', current: 'Current filter', reconfirm: 'Use the reviewed filter', failed: 'Could not apply the filter. Your input is retained.',
+    unsupported: 'This filter input needs a different editor.', otherEditor: 'Another editor owns the filter input.' },
+  values: { string: 'Enter a value.', number: 'Enter a decimal number.', boolean: 'Choose true or false.', date: 'Enter a valid date (YYYY-MM-DD).', choice: 'Choose a listed value.', choices: 'Choose listed values.', empty: 'No value', emptyChoices: 'No values', trueLabel: 'True', falseLabel: 'False' },
+}

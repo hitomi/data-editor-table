@@ -6,7 +6,7 @@ export default defineConfig({
       entry: {
         index: 'src/vite-entry.ts',
         engine: 'src/engine.ts',
-        'locales/zh-CN': 'src/locales/zh-cn.ts',
+        'locales/zh-CN': 'src/locales/workspace-zh-cn.ts',
       },
       fileName: (_format, entryName) => `${entryName}.js`,
       formats: ['es'],

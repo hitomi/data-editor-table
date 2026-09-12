@@ -174,3 +174,8 @@ button, input, select { font: inherit; }
   .cross-grid-header { align-items: flex-start; flex-direction: column; gap: 12px; }
   .cross-grid-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(2, minmax(540px, 70vh)); }
 }
+
+.workspace-playground { grid-template-rows: auto auto minmax(0, 1fr); }
+.demo-row-actions { grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.demo-row-actions select { max-width: 220px; }
+.workspace-playground .demo-header-actions { flex-wrap: wrap; white-space: normal; }

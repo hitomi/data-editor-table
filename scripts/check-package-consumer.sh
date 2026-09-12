@@ -80,7 +80,7 @@ test -f "$package_root/dist/index.d.ts"
 test -f "$package_root/dist/index.js"
 test -f "$package_root/dist/engine.d.ts"
 test -f "$package_root/dist/engine.js"
-test -f "$package_root/dist/locales/zh-cn.d.ts"
+test -f "$package_root/dist/locales/workspace-zh-cn.d.ts"
 test -f "$package_root/dist/locales/zh-CN.js"
 test -f "$package_root/dist/styles.css"
 test -f "$package_root/dist/structure.css"
@@ -97,7 +97,7 @@ node -e '
 ' "$package_root"
 
 node "$repo_root/scripts/verify-headless-bundle.mjs" "$engine_package"
-node --input-type=module -e 'import("node:url").then(({ pathToFileURL }) => import(pathToFileURL(process.argv[1]).href)).then((module) => { if (typeof module.createGridController !== "function") process.exit(1) })' "$engine_package/dist/engine.js"
+node --input-type=module -e 'import("node:url").then(({ pathToFileURL }) => import(pathToFileURL(process.argv[1]).href)).then((module) => { if (typeof module.Workspace !== "function" || "createGridController" in module) process.exit(1) })' "$engine_package/dist/engine.js"
 
 if ! node "$repo_root/scripts/assert-text-absent.mjs" "react-data-grid" "$engine_package/dist/engine.js" "$engine_package/dist/engine.d.ts"; then
   echo 'The v2 engine bundle still references react-data-grid.' >&2
@@ -112,4 +112,4 @@ fi
   cd -- "$react_consumer/browser"
   "$repo_root/node_modules/.bin/vite" build --outDir dist --emptyOutDir
 )
-node "$repo_root/scripts/verify-package-browser.mjs" "$react_consumer/browser/dist"
+node --experimental-transform-types "$repo_root/scripts/verify-package-browser.mjs" "$react_consumer/browser/dist"

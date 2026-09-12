@@ -1106,3 +1106,38 @@
     border: 0;
   }
 }
+
+@layer business-grid.layout {
+  .business-grid__workspace {
+    display: grid;
+    width: 100%;
+    min-width: 0;
+    gap: 12px;
+    padding: 12px;
+    border: 1px solid;
+    font: 14px/1.5 system-ui, sans-serif;
+  }
+  .business-grid__workspace,
+  .business-grid__workspace * { box-sizing: border-box; }
+  .business-grid__workspace > *,
+  .business-grid__workspace fieldset { min-width: 0; }
+  .business-grid__workspace [role='toolbar'] { display: flex; flex-wrap: wrap; gap: 8px; }
+  .business-grid__workspace-viewport { overflow: auto; }
+  .business-grid__workspace table { width: 100%; border-collapse: collapse; }
+  .business-grid__workspace caption { text-align: start; font-weight: 600; padding-block: 8px; }
+  .business-grid__workspace th,
+  .business-grid__workspace td { text-align: start; padding: 8px; border: 1px solid; overflow-wrap: anywhere; }
+  .business-grid__workspace button { padding: 6px 10px; font: inherit; }
+  .business-grid__workspace textarea,
+  .business-grid__workspace input,
+  .business-grid__workspace select { max-width: 100%; font: inherit; }
+  .business-grid__workspace textarea { width: 100%; min-height: 80px; resize: vertical; }
+  .business-grid__workspace pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+}
+
+@layer business-grid.components {
+  .business-grid__workspace-viewport td:has(.business-grid__fill-handle) { position: relative; }
+  .business-grid__fill-handle { position: absolute; inset-inline-end: 0; inset-block-end: 0; width: 8px; height: 8px; background: var(--grid-accent, #2563eb); cursor: crosshair; }
+  .business-grid__fill-handle:not([draggable='true']) { display: none; }
+  .business-grid__fill-status { position: fixed; inset-inline-start: 16px; inset-block-end: 16px; max-width: min(480px, calc(100vw - 32px)); padding: 10px; z-index: var(--grid-z-menu, 100); background: var(--grid-surface, white); border: 1px solid var(--grid-border, #ccc); pointer-events: none; }
+}

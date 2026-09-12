@@ -1,44 +1,64 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './test.js'
 
-test('owned grids keep pending work visible and switch only after it is resolved', async ({ page }) => {
-  const consoleErrors: string[] = []
-  page.on('console', (message) => {
-    if (message.type() === 'error') consoleErrors.push(message.text())
-  })
-  page.on('pageerror', (error) => { consoleErrors.push(error.message) })
+test('source switching requires confirmed owner close and restores original input after returning', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  page.on('console', message => { if (message.type() === 'error') errors.push(message.text()) })
   await page.goto('/')
-  await page.evaluate(async () => {
+  await page.evaluate(async name => {
     document.body.replaceChildren()
-    const container = document.createElement('div')
-    document.body.append(container)
-    const fixture = await import('/src/test-fixtures/owned-source-switch.tsx')
-    fixture.mountOwnedSourceSwitchFixture(container)
-  })
-
+    const container = document.createElement('div'); document.body.append(container)
+    await (await import('/src/test-fixtures/owned-source-switch.tsx')).mountOwnedSourceSwitchFixture(container, name)
+  }, `source-switch-${crypto.randomUUID()}`)
   const grid = page.getByRole('grid', { name: 'Owned source switch' })
-  await expect(grid.getByRole('gridcell', { name: 'Source A row' })).toBeVisible()
-  await grid.getByRole('button', { name: 'Filter Name' }).click()
-  await expect(page.getByRole('dialog', { name: 'Filter Name' })).toBeVisible()
-
-  await page.getByRole('button', { name: 'Switch data source' }).evaluate(
-    (button: HTMLButtonElement) => button.click(),
-  )
-  await expect(page.getByText(
-    'Apply, save, or cancel the current table changes before opening another data set.',
-  )).toBeVisible()
-  await expect(grid.getByRole('gridcell', { name: 'Source A row' })).toBeVisible()
-  expect(await subscriptions(page)).toEqual({ a: 1, b: 0 })
-
+  await expect(grid.getByRole('gridcell')).toHaveText('Source A row')
+  await page.getByRole('button', { name: 'Edit value', exact: true }).click()
+  await page.getByRole('textbox', { name: 'Name', exact: true }).fill('A retained input')
+  await expect(page.getByRole('button', { name: 'Apply value', exact: true })).toBeEnabled()
+  await page.getByRole('button', { name: 'Switch data source', exact: true }).click()
+  await page.getByRole('button', { name: 'Review before closing', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Close workspace', exact: true })).toBeDisabled()
   await page.keyboard.press('Escape')
-  await expect(page.getByRole('dialog', { name: 'Filter Name' })).toHaveCount(0)
-  await expect(grid.getByRole('gridcell', { name: 'Source B row' })).toBeVisible()
-  expect(await subscriptions(page)).toEqual({ a: 0, b: 1 })
-  expect(consoleErrors).toEqual([])
+  await expect(page.getByRole('textbox', { name: 'Name', exact: true })).toHaveValue('A retained input')
+  await expect(grid.getByRole('gridcell')).toHaveText('Source A row')
+  await page.getByRole('button', { name: 'Keep changes and close', exact: true }).click()
+  await expect(grid.getByRole('gridcell')).toHaveText('Source B row')
+  expect(await page.evaluate(async () => (await import('/src/test-fixtures/owned-source-switch.tsx')).ownedSourceSwitchLifecycles())).toEqual([{ name: 'a', lifecycle: 'closed' }, { name: 'b', lifecycle: 'open' }])
+  await page.getByRole('button', { name: 'Switch data source', exact: true }).click()
+  await page.getByRole('button', { name: 'Review before closing', exact: true }).click()
+  await page.getByRole('button', { name: 'Close workspace', exact: true }).click()
+  await expect(grid.getByRole('gridcell')).toHaveText('Source A row')
+  await page.getByRole('button', { name: 'Resume editing', exact: true }).click()
+  await expect(page.getByRole('textbox', { name: 'Name', exact: true })).toHaveValue('A retained input')
+  await page.getByRole('button', { name: 'Apply value', exact: true }).click()
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Save changes', exact: true })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Refresh rows', exact: true })).toBeEnabled()
+  await expect(grid.getByRole('gridcell')).toHaveText('A retained input')
+  expect(await page.evaluate(async () => (await import('/src/test-fixtures/owned-source-switch.tsx')).ownedSourceSwitchLifecycles())).toEqual([{ name: 'a', lifecycle: 'closed' }, { name: 'b', lifecycle: 'closed' }, { name: 'a', lifecycle: 'open' }])
+  expect(errors).toEqual([])
 })
 
-async function subscriptions(page: import('@playwright/test').Page) {
-  return page.evaluate(async () => {
-    const fixture = await import('/src/test-fixtures/owned-source-switch.tsx')
-    return fixture.ownedSourceSwitchSubscriptions()
-  })
-}
+test('unfinished filter retains its owner until explicit discard and a fresh close review', async ({ page }) => {
+  await page.goto('/')
+  await page.evaluate(async name => {
+    document.body.replaceChildren()
+    const container = document.createElement('div'); document.body.append(container)
+    await (await import('/src/test-fixtures/owned-source-switch.tsx')).mountOwnedSourceSwitchFixture(container, name)
+  }, `filter-switch-${crypto.randomUUID()}`)
+  await page.getByRole('button', { name: 'Filter values', exact: true }).click()
+  await page.getByRole('textbox', { name: 'Name filter', exact: true }).fill('Unfinished filter')
+  await expect(page.getByRole('button', { name: 'Apply filter', exact: true })).toBeEnabled()
+  await page.getByRole('button', { name: 'Switch data source', exact: true }).click()
+  await page.getByRole('button', { name: 'Review before closing', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Close workspace', exact: true })).toBeDisabled()
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('textbox', { name: 'Name filter', exact: true })).toHaveValue('Unfinished filter')
+  await expect(page.getByRole('gridcell')).toHaveText('Source A row')
+  await page.getByRole('button', { name: 'Discard filter input', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Close workspace', exact: true })).toBeDisabled()
+  await page.getByRole('button', { name: 'Review before closing', exact: true }).click()
+  await page.getByRole('button', { name: 'Close workspace', exact: true }).click()
+  await expect(page.getByRole('gridcell')).toHaveText('Source B row')
+  expect(await page.evaluate(async () => (await import('/src/test-fixtures/owned-source-switch.tsx')).ownedSourceSwitchLifecycles())).toEqual([{ name: 'a', lifecycle: 'closed' }, { name: 'b', lifecycle: 'open' }])
+})

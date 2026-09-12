@@ -1,0 +1,141 @@
+{
+  "measurement": "Single local run; independent in-memory SourceFixture and RecoveryFixture; no latency thresholds.",
+  "command": "KERNEL_WORKFLOW_REPORT=/tmp/kernel-workflow-measurement pnpm test src/kernel/workflow-measurement.test.ts",
+  "measurements": [
+    {
+      "mode": "batch",
+      "commands": 32,
+      "actions": 1,
+      "ms": {
+        "openRefresh": 8.26,
+        "prepareEdits": 2.41,
+        "admitEdits": 22.02,
+        "freezeToSource": 28.55,
+        "prepareSuccessor": 1.46,
+        "admitSuccessor": 7.37,
+        "receiptAndRefresh": 20.8,
+        "reopenPending": 3.28,
+        "saveSuccessor": 54.63,
+        "reopenSaved": 3.6,
+        "exportCheckpoint": 19.55
+      },
+      "durableWrites": 20,
+      "journalBytes": 22665,
+      "recordBytes": 43028,
+      "checkpointBytes": 85333,
+      "frontierNodes": 32,
+      "runtime": {
+        "node": "v24.19.0",
+        "bun": null
+      }
+    },
+    {
+      "mode": "batch",
+      "commands": 128,
+      "actions": 1,
+      "ms": {
+        "openRefresh": 3.55,
+        "prepareEdits": 2.83,
+        "admitEdits": 57.25,
+        "freezeToSource": 133.55,
+        "prepareSuccessor": 4.1,
+        "admitSuccessor": 27.1,
+        "receiptAndRefresh": 60.68,
+        "reopenPending": 9.53,
+        "saveSuccessor": 134.05,
+        "reopenSaved": 9.07,
+        "exportCheckpoint": 48.83
+      },
+      "durableWrites": 20,
+      "journalBytes": 86725,
+      "recordBytes": 141911,
+      "checkpointBytes": 283095,
+      "frontierNodes": 128,
+      "runtime": {
+        "node": "v24.19.0",
+        "bun": null
+      }
+    },
+    {
+      "mode": "batch",
+      "commands": 512,
+      "actions": 1,
+      "ms": {
+        "openRefresh": 1.75,
+        "prepareEdits": 11.4,
+        "admitEdits": 183.46,
+        "freezeToSource": 356.31,
+        "prepareSuccessor": 12.89,
+        "admitSuccessor": 84.38,
+        "receiptAndRefresh": 224.65,
+        "reopenPending": 43.95,
+        "saveSuccessor": 492.99,
+        "reopenSaved": 37,
+        "exportCheckpoint": 214.08
+      },
+      "durableWrites": 20,
+      "journalBytes": 345925,
+      "recordBytes": 541655,
+      "checkpointBytes": 1082583,
+      "frontierNodes": 512,
+      "runtime": {
+        "node": "v24.19.0",
+        "bun": null
+      }
+    },
+    {
+      "mode": "history",
+      "commands": 32,
+      "actions": 32,
+      "ms": {
+        "openRefresh": 1.86,
+        "prepareEdits": 20.21,
+        "admitEdits": 167.61,
+        "freezeToSource": 32.19,
+        "prepareSuccessor": 0.86,
+        "admitSuccessor": 8.59,
+        "receiptAndRefresh": 21.96,
+        "reopenPending": 3.94,
+        "saveSuccessor": 56.23,
+        "reopenSaved": 3.9,
+        "exportCheckpoint": 22.15
+      },
+      "durableWrites": 51,
+      "journalBytes": 35248,
+      "recordBytes": 63089,
+      "checkpointBytes": 125449,
+      "frontierNodes": 32,
+      "runtime": {
+        "node": "v24.19.0",
+        "bun": null
+      }
+    },
+    {
+      "mode": "history",
+      "commands": 128,
+      "actions": 128,
+      "ms": {
+        "openRefresh": 1.73,
+        "prepareEdits": 342.46,
+        "admitEdits": 2818.7,
+        "freezeToSource": 125.37,
+        "prepareSuccessor": 3.37,
+        "admitSuccessor": 29.59,
+        "receiptAndRefresh": 75.14,
+        "reopenPending": 14.85,
+        "saveSuccessor": 190.59,
+        "reopenSaved": 13.14,
+        "exportCheckpoint": 75.86
+      },
+      "durableWrites": 147,
+      "journalBytes": 138564,
+      "recordBytes": 224410,
+      "checkpointBytes": 448087,
+      "frontierNodes": 128,
+      "runtime": {
+        "node": "v24.19.0",
+        "bun": null
+      }
+    }
+  ]
+}

@@ -1,584 +1,108 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  useSyncExternalStore,
-  type ChangeEvent,
-} from 'react'
-import {
-  DataGrid,
-  GridCommitError,
-  createDataGridBinding,
-  createImageCellType,
-  createStandardCellTypeRegistry,
-  useGridSelector,
-  type GridCellTypeSchemaOf,
-  type GridColumn,
-  type GridDataSource,
-  type GridDataSourceSnapshot,
-  type GridImageColumnOptions,
-  type GridReadyDataSourceSnapshot,
-  type GridStringColumnOptions,
-} from 'data-editor-table'
+import { WorkspaceOpenError } from './workspace-open-error.js'
+import { useEffect, useState } from 'react'
+import { DataGrid, Workspace, createStringCodec, defineKernelSchema, kernelId, openIndexedDbRecovery, ownEncodedValue, useWorkspaceSnapshot,
+  type OwnedInput, type TaskState, type WorkspaceGridColumn, type WorkspaceGridEditor, type WorkspaceTextCodec } from 'data-editor-table'
+import { openDemoSource, type DemoSource } from './demo-source.js'
+import { openImageTask } from './image-task.js'
+import { openImageBatchTask } from './image-batch-task.js'
+import { captureImageBatch } from './image-batch.js'
+import { applyImageImport, captureImportPlan, importTargetIssue, readImportResult, type ImageImportPlan, type ImageImportResult } from './image-import-plan.js'
 
-type ImportRow = {
-  id: string
-  image: string | null
-  name: string
+const imageCodec: WorkspaceTextCodec = {
+  format: value => value.kind === 'missing' || value.value === null ? '' : String(value.value),
+  parse: text => !text || /^(data:image\/|https?:\/\/)/.test(text) ? { kind: 'valid', value: { kind: 'value', value: text || null } } : { kind: 'invalid', message: 'Enter an image URL.' },
 }
-
-type PreparedImage = Readonly<{
-  dataUrl: string
-  name: string
-}>
-
-type ImportTargetPlan = Readonly<{
-  sourceRevision: number
-  draftRevision: number
-  viewRevision: number
-  visibleRowKeys: readonly string[]
-  startIndex: number
-}>
-
-type ImportStatus =
-  | Readonly<{ kind: 'idle'; message: string }>
-  | Readonly<{ kind: 'processing'; message: string }>
-  | Readonly<{ kind: 'success'; message: string }>
-  | Readonly<{ kind: 'cancelled'; message: string }>
-  | Readonly<{ kind: 'error'; message: string }>
-
-const MAX_FILES = 24
-const MAX_FILE_BYTES = 8 * 1024 * 1024
-const MAX_BATCH_BYTES = 48 * 1024 * 1024
-
-const initialRows: readonly ImportRow[] = [
-  { id: 'import-row-1', image: null, name: '' },
-  { id: 'import-row-2', image: null, name: '' },
-  { id: 'import-row-3', image: null, name: '' },
+const schema = defineKernelSchema({ version: kernelId<'schema-version'>('images-v1'), codec: kernelId<'codec-version'>('json-v1'),
+  fields: ['image', 'name'].map(name => ({ id: kernelId<'field'>(name), path: [name], readonly: false })),
+  validate: document => typeof document.name === 'string' && (document.image === null || typeof document.image === 'string') ? [] : [{ code: 'invalid-image-row', message: 'An image row needs a name and image URL.' }],
+})
+type Owner = { workspace: Workspace; source: DemoSource; editors: readonly WorkspaceGridEditor[] }
+let opening: Promise<Owner> | null = null
+function openImport() {
+  opening ??= (async () => {
+    const scope = { sourceId: 'image-import-authority-v1', id: kernelId<'scope'>('images'), epoch: kernelId<'scope-epoch'>('v1') }
+    const source = await openDemoSource(scope, [1, 2, 3].map(id => ({ id: `import-row-${id}`, name: '', image: null })), document => {
+      if (schema.validate(document, { entityId: kernelId<'entity'>('validation'), mutation: 'update' }).length) throw new Error('Invalid image row')
+    }, true)
+    const single = await openImageTask('image-import-single-tasks-v1'), batch = await openImageBatchTask('image-import-batch-tasks-v1')
+    const session = await openIndexedDbRecovery({ databaseName: 'image-import-workspace-v1', workspace: { id: kernelId<'workspace'>('image-import'), scope, schema: schema.version, codec: schema.codec } })
+    let workspace: Workspace
+    try { workspace = await Workspace.openDurable({ scope, schema, source, session, restore: (await session.load()) !== null, tasks: [single, batch],
+      policy: { version: kernelId<'policy-version'>('v1'), create: true, order: true,
+        defaultEntity: { write: true, replace: true, delete: true, readonlyPaths: [] }, entities: [] }, recovery: 'manual' }) }
+    catch (error) { await session.release(); throw error }
+    await workspace.refresh()
+    return { workspace, source, editors: [
+      { fieldId: kernelId<'field'>('image'), label: 'Image', codec: imageCodec, clearInput: '', resourceTask: { kind: 'durable' as const, definition: single.ref } },
+      { fieldId: kernelId<'field'>('name'), label: 'Name', codec: createStringCodec({ invalid: 'Enter a name.' }), clearInput: '' },
+    ] }
+  })().catch(error => { opening = null; throw error })
+  return opening
+}
+const columns: readonly WorkspaceGridColumn[] = [
+  { id: 'image', fieldId: kernelId<'field'>('image'), header: 'Image', label: 'Image', sortable: true,
+    render: ({ value, document }) => value.kind === 'value' && typeof value.value === 'string' && value.value
+      ? <img src={value.value} alt={String(document.name || 'Imported image')} style={{ maxWidth: 128, maxHeight: 96 }} /> : 'No image' },
+  { id: 'name', fieldId: kernelId<'field'>('name'), header: 'Name', label: 'Name', sortable: true, render: ({ value }) => value.kind === 'value' ? String(value.value) : '' },
 ]
-
-const registry = createStandardCellTypeRegistry<ImportRow>()
-  .register('image', createImageCellType<ImportRow, string>({
-    alt: (row) => row.name || 'Imported image',
-    label: (row) => row.image ? 'Replace image' : 'Add image',
-    validate: (value) => typeof value === 'string'
-      ? { ok: true, value }
-      : {
-          ok: false,
-          issue: {
-            code: 'invalid-image-value',
-            message: 'The image value must be a URL or data URL.',
-          },
-        },
-    resolveSrc: (value) => value,
-    upload: ({ file, signal }) => readFileAsDataUrl(file, signal),
-    parseClipboard: (text) => text === '' || /^(data:image\/|https?:\/\/)/.test(text)
-      ? { ok: true, value: text || null }
-      : {
-          ok: false,
-          issue: {
-            code: 'invalid-image-source',
-            message: 'Paste an image URL or data URL.',
-          },
-        },
-  }))
-
-type ImportSchema = GridCellTypeSchemaOf<typeof registry>
-
-const imageColumn = {
-  key: 'image',
-  label: 'Image',
-  type: 'image',
-  layout: { basis: 148, min: 116 },
-  filterable: true,
-  getValue: (row) => row.image,
-  setValue: (row, image) => ({ ...row, image }),
-} satisfies GridColumn<
-  ImportRow,
-  string | null,
-  'image',
-  GridImageColumnOptions<ImportRow, string> | undefined
->
-
-const nameColumn = {
-  key: 'name',
-  label: 'Name',
-  type: 'string',
-  layout: { basis: 420, min: 220, flex: 1 },
-  sortable: true,
-  filterable: true,
-  bulkEditable: true,
-  getValue: (row) => row.name,
-  setValue: (row, name) => ({ ...row, name }),
-} satisfies GridColumn<
-  ImportRow,
-  string,
-  'string',
-  GridStringColumnOptions | undefined
->
-
-class ImportStore {
-  readonly listeners = new Set<() => void>()
-  snapshot: GridDataSourceSnapshot<ImportRow> = {
-    rows: initialRows,
-    status: 'ready',
-    version: 0,
-    scope: { kind: 'complete' },
-  }
-  nextId = 4
-  saveCount = 0
-  failNextSave = false
-
-  subscribe = (listener: () => void) => {
-    this.listeners.add(listener)
-    return () => { this.listeners.delete(listener) }
-  }
-
-  publish(next: GridDataSourceSnapshot<ImportRow>) {
-    this.snapshot = next
-    this.listeners.forEach((listener) => { listener() })
-  }
-}
-
-const store = new ImportStore()
-
-const dataSource: GridDataSource<ImportRow, string, ImportSchema> = {
-  columns: [imageColumn, nameColumn],
-  getRowKey: (row) => row.id,
-  getSnapshot: () => store.snapshot,
-  subscribe: store.subscribe,
-  refresh: () => { store.publish(store.snapshot) },
-  persistence: {
-    mode: 'auto-save',
-    debounceMs: 350,
-    commit: async (request) => {
-      await wait(180)
-      if (store.failNextSave) {
-        store.failNextSave = false
-        throw new GridCommitError(
-          'transient',
-          'The simulated save failed. The imported draft is still available to retry.',
-        )
-      }
-      if (!Object.is(request.sourceVersion, store.snapshot.version)) {
-        throw new GridCommitError(
-          'source-version-conflict',
-          'The import could not be saved because the source changed.',
-        )
-      }
-      store.saveCount += 1
-      const next = {
-        rows: request.rows,
-        status: 'ready',
-        version: Number(request.sourceVersion) + 1,
-        scope: { kind: 'complete' },
-      } satisfies GridReadyDataSourceSnapshot<ImportRow>
-      store.publish(next)
-      return { operationId: request.operationId, applied: next }
-    },
-  },
-  rows: {
-    create: () => ({
-      id: `import-row-${store.nextId++}`,
-      image: null,
-      name: '',
-    }),
-    duplicate: (row) => ({
-      ...row,
-      id: `import-row-${store.nextId++}`,
-      name: row.name ? `${row.name} copy` : '',
-    }),
-    canDelete: () => true,
-  },
-}
-
-const binding = createDataGridBinding({ dataSource, registry })
-if (import.meta.hot) import.meta.hot.dispose(() => { binding.destroy() })
-
 export function MultiImageImportPage() {
-  const controller = binding.controller
-  const snapshot = useGridSelector(controller, (value) => value)
-  const authoritative = useSyncExternalStore(
-    store.subscribe,
-    () => store.snapshot,
-    () => store.snapshot,
-  )
-  const saveCount = useSyncExternalStore(
-    store.subscribe,
-    () => store.saveCount,
-    () => store.saveCount,
-  )
-  const [status, setStatus] = useState<ImportStatus>({
-    kind: 'idle',
-    message: 'Ready for image files.',
-  })
-  const [dropActive, setDropActive] = useState(false)
-  const activeBatch = useRef<AbortController | null>(null)
-  const batchRevision = useRef(0)
-  const dragDepth = useRef(0)
-  const mounted = useRef(true)
-
-  useEffect(() => {
-    mounted.current = true
-    return () => {
-      mounted.current = false
-      batchRevision.current += 1
-      activeBatch.current?.abort()
-      activeBatch.current = null
-    }
-  }, [])
-
-  const importFiles = useCallback(async (files: readonly File[]) => {
-    const revision = batchRevision.current + 1
-    batchRevision.current = revision
-    activeBatch.current?.abort()
-    const batch = new AbortController()
-    activeBatch.current = batch
-
-    const issue = validateBatch(files)
-    if (issue) {
-      activeBatch.current = null
-      if (mounted.current && batchRevision.current === revision) {
-        setStatus({ kind: 'error', message: `${issue} No rows were changed.` })
-      }
-      return
-    }
-
-    const targetPlan = captureTargetPlan(controller)
-
-    setStatus({
-      kind: 'processing',
-      message: `Reading ${files.length} ${files.length === 1 ? 'image' : 'images'}…`,
-    })
+  const [owner, setOwner] = useState<Owner | null>(null), [failed, setFailed] = useState(false), [attempt, setAttempt] = useState(0)
+  useEffect(() => { let active = true; void openImport().then(owner => { if (active) setOwner(owner) }, () => { if (active) setFailed(true) }); return () => { active = false } }, [attempt])
+  if (!owner) return <main>{failed ? <WorkspaceOpenError databaseName="image-import-workspace-v1" message="Could not open image imports. Stored input is retained." retryLabel="Retry opening imports" retry={() => { setFailed(false); setAttempt(value => value + 1) }} /> : <p role="status">Opening images…</p>}</main>
+  return <ImportPage owner={owner} />
+}
+function ImportPage({ owner }: { owner: Owner }) {
+  const { workspace } = owner, snapshot = useWorkspaceSnapshot(workspace)
+  const [start, setStart] = useState<string | null>(null), [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null)
+  const unavailable = busy || snapshot.capabilities.close.lifecycle !== 'open' || snapshot.ingress.pending.length > 0 || snapshot.recovery.running
+    || snapshot.storage !== null && snapshot.storage.kind !== 'idle' || snapshot.state.authority.content.kind !== 'complete'
+  async function importFiles(files: readonly File[], element?: HTMLInputElement) {
+    if (!files.length) return
+    if (snapshot.capabilities.close.lifecycle !== 'open' || snapshot.state.authority.content.kind !== 'complete') { setError('The workspace is not ready to accept files. Try again after it opens.'); return }
+    setBusy(true); setError(null)
     try {
-      const prepared = await Promise.all(
-        files.map(async (file): Promise<PreparedImage> => ({
-          dataUrl: await readFileAsDataUrl(file, batch.signal),
-          name: nameWithoutFinalExtension(file.name),
-        })),
-      )
-      if (!isCurrentBatch(revision, batch, batchRevision, activeBatch, mounted)) return
-
-      const result = controller.applyTransaction((transaction) => {
-        if (!matchesTargetPlan(transaction.base, targetPlan)) {
-          transaction.abort({
-            code: 'stale-import-target',
-            message: 'The grid changed while the images were being read. Drop the files again.',
-          })
-        }
-
-        for (let index = 0; index < prepared.length; index += 1) {
-          const item = prepared[index]!
-          const rowKey = targetPlan.visibleRowKeys[targetPlan.startIndex + index]
-            ?? transaction.createRow()
-          transaction.set(imageColumn, rowKey, item.dataUrl)
-          transaction.set(nameColumn, rowKey, item.name)
-        }
-      }, { label: `Import ${prepared.length} images` })
-
-      if (!isCurrentBatch(revision, batch, batchRevision, activeBatch, mounted)) return
-      activeBatch.current = null
-      if (!result.accepted) {
-        setStatus({
-          kind: 'error',
-          message: `${result.issues[0]?.message ?? 'The grid rejected the import.'} No rows were changed.`,
-        })
-        return
-      }
-      setStatus({
-        kind: 'success',
-        message: `Imported ${prepared.length} ${prepared.length === 1 ? 'image' : 'images'} as one transaction.`,
-      })
-    } catch (error) {
-      if (!isOwnedBatch(revision, batch, batchRevision, activeBatch, mounted)) return
-      const message = errorMessage(error)
-      batch.abort()
-      activeBatch.current = null
-      setStatus({
-        kind: 'error',
-        message: `${message} No rows were changed.`,
-      })
-    }
-  }, [controller])
-
-  const cancelImport = useCallback(() => {
-    if (!activeBatch.current) return
-    batchRevision.current += 1
-    activeBatch.current.abort()
-    activeBatch.current = null
-    setStatus({
-      kind: 'cancelled',
-      message: 'Import cancelled. No rows were changed.',
-    })
-  }, [])
-
-  useEffect(() => {
-    const consume = (event: globalThis.DragEvent) => {
-      event.preventDefault()
-      event.stopPropagation()
-    }
-    const onDragEnter = (event: globalThis.DragEvent) => {
-      if (!hasFilePayload(event)) return
-      consume(event)
-      dragDepth.current += 1
-      setDropActive(true)
-    }
-    const onDragOver = (event: globalThis.DragEvent) => {
-      if (!hasFilePayload(event)) return
-      consume(event)
-      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
-    }
-    const onDragLeave = (event: globalThis.DragEvent) => {
-      if (!hasFilePayload(event)) return
-      consume(event)
-      dragDepth.current = Math.max(0, dragDepth.current - 1)
-      if (dragDepth.current === 0) setDropActive(false)
-    }
-    const onDrop = (event: globalThis.DragEvent) => {
-      if (!hasFilePayload(event)) return
-      consume(event)
-      dragDepth.current = 0
-      setDropActive(false)
-      void importFiles(Array.from(event.dataTransfer?.files ?? []))
-    }
-    window.addEventListener('dragenter', onDragEnter, { capture: true })
-    window.addEventListener('dragover', onDragOver, { capture: true })
-    window.addEventListener('dragleave', onDragLeave, { capture: true })
-    window.addEventListener('drop', onDrop, { capture: true })
-    return () => {
-      window.removeEventListener('dragenter', onDragEnter, { capture: true })
-      window.removeEventListener('dragover', onDragOver, { capture: true })
-      window.removeEventListener('dragleave', onDragLeave, { capture: true })
-      window.removeEventListener('drop', onDrop, { capture: true })
-      dragDepth.current = 0
-    }
-  }, [importFiles])
-
-  const handleFileInput = (event: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.currentTarget.files ?? [])
-    event.currentTarget.value = ''
-    void importFiles(files)
+      const plan = captureImportPlan(snapshot, start, files.length)
+      const batch = captureImageBatch(files, ownEncodedValue(plan))
+      const input = await workspace.registerResource(batch)
+      const run = workspace.runDurableTask({ definition: { id: 'image-batch-data-url', version: 'v1' },
+        owner: { kind: 'workspace', workspaceId: snapshot.state.workspace.id }, input, reads: [] })
+      if ((await run.result).kind !== 'accepted') throw new Error('The batch was not confirmed. Retained files remain available.')
+      if (element && element.files?.length === files.length && files.every((file, index) => element.files?.[index] === file)) element.value = ''
+    } catch (error) { setError(error instanceof Error ? error.message : 'Could not prepare the image import.') }
+    finally { setBusy(false) }
   }
-
-  const saveLabel = persistenceLabel(
-    snapshot.persistence.status,
-    snapshot.persistence.error,
-    saveCount,
-  )
-
-  return (
-    <main className="image-import-page">
-      <header className="image-import-header">
-        <div>
-          <p className="demo-eyebrow">Business workflow example</p>
-          <h1>Multi-image drop import</h1>
-          <p>
-            Drop image files anywhere on this page. Import starts at the active row and follows the current row order.
-          </p>
-        </div>
-        <div className="image-import-actions">
-          <label className="image-import-picker">
-            <input
-              accept="image/*"
-              aria-label="Choose images to import"
-              multiple
-              onChange={handleFileInput}
-              type="file"
-            />
-            Choose images
-          </label>
-          {status.kind === 'processing' ? (
-            <button type="button" onClick={cancelImport}>Cancel import</button>
-          ) : null}
-        </div>
-      </header>
-
-      <section
-        aria-live="polite"
-        className="image-import-status"
-        data-kind={status.kind}
-        role={status.kind === 'error' ? 'alert' : 'status'}
-      >
-        <span className="image-import-status-dot" aria-hidden="true" />
-        <span>{status.message}</span>
-      </section>
-
-      <div className="image-import-workspace">
-        <section className="demo-grid-panel image-import-grid-panel">
-          <DataGrid ariaLabel="Image import rows" binding={binding} />
-        </section>
-        <aside className="image-import-sidebar">
-          <section className="image-import-card">
-            <h2>Import policy</h2>
-            <dl>
-              <div><dt>Mapping</dt><dd>Image + filename</dd></div>
-              <div><dt>Order</dt><dd>File picker order</dd></div>
-              <div><dt>Capacity</dt><dd>{MAX_FILES} files, {formatBytes(MAX_FILE_BYTES)} each</dd></div>
-              <div><dt>Save</dt><dd>{saveLabel}</dd></div>
-            </dl>
-            <button
-              type="button"
-              onClick={() => { store.failNextSave = true }}
-            >
-              Fail next save
-            </button>
-          </section>
-          <section className="image-import-card image-import-note">
-            <h2>Why this is a separate example</h2>
-            <p>
-              File-to-row allocation is a business policy, not image-cell behavior. A future multi-image cell can register a collection as one value and submit it through the same transaction API.
-            </p>
-          </section>
-          <section className="json-panel image-import-json">
-            <h2>Authoritative JSON</h2>
-            <pre>{JSON.stringify(authoritative.rows, null, 2)}</pre>
-          </section>
-        </aside>
-      </div>
-
-      {dropActive ? (
-        <div aria-hidden="true" className="image-import-drop-overlay">
-          <div>
-            <strong>Drop images to import</strong>
-            <span>They will fill Image and Name in file order.</span>
-          </div>
-        </div>
-      ) : null}
-    </main>
-  )
+  return <main className="quick-start-page" onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = unavailable ? 'none' : 'copy' } }}
+    onDrop={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); void importFiles(Array.from(event.dataTransfer.files)) } }}>
+    <header><h1>Import images</h1><p>Choose or drop up to 24 images, 8 MiB each and 48 MiB total. Review replacements and new rows before applying; save to keep the changes.</p></header>
+    <section aria-label="Choose import files"><label>Import starting row <select value={start ?? ''} disabled={unavailable} onChange={event => setStart(event.target.value || null)}>
+      <option value="">First visible row</option>{snapshot.view.rows.map((row, index) => <option key={row.entityId} value={row.entityId}>{String(row.preview?.name || `Row ${index + 1}`)}</option>)}</select></label>
+      <label>Choose images to import <input type="file" multiple accept="image/*" disabled={unavailable} onChange={event => { void importFiles(Array.from(event.currentTarget.files ?? []), event.currentTarget) }} /></label>
+      {busy ? <p role="status">Retaining image files…</p> : null}{error ? <p role="alert">{error}</p> : null}
+      <button disabled={unavailable} onClick={() => owner.source.failNextSave()}>Fail next save</button>
+    </section>
+    <DataGrid workspace={workspace} viewId={kernelId<'view'>('image-import')} columns={columns} editors={owner.editors} caption="Image import rows" renderActionCandidate={(task, input) => <BatchReview key={task.id} workspace={workspace} task={task} input={input} start={start} />} />
+  </main>
 }
-
-function validateBatch(files: readonly File[]) {
-  if (files.length === 0) return 'Choose at least one image file.'
-  if (files.length > MAX_FILES) return `Choose no more than ${MAX_FILES} files at once.`
-  const nonImage = files.find((file) => !file.type.startsWith('image/'))
-  if (nonImage) return `“${nonImage.name}” is not an image file.`
-  const oversized = files.find((file) => file.size > MAX_FILE_BYTES)
-  if (oversized) return `“${oversized.name}” is larger than ${formatBytes(MAX_FILE_BYTES)}.`
-  const totalBytes = files.reduce((total, file) => total + file.size, 0)
-  if (totalBytes > MAX_BATCH_BYTES) {
-    return `The batch is larger than ${formatBytes(MAX_BATCH_BYTES)}.`
-  }
-  return null
-}
-
-function hasFilePayload(event: globalThis.DragEvent) {
-  return Array.from(event.dataTransfer?.types ?? []).includes('Files')
-}
-
-function nameWithoutFinalExtension(fileName: string) {
-  const lastDot = fileName.lastIndexOf('.')
-  return lastDot > 0 ? fileName.slice(0, lastDot) : fileName
-}
-
-function readFileAsDataUrl(file: File, signal: AbortSignal) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader()
-    const cleanup = () => {
-      signal.removeEventListener('abort', abort)
-      reader.onload = null
-      reader.onerror = null
-      reader.onabort = null
-    }
-    const abort = () => reader.abort()
-    signal.addEventListener('abort', abort, { once: true })
-    reader.onload = () => {
-      const result = reader.result
-      cleanup()
-      if (typeof result === 'string') resolve(result)
-      else reject(new Error(`“${file.name}” could not be read as an image.`))
-    }
-    reader.onerror = () => {
-      const error = reader.error
-      cleanup()
-      reject(error ?? new Error(`“${file.name}” could not be read.`))
-    }
-    reader.onabort = () => {
-      cleanup()
-      reject(signal.reason)
-    }
-    reader.readAsDataURL(file)
-  })
-}
-
-function isCurrentBatch(
-  revision: number,
-  batch: AbortController,
-  revisionRef: Readonly<{ current: number }>,
-  batchRef: Readonly<{ current: AbortController | null }>,
-  mountedRef: Readonly<{ current: boolean }>,
-) {
-  return mountedRef.current &&
-    revisionRef.current === revision &&
-    batchRef.current === batch &&
-    !batch.signal.aborted
-}
-
-function isOwnedBatch(
-  revision: number,
-  batch: AbortController,
-  revisionRef: Readonly<{ current: number }>,
-  batchRef: Readonly<{ current: AbortController | null }>,
-  mountedRef: Readonly<{ current: boolean }>,
-) {
-  return mountedRef.current &&
-    revisionRef.current === revision &&
-    batchRef.current === batch
-}
-
-function captureTargetPlan(
-  controller: typeof binding.controller,
-): ImportTargetPlan {
-  const snapshot = controller.getSnapshot()
-  const activeRowKey = snapshot.interaction.activeCell?.rowKey
-  const activeIndex = activeRowKey === undefined
-    ? -1
-    : snapshot.view.visibleRowKeys.indexOf(activeRowKey)
-  return Object.freeze({
-    sourceRevision: snapshot.source.revision,
-    draftRevision: snapshot.draft.revision,
-    viewRevision: snapshot.view.revision,
-    visibleRowKeys: Object.freeze([...snapshot.view.visibleRowKeys]),
-    startIndex: activeIndex >= 0 ? activeIndex : 0,
-  })
-}
-
-function matchesTargetPlan(
-  snapshot: ReturnType<typeof binding.controller.getSnapshot>,
-  plan: ImportTargetPlan,
-) {
-  return snapshot.source.revision === plan.sourceRevision &&
-    snapshot.draft.revision === plan.draftRevision &&
-    snapshot.view.revision === plan.viewRevision &&
-    snapshot.view.visibleRowKeys.length === plan.visibleRowKeys.length &&
-    snapshot.view.visibleRowKeys.every((rowKey, index) => (
-      rowKey === plan.visibleRowKeys[index]
-    ))
-}
-
-function errorMessage(error: unknown) {
-  if (error instanceof DOMException && error.name === 'AbortError') {
-    return 'The import was cancelled.'
-  }
-  return error instanceof Error ? error.message : 'The image files could not be read.'
-}
-
-function persistenceLabel(
-  status: 'idle' | 'scheduled' | 'saving' | 'failed',
-  error: string | null,
-  saveCount: number,
-) {
-  if (status === 'scheduled') return 'Queued'
-  if (status === 'saving') return 'Saving…'
-  if (status === 'failed') return error ?? 'Save failed'
-  return saveCount === 0 ? 'No imports saved yet' : `${saveCount} saved`
-}
-
-function formatBytes(bytes: number) {
-  return `${Math.round(bytes / (1024 * 1024))} MB`
-}
-
-function wait(ms: number) {
-  return new Promise<void>((resolve) => { window.setTimeout(resolve, ms) })
+function BatchReview({ workspace, task, input, start }: { workspace: Workspace; task: TaskState; input: OwnedInput; start: string | null }) {
+  const snapshot = useWorkspaceSnapshot(workspace)
+  const [replacement, setReplacement] = useState<{ plan: ImageImportPlan; revision: number } | null>(null), [confirmed, setConfirmed] = useState<number | null>(null), [error, setError] = useState<string | null>(null)
+  let result: ImageImportResult
+  try { if (input.kind !== 'encoded') throw new Error(); result = readImportResult(input.value) }
+  catch { return <section role="alert">This retained batch needs its original import editor.</section> }
+  const plan = replacement?.plan ?? result.plan
+  const issue = importTargetIssue(snapshot, plan), stale = replacement !== null && replacement.revision !== snapshot.state.revision
+  const unavailable = task.kind === 'cancelled' || snapshot.ingress.pending.length > 0 || snapshot.storage !== null && snapshot.storage.kind !== 'idle' || snapshot.capabilities.close.lifecycle !== 'open' || snapshot.recovery.running
+  return <section aria-label="Review image import">
+    <h2>Review {result.images.length} images</h2>
+    <ol>{result.images.map((image, index) => { const target = plan.targets[index]!; return <li key={index}>
+      <img src={image.image} alt={image.name} style={{ maxWidth: 96, maxHeight: 64 }} /> <a href={image.image} download={image.fileName}>Download {image.fileName}</a> → {target.kind === 'new' ? 'New row' : `Replace ${target.before.name.kind === 'value' && target.before.name.value || 'unnamed row'}`}
+    </li> })}</ol>
+    {issue || stale ? <p role="alert">{issue ?? 'The workspace changed. Review the targets again.'}</p> : null}
+    <button disabled={unavailable} onClick={() => { try { setReplacement({ plan: captureImportPlan(snapshot, start, result.images.length), revision: snapshot.state.revision }); setConfirmed(null); setError(null) } catch (error) { setError(String(error)) } }}>Review new targets</button>
+    <label><input type="checkbox" checked={confirmed === snapshot.state.revision} disabled={unavailable || !!issue || stale} onChange={event => setConfirmed(event.target.checked ? snapshot.state.revision : null)} />Confirm these replacements and new rows</label>
+    <button disabled={unavailable || !!issue || stale || confirmed !== snapshot.state.revision} onClick={async () => {
+      try { await applyImageImport(workspace, task.id, snapshot.state.revision, plan) } catch (error) { setError(error instanceof Error ? error.message : 'The batch was not applied.') }
+    }}>Apply image import</button>
+    {error ? <p role="alert">{error}</p> : null}
+  </section>
 }

@@ -1,3 +1,4 @@
+import { writeFile } from 'node:fs/promises'
 import { expect, test as base, type Page, type Route } from '@playwright/test'
 export * from '@playwright/test'
 
@@ -38,15 +39,38 @@ export const test = base.extend<{ runtimeErrors: void }>({
     const events: string[] = []
     const consoleStacks: string[] = []
     const interruptedReads: string[] = []
-    await page.addInitScript(() => {
+    await page.addInitScript(testLabel => {
       const originalError = console.error
       console.error = function (...args: unknown[]) {
         console.debug('runtime-console-stack:', new Error('console.error call site').stack)
         Reflect.apply(originalError, console, args)
       }
-      window.addEventListener('unhandledrejection', event => console.debug('runtime-event:unhandledrejection', String(event.reason?.stack ?? event.reason)))
-      window.addEventListener('error', event => console.debug('runtime-event:error', event.message))
-    })
+      window.addEventListener('unhandledrejection', event => {
+        console.debug('runtime-event:unhandledrejection', String(event.reason?.stack ?? event.reason))
+        console.error('runtime-test-owner:', testLabel, location.href, String(event.reason))
+      })
+      const resizeEvents: unknown[] = []
+      const NativeResizeObserver = window.ResizeObserver
+      window.ResizeObserver = class extends NativeResizeObserver {
+        constructor(callback: ResizeObserverCallback) {
+          const created = new Error('ResizeObserver created').stack
+          super((entries, observer) => {
+            resizeEvents.push({ time: performance.now(), created, entries: entries.map(entry => ({
+              element: entry.target.tagName + '.' + entry.target.className,
+              width: entry.contentRect.width, height: entry.contentRect.height,
+            })) })
+            if (resizeEvents.length > 64) resizeEvents.shift()
+            callback(entries, observer)
+          })
+        }
+      }
+      window.addEventListener('error', event => {
+        if (event.message.includes('ResizeObserver')) console.debug('runtime-console-stack:', JSON.stringify(resizeEvents))
+
+        console.debug('runtime-event:error', event.message)
+        console.error('runtime-test-owner:', testLabel, location.href, event.message)
+      })
+    }, testInfo.titlePath.join(' > '))
     const failures: { url: string; message: RegExp }[] = []
     expectedFailures.set(page, failures)
     page.on('console', message => {
@@ -67,7 +91,23 @@ export const test = base.extend<{ runtimeErrors: void }>({
       } else errors.push(details)
     })
     await use()
-    if (errors.length || events.length || interruptedReads.length) await testInfo.attach('runtime-events', { body: JSON.stringify({ errors, events, consoleStacks, interruptedReads }, null, 2), contentType: 'application/json' })
+    if (testInfo.status !== testInfo.expectedStatus && !page.isClosed()) {
+      // Capture before closing: unload can unmount the app and erase Playwright's
+      // later error-context snapshot, hiding the state that actually failed.
+      const screenshot = testInfo.outputPath('failure-page.png'), dom = testInfo.outputPath('failure-dom.html')
+      await page.screenshot({ path: screenshot, timeout: 5000 })
+      await writeFile(dom, await page.content())
+      await testInfo.attach('failure-page', { path: screenshot, contentType: 'image/png' })
+      await testInfo.attach('failure-dom', { path: dom, contentType: 'text/html' })
+    }
+    // Keep the error observers alive through page teardown. The page fixture
+    // otherwise closes after this assertion, hiding errors raised on unload.
+    if (!page.isClosed()) await page.close()
+    if (errors.length || events.length || interruptedReads.length) {
+      const path = testInfo.outputPath('runtime-events.json')
+      await writeFile(path, JSON.stringify({ errors, events, consoleStacks, interruptedReads }, null, 2))
+      await testInfo.attach('runtime-events', { path, contentType: 'application/json' })
+    }
     expect(events, 'No actual error or unhandled rejection may be hidden by a native navigation diagnostic.').toEqual([])
     expect(errors, 'The workflow must not emit browser or React runtime errors.').toEqual([])
   }, { auto: true }],

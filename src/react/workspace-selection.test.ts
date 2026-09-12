@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import { kernelId } from '../kernel/model.js'
-import { selectWorkspaceRange } from './workspace-selection.js'
+import { selectWorkspaceRange, workspaceSelectionSummary } from './workspace-selection.js'
 
 const rows = ['a', 'b', 'c'].map(id => kernelId<'entity'>(id))
 const columns = ['first', 'second', 'third']
@@ -50,4 +50,14 @@ test('display aliases resolve to one write per entity and missing columns cannot
     { entityId: rows[1], fieldId: x }, { entityId: rows[1], fieldId: y },
   ])
   expect(workspaceSelectionFields(selection, [{ id: 'x', fieldId: x }, { id: 'y', fieldId: y }])).toBeNull()
+})
+
+test('summary counts the visible union with overlap, holes and separate display columns', () => {
+  const ranges = [
+    { rows: [rows[0]!, rows[2]!], columns: ['first', 'second'] },
+    { rows: [rows[2]!], columns: ['second', 'third'] },
+  ]
+  expect(workspaceSelectionSummary(ranges, rows, columns)).toEqual({ rows: 2, columns: 3, cells: 5 })
+  expect(workspaceSelectionSummary(ranges, [rows[2]!], ['second', 'third'])).toEqual({ rows: 1, columns: 2, cells: 2 })
+  expect(workspaceSelectionSummary(ranges, [rows[1]!], columns)).toEqual({ rows: 0, columns: 0, cells: 0 })
 })

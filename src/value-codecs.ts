@@ -3,6 +3,7 @@ import type { ResourceValue } from './kernel/model.js'
 /** Authoring text and validation are separate from localized display. Formatting
  * unsupported stored values throws so an editor cannot silently normalize them. */
 export type WorkspaceTextCodec = Readonly<{
+  inputKind?: 'text' | 'number' | 'date' | 'boolean'
   format(value: ResourceValue): string
   display?(value: ResourceValue): string
   choices?: Readonly<{ placeholder: string; multiple?: boolean; options: readonly Readonly<{ text: string; label: string; disabled?: boolean }>[] }>
@@ -108,7 +109,7 @@ function scalarCodec(options: Options, accepts: (value: unknown) => value is Sca
 /** Empty strings remain strings. No trimming or coercion occurs. */
 export function createStringCodec(options: Readonly<{ invalid: string; allowEmpty?: boolean }>): WorkspaceTextCodec {
   const { invalid, allowEmpty = true } = options
-  return scalarCodec({ invalid }, (value): value is string => typeof value === 'string' && (allowEmpty || value.length > 0), text => text)
+  return Object.freeze({ ...scalarCodec({ invalid }, (value): value is string => typeof value === 'string' && (allowEmpty || value.length > 0), text => text), inputKind: 'text' as const })
 }
 
 /** Locale-independent decimal authoring, including exponents. Empty input never
@@ -120,28 +121,30 @@ export function createNumberCodec(options: Options & Readonly<{ minimum?: number
   const accepts = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value)
     && (!Number.isInteger(value) || Number.isSafeInteger(value)) && (!integer || Number.isInteger(value))
     && (minimum === undefined || value >= minimum) && (maximum === undefined || value <= maximum)
-  return scalarCodec(options, accepts, text => {
+  return Object.freeze({ ...scalarCodec(options, accepts, text => {
     if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(text)) return undefined
     const value = Number(text)
     // A nonzero decimal must not silently underflow into an exact zero.
     return value === 0 && /[1-9]/.test(text.split(/[eE]/)[0]!) ? undefined : value
   },
-    value => Object.is(value, -0) ? '-0' : String(value))
+    value => Object.is(value, -0) ? '-0' : String(value)), inputKind: 'number' as const })
 }
 
 export function createBooleanCodec(options: Options): WorkspaceTextCodec {
-  return scalarCodec(options, (value): value is boolean => typeof value === 'boolean',
-    text => text.toLowerCase() === 'true' ? true : text.toLowerCase() === 'false' ? false : undefined)
+  return Object.freeze({ ...scalarCodec(options, (value): value is boolean => typeof value === 'boolean',
+    text => text.toLowerCase() === 'true' ? true : text.toLowerCase() === 'false' ? false : undefined), inputKind: 'boolean' as const })
 }
 
 /** Gregorian YYYY-MM-DD, years 0001–9999. No Date parsing or timezone conversion. */
-export function createIsoDateCodec(options: Options): WorkspaceTextCodec {
+export function createIsoDateCodec(options: Options & Readonly<{ allowEmpty?: boolean }>): WorkspaceTextCodec {
+  if (options.allowEmpty && options.empty && options.empty !== 'reject') throw new Error('An empty date string cannot also represent null or a missing field.')
   const accepts = (value: unknown): value is string => {
+    if (options.allowEmpty && value === '') return true
     if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
     const year = Number(value.slice(0, 4)), month = Number(value.slice(5, 7)), day = Number(value.slice(8, 10))
     const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
     const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
     return year > 0 && month > 0 && month <= 12 && day > 0 && day <= days[month - 1]!
   }
-  return scalarCodec(options, accepts, text => text)
+  return Object.freeze({ ...scalarCodec(options, accepts, text => text), inputKind: 'date' as const })
 }

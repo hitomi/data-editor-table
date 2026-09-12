@@ -11,9 +11,9 @@ test('dragging cells selects a rectangle that can be bulk edited, saved, reopene
   await page.mouse.move(end.x + end.width / 2, end.y + end.height / 2, { steps: 8 })
   await page.mouse.up()
   await expect(grid.getByRole('gridcell', { selected: true })).toHaveText(['12', '24', '36'])
-  await page.getByRole('button', { name: 'Edit value', exact: true }).click()
+  await page.getByRole('button', { name: 'Edit selection…', exact: true }).click()
   await page.getByRole('textbox').fill('50')
-  await page.getByRole('button', { name: 'Apply value', exact: true }).click()
+  await page.getByRole('button', { name: 'Apply to 3 cells', exact: true }).click()
   await expect(grid.getByRole('gridcell', { name: '50', exact: true })).toHaveCount(3)
   await page.getByRole('button', { name: 'Save changes', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Refresh rows', exact: true })).toBeEnabled()
@@ -53,7 +53,9 @@ test('double-click edits the clicked cell and preserves invalid input across ano
 
 for (const key of ['Enter', 'F2']) test(`${key} opens the focused cell editor`, async ({ page }) => {
   await page.goto('/')
-  await page.getByRole('gridcell', { name: 'Blue card', exact: true }).press(key)
+  const cell = page.getByRole('gridcell', { name: 'Blue card', exact: true })
+  await cell.click()
+  await cell.press(key)
   await expect(page.getByRole('textbox', { name: 'Name', exact: true })).toBeFocused()
   await expect(page.getByRole('textbox', { name: 'Name', exact: true })).toHaveValue('Blue card')
 })

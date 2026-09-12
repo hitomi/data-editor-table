@@ -22,7 +22,7 @@ for (const format of [1, 2, 3, 4, 5, 6, 7, 8, 9]) test(`same-identity format ${f
       const head = tx.objectStore('heads').get('quick-start'), record = tx.objectStore('records').get('quick-start')
       let encoded = ''
       record.onsuccess = () => {
-        if (record.result.format !== 10) { tx.abort(); return }
+        if (record.result.format !== 16) { tx.abort(); return }
         record.result.format = format
         encoded = JSON.stringify(record.result)
         tx.objectStore('records').put(record.result, 'quick-start')

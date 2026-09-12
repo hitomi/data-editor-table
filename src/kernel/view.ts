@@ -1,10 +1,11 @@
 import { canonicalEncodedValue, encodedValuesEqual, ownEncodedValue, readDocument } from './document.js'
-import type { Document, ResourceValue, ViewFilter, ViewPredicate, ViewQuery, ViewSort } from './model.js'
+import type { Document, ResourceValue, ViewFilter, ViewId, ViewPredicate, ViewQuery, ViewSearch, ViewSearchField, ViewSort } from './model.js'
 import { projectKernel, type KernelProjection } from './projection.js'
 import type { KernelSchema } from './schema.js'
 import type { KernelState } from './state.js'
 
-export type ViewEvent = Readonly<{ kind: 'view-query-set'; expectedVersion: number; filters: readonly ViewFilter[]; sort: readonly ViewSort[] }>
+export type ViewEvent = Readonly<{ kind: 'view-query-set'; viewId?: ViewId; expectedVersion: number; filters: readonly ViewFilter[]; sort: readonly ViewSort[] }>
+  | Readonly<{ kind: 'view-search-set'; viewId: ViewId; search: ViewSearch }>
 
 function validatePredicate(predicate: ViewPredicate, schema: KernelSchema): void {
   switch (predicate.kind) {
@@ -13,43 +14,80 @@ function validatePredicate(predicate: ViewPredicate, schema: KernelSchema): void
     case 'missing': case 'compare':
       if (!schema.fields.some(field => field.id === predicate.fieldId)) throw new Error('A view predicate requires a known storage field.')
       if (predicate.kind === 'missing') return
-      if (!['equals', 'contains', 'less-than', 'greater-than'].includes(predicate.operator) || !('value' in predicate)) throw new Error('Unknown view comparison.')
-      if (predicate.operator === 'contains' && typeof predicate.value !== 'string') throw new Error('Text containment requires a string.')
+      if (!['equals', 'contains', 'less-than', 'greater-than', 'text-contains', 'text-equals', 'includes'].includes(predicate.operator) || !('value' in predicate)) throw new Error('Unknown view comparison.')
+      if (['contains', 'text-contains', 'text-equals'].includes(predicate.operator) && typeof predicate.value !== 'string') throw new Error('Text containment requires a string.')
       if ((predicate.operator === 'less-than' || predicate.operator === 'greater-than') && typeof predicate.value !== 'number' && typeof predicate.value !== 'string')
         throw new Error('Ordered comparisons require a number or string.')
+      if (predicate.operator === 'text-contains' || predicate.operator === 'text-equals') {
+        if (typeof predicate.locale !== 'string' || !predicate.locale) throw new Error('Text matching requires an explicit locale.')
+        new Intl.Collator(predicate.locale)
+      } else if (predicate.locale !== undefined) throw new Error('Only localized text comparisons accept a locale.')
       return
     default: throw new Error('Unknown view predicate.')
   }
+}
+
+/** Unscoped queries remain the default for existing hosts and recovery roots.
+ * A named view forks that default on its first mutation. Its complete versions
+ * live in the same query ledger as the input dispositions that cite them. */
+export function viewQuery(state: KernelState, viewId?: ViewId): ViewQuery {
+  if (viewId === undefined) return state.view
+  return state.viewHistory.findLast(query => query.viewId === viewId) ?? state.view
 }
 
 /** Append the exact query version before any input can cite it as its terminal
  * destination. Query history is recovery evidence, separate from data undo. */
 export function setViewQuery(state: KernelState, raw: ViewEvent, schema: KernelSchema): KernelState {
   const event = ownEncodedValue(raw) as unknown as ViewEvent
-  if (event.expectedVersion !== state.view.version || !Number.isSafeInteger(state.view.version + 1)) throw new Error('The view query changed; prepare against its current version.')
+  if (event.kind === 'view-search-set' && event.viewId === undefined) throw new Error('Search requires its destination view.')
+  if (event.viewId !== undefined && (typeof event.viewId !== 'string' || !event.viewId)) throw new Error('A named query requires a non-empty view identity.')
+  const previous = viewQuery(state, event.viewId)
+  if (event.kind === 'view-query-set' && event.expectedVersion !== previous.version || !Number.isSafeInteger(previous.version + 1)) throw new Error('The view query changed; prepare against its current version.')
+  const filters = event.kind === 'view-query-set' ? event.filters : previous.filters
+  const sortEntries = event.kind === 'view-query-set' ? event.sort : previous.sort
+  const search = event.kind === 'view-search-set' ? event.search : previous.search
+  if (search !== undefined) {
+    if (typeof search.text !== 'string' || typeof search.locale !== 'string' || !search.locale || !Array.isArray(search.fields)) throw new Error('Search requires text, locale and field definitions.')
+    new Intl.Collator(search.locale)
+    const ids = new Set<string>()
+    for (const field of search.fields) {
+      if (!schema.fields.some(candidate => candidate.id === field.fieldId) || ids.has(field.fieldId)) throw new Error('Search requires unique known fields.')
+      ids.add(field.fieldId)
+      if (field.labels !== undefined && (!Array.isArray(field.labels) || field.labels.some((label: NonNullable<ViewSearchField['labels']>[number]) => typeof label.text !== 'string' || !('value' in label)))) throw new Error('Search labels require encoded values and text.')
+    }
+  }
   const columns = new Set<string>(), fields = new Set<string>()
-  for (const filter of event.filters) {
+  for (const filter of filters) {
     if (!filter.columnId || columns.has(filter.columnId)) throw new Error('View filters require unique column identities.')
     columns.add(filter.columnId); validatePredicate(filter.predicate, schema)
   }
-  for (const sort of event.sort) {
+  for (const sort of sortEntries) {
     if (!schema.fields.some(field => field.id === sort.fieldId) || fields.has(sort.fieldId) || !['asc', 'desc'].includes(sort.direction)) throw new Error('View sort requires unique known fields and explicit directions.')
     fields.add(sort.fieldId)
   }
-  const view: ViewQuery = Object.freeze({ version: state.view.version + 1, filters: event.filters, sort: event.sort })
-  return Object.freeze({ ...state, view, viewHistory: Object.freeze([...state.viewHistory, view]) })
+  const view: ViewQuery = Object.freeze({ ...(event.viewId === undefined ? {} : { viewId: event.viewId }), version: previous.version + 1, ...(search === undefined ? {} : { search }), filters, sort: sortEntries })
+  return Object.freeze({ ...state, view: event.viewId === undefined ? view : state.view, viewHistory: Object.freeze([...state.viewHistory, view]) })
 }
 
-function matches(document: Document, predicate: ViewPredicate, schema: KernelSchema): boolean {
+function matches(document: Document, predicate: ViewPredicate, schema: KernelSchema, collators: Map<string, Intl.Collator>): boolean {
   switch (predicate.kind) {
-    case 'all': return predicate.predicates.every(child => matches(document, child, schema))
-    case 'any': return predicate.predicates.some(child => matches(document, child, schema))
-    case 'not': return !matches(document, predicate.predicate, schema)
+    case 'all': return predicate.predicates.every(child => matches(document, child, schema, collators))
+    case 'any': return predicate.predicates.some(child => matches(document, child, schema, collators))
+    case 'not': return !matches(document, predicate.predicate, schema, collators)
     case 'missing': return readDocument(document, schema.fields.find(field => field.id === predicate.fieldId)!.path).kind === 'missing'
     case 'compare': {
       const resource = readDocument(document, schema.fields.find(field => field.id === predicate.fieldId)!.path)
       if (resource.kind === 'missing') return false
       const value = resource.value, expected = predicate.value
+      if (predicate.operator === 'includes') return Array.isArray(value) && value.some(item => encodedValuesEqual(item, expected))
+      if (predicate.operator === 'text-contains') return typeof value === 'string' && value.toLocaleLowerCase(predicate.locale).includes((expected as string).toLocaleLowerCase(predicate.locale))
+      if (predicate.operator === 'text-equals') {
+        if (typeof value !== 'string') return false
+        const locale = predicate.locale!
+        let collator = collators.get(locale)
+        if (!collator) { collator = new Intl.Collator(locale, { numeric: true, sensitivity: 'base' }); collators.set(locale, collator) }
+        return collator.compare(value, expected as string) === 0
+      }
       if (predicate.operator === 'equals') return encodedValuesEqual(value, expected)
       if (predicate.operator === 'contains') return typeof value === 'string' && value.includes(expected as string)
       if (typeof value !== typeof expected || (typeof value !== 'number' && typeof value !== 'string')) return false
@@ -75,13 +113,27 @@ function compare(left: ResourceValue, right: ResourceValue): number {
 
 /** Display selection cannot remove data, history, pending writes or recovery
  * from the kernel projection. Consumers retain both complete and visible rows. */
-export function projectView(state: KernelState, schema: KernelSchema, projection: KernelProjection = projectKernel(state, schema)) {
+export function projectView(state: KernelState, schema: KernelSchema, projection: KernelProjection = projectKernel(state, schema), viewId?: ViewId) {
+  const query = viewQuery(state, viewId)
+  const collators = new Map<string, Intl.Collator>()
+  const search = query.search, needle = search?.text.trim().toLocaleLowerCase(search.locale) ?? ''
+  const searchFields = search?.fields.map(field => ({ ...field, path: schema.fields.find(candidate => candidate.id === field.fieldId)!.path })) ?? []
+  const searchable = (document: Document) => !needle || searchFields.some(field => {
+    const resource = readDocument(document, field.path)
+    if (resource.kind === 'missing' || resource.value === null) return false
+    const text = (value: import('./model.js').EncodedValue): string => {
+      const label = field.labels?.find(label => encodedValuesEqual(label.value, value))
+      return label ? `${label.text} ${String(value)}` : value === null ? '' : typeof value === 'object' ? '' : String(value)
+    }
+    const value = resource.value
+    return (Array.isArray(value) ? value.map(text).join(' ') : text(value)).toLocaleLowerCase(search!.locale).includes(needle)
+  })
   const rows = new Map(projection.rows.map(row => [row.entityId, row] as const))
   const visible = projection.order.preview.flatMap(id => {
     const row = rows.get(id)
-    return row?.preview && row.existence !== 'pending-delete' && state.view.filters.every(filter => matches(row.preview!, filter.predicate, schema)) ? [row] : []
+    return row?.preview && row.existence !== 'pending-delete' && searchable(row.preview) && query.filters.every(filter => matches(row.preview!, filter.predicate, schema, collators)) ? [row] : []
   })
-  const sorts = state.view.sort.map(sort => ({ ...sort, path: schema.fields.find(field => field.id === sort.fieldId)!.path }))
+  const sorts = query.sort.map(sort => ({ ...sort, path: schema.fields.find(field => field.id === sort.fieldId)!.path }))
   visible.sort((left, right) => {
     for (const sort of sorts) {
       const comparison = compare(readDocument(left.preview!, sort.path), readDocument(right.preview!, sort.path))
@@ -89,15 +141,16 @@ export function projectView(state: KernelState, schema: KernelSchema, projection
     }
     return 0
   })
-  return Object.freeze({ query: state.view, rows: Object.freeze(visible), total: projection.rows.filter(row => row.preview && row.existence !== 'pending-delete').length })
+  return Object.freeze({ query, rows: Object.freeze(visible), total: projection.rows.filter(row => row.preview && row.existence !== 'pending-delete').length })
 }
 
-/** A host-owned partition of one Workspace, applied after the shared query.
+/** A host-owned partition of one Workspace, applied after the selected view query.
  * It changes presentation only; all authority, intents and recovery stay in the
  * same owner. Empty-partition counts exclude unrelated partitions. */
 export function scopeView(view: ReturnType<typeof projectView>, projection: KernelProjection, schema: KernelSchema, raw: ViewPredicate) {
   const predicate = ownEncodedValue(raw) as unknown as ViewPredicate
   validatePredicate(predicate, schema)
-  const includes = (row: KernelProjection['rows'][number]) => !!row.preview && row.existence !== 'pending-delete' && matches(row.preview, predicate, schema)
+  const collators = new Map<string, Intl.Collator>()
+  const includes = (row: KernelProjection['rows'][number]) => !!row.preview && row.existence !== 'pending-delete' && matches(row.preview, predicate, schema, collators)
   return Object.freeze({ query: view.query, rows: Object.freeze(view.rows.filter(includes)), total: projection.rows.filter(includes).length })
 }

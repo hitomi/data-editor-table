@@ -25,6 +25,7 @@ test('exact commit followed by failed reads retains a successor through IndexedD
   const state = () => page.evaluate(async () => (await import('/src/test-fixtures/durable-workspace.ts')).workspaceForReactFixture().getState())
   const grid = page.getByRole('grid', { name: 'Workspace rows', exact: true })
   const edit = async (text: string) => {
+    await grid.getByRole('gridcell').click()
     await page.getByRole('button', { name: 'Edit value', exact: true }).click()
     await page.getByRole('textbox', { name: 'Edit value', exact: true }).fill(text)
     await page.getByRole('button', { name: 'Apply value', exact: true }).click()
@@ -93,6 +94,7 @@ test('confirmed application without a receipt keeps its distinct status after re
     }, { name, restore })
   }
   await mount(false)
+  await page.getByRole('grid', { name: 'Workspace rows' }).getByRole('gridcell').click()
   await page.getByRole('button', { name: 'Edit value', exact: true }).click()
   await page.getByRole('textbox', { name: 'Edit value', exact: true }).fill('first')
   await page.getByRole('button', { name: 'Apply value', exact: true }).click()

@@ -6,6 +6,7 @@ import { defineKernelSchema } from './schema.js'
 import { prepareResolution } from './resolution.js'
 import { prepareUndo } from './history.js'
 import { inputRefKey } from './journal.js'
+import { captureSessionOpeningContext } from './session.js'
 import { projectView } from './view.js'
 
 const schema = defineKernelSchema({ ...permissiveSchema, fields: [
@@ -49,6 +50,24 @@ function createRecovery(fixture: KernelFixture) {
 }
 
 describe('session ownership and editor leases', () => {
+  it('applies retained new row defaults and existing fields atomically, rejecting substituted creation data', () => {
+    const fixture = setup(), newRow = { entityId: entityId('new'), document: { x: 0, hidden: 9 } }
+    open(fixture, { kind: 'bulk', fields: ['a', 'new'].map(id => ({ entityId: entityId(id), fieldId: kernelId<'field'>('x') })), creations: [newRow] })
+    const before = fixture.state
+    const forged = prepare(fixture, [{ kind: 'create', ...newRow, document: { x: 0, hidden: 99 } }, fixture.write('a', { x: 4 }), fixture.write('new', { x: 5 })])
+    expect(fixture.dispatch({ kind: 'session-apply', ...editor(fixture), prepared: forged }).result.kind).toBe('rejected')
+    expect(fixture.state).toBe(before)
+    expect(fixture.project().rows.some(row => row.entityId === 'new')).toBe(false)
+    const prepared = prepare(fixture, [{ kind: 'create', ...newRow }, fixture.write('a', { x: 4 }), fixture.write('new', { x: 5 })])
+    expect(fixture.dispatch({ kind: 'session-apply', ...editor(fixture), prepared: { ...prepared, action: { ...prepared.action, saveAtomicity: 'row' } } }).result.kind).toBe('rejected')
+    expect(fixture.state).toBe(before)
+    expect(fixture.dispatch({ kind: 'session-apply', ...editor(fixture), prepared }).result.kind).toBe('accepted')
+    expect(fixture.state.session).toBeNull()
+    expect(fixture.project().rows.find(row => row.entityId === 'a')?.preview).toEqual({ x: 4, hidden: 7 })
+    expect(fixture.project().rows.find(row => row.entityId === 'new')?.preview).toEqual({ x: 5, hidden: 9 })
+    expect(fixture.freeze().submission.items.map(item => item.kind)).toEqual(['update', 'create'])
+  })
+
   it('retargets a deleted bulk selection only after review, retains raw input and fences old target callbacks', () => {
     const fixture = setup(); open(fixture, { kind: 'bulk', fields: ['a', 'b'].map(id => ({ entityId: entityId(id), fieldId: kernelId<'field'>('x') })) })
     const original = fixture.state.session!, old = editor(fixture)
@@ -218,7 +237,8 @@ describe('session ownership and editor leases', () => {
     const fixture = setup(), recovery = createRecovery(fixture)
     expect(recovery.inputs).toHaveLength(2)
     const oldProofs = fixture.state.settlements, oldInputs = fixture.state.inputs.slice(0, 2)
-    open(fixture, target, recovery.id)
+    const cleanTarget: SessionTarget = { kind: 'cell', field: { entityId: entityId('b'), fieldId: kernelId<'field'>('x') } }
+    open(fixture, cleanTarget, recovery.id)
     expect(fixture.state.recoveries[0]?.state).toBe('consumed')
     const retained = fixture.state.inputs.filter(input => recovery.inputs.some(ref => inputRefKey(ref) === inputRefKey(input.ref)))
     expect(retained.map(input => input.input)).toEqual([{ kind: 'encoded', value: 'first original' }, { kind: 'encoded', value: 'second original' }])
@@ -226,7 +246,7 @@ describe('session ownership and editor leases', () => {
     fixture.dispatch({ kind: 'session-detached', ...editor(fixture) })
     expect(fixture.state.recoveries[0]?.state).toBe('consumed')
     fixture.dispatch({ kind: 'session-attached', sessionId: fixture.state.session!.id, viewId: kernelId<'view'>('remount') })
-    const prepared = prepare(fixture), before = fixture.state
+    const prepared = prepare(fixture, [fixture.write('b', { x: 1 })]), before = fixture.state
     const incomplete = { ...prepared, inputs: prepared.inputs.slice(0, 1) }
     expect(fixture.dispatch({ kind: 'session-apply', ...editor(fixture), prepared: incomplete }).result.kind).toBe('rejected')
     expect(fixture.state).toBe(before)
@@ -285,3 +305,30 @@ it.each([false, true].flatMap(semantic => [false, true].flatMap(changed => [fals
     expect(fixture.state.settlements).toEqual(proofs)
     if (!blocked) expect(row.preview).toEqual({ x: 1, hidden: 99 })
   })
+
+describe('queued editor opening context', () => {
+  for (const change of ['schedule', 'value', 'permission', 'editor'] as const) {
+    it(`allows only unrelated changes before opening: ${change}`, () => {
+      const fixture = setup()
+      const request = { kind: 'session-opened' as const, revision: fixture.state.revision,
+        context: captureSessionOpeningContext(fixture.state, target, [], schema), target, reads: [],
+        sessionId: kernelId<'session'>('queued'), inputId: kernelId<'input'>('queued-input'),
+        viewId: kernelId<'view'>('view:a'), input: { kind: 'encoded' as const, value: 'Retained text' } }
+      if (change === 'schedule') fixture.dispatch({ kind: 'save-schedule-configured',
+        expectedToken: fixture.state.schedule.token, options: { mode: 'manual', debounceMs: 0 } })
+      if (change === 'value') fixture.observe({ a: { x: 9, hidden: 7 }, b: { x: 0 } }, 2)
+      if (change === 'permission') fixture.dispatch({ kind: 'policy-observed', policy: {
+        ...fixture.state.policy, version: kernelId<'policy-version'>('changed'),
+        defaultEntity: { ...fixture.state.policy.defaultEntity, write: false },
+      } })
+      if (change === 'editor') {
+        const owner = open(fixture)
+        fixture.dispatch({ kind: 'session-cancelled', sessionId: fixture.state.session!.id, ...owner })
+      }
+      expect(fixture.state.revision).toBeGreaterThan(request.revision)
+      const result = fixture.dispatch(request).result
+      expect(result.kind).toBe(change === 'schedule' ? 'accepted' : 'rejected')
+      expect(fixture.state.session?.rawInput ?? null).toEqual(change === 'schedule' ? request.input : null)
+    })
+  }
+})

@@ -13,7 +13,7 @@ import type { KernelEvent, KernelTransition } from './transition.js'
 
 export type RecoveryLease = Readonly<{ workspace: WorkspaceIdentity; epoch: string }>
 export type RecoveryRecord = Readonly<{
-  format: 10
+  format: 10 | 11 | 12 | 13 | 14 | 15 | 16
   commit: PreparedStorageCommit
   event: KernelEvent
   transition: KernelTransition
@@ -82,7 +82,7 @@ export async function prepareRecoveryWrite(lease: RecoveryLease, sequence: numbe
   assertSaveSchedule(transition.state.schedule); assertDiscardLedger(transition.state)
   const publishedIngress = ingress ? IngressQueue.committedCheckpoint(ingress, event, transition) : null
   const physical = await resources.exportRecovery(transition.state), bundle = physical.bundle
-  const record = ownEncodedValue({ format: 10, commit: { token: { workspaceId: lease.workspace.id, leaseEpoch: lease.epoch, sequence, candidateHash: '' },
+  const record = ownEncodedValue({ format: 16, commit: { token: { workspaceId: lease.workspace.id, leaseEpoch: lease.epoch, sequence, candidateHash: '' },
     workspace: lease.workspace, parent, semanticRevision: transition.state.revision }, event, transition, manifest: bundle.manifest, retiredResources: physical.retired, ingress: publishedIngress, checkpointParent }) as unknown as RecoveryRecord
   assertRecordIngress(record)
   const candidateHash = await hashCandidate(candidateBody(record))
@@ -96,7 +96,7 @@ export async function prepareRecoveryWrite(lease: RecoveryLease, sequence: numbe
 export async function validateRecoveryWrite(raw: RecoveryWrite, workspace: WorkspaceIdentity): Promise<Readonly<{ write: RecoveryWrite; resources: ResourceStore }>> {
   const record = ownEncodedValue(raw.record) as unknown as RecoveryRecord, { commit, transition } = record
   const contents = Object.freeze(raw.contents.map(entry => Object.freeze({ resourceId: entry.resourceId, blob: entry.blob })))
-  if (record.format !== 10 || !sameRecoveryValue(commit.workspace, workspace) || !sameRecoveryValue(transition.state.workspace, workspace)
+  if (![10, 11, 12, 13, 14, 15, 16].includes(record.format) || !sameRecoveryValue(commit.workspace, workspace) || !sameRecoveryValue(transition.state.workspace, workspace)
     || commit.token.workspaceId !== workspace.id || !commit.token.leaseEpoch || !Number.isSafeInteger(commit.token.sequence) || commit.token.sequence < 1
     || !Number.isSafeInteger(commit.semanticRevision) || commit.semanticRevision < 0 || commit.semanticRevision !== transition.state.revision)
     throw new Error('The recovery record has an invalid workspace, token, parent or transition.')

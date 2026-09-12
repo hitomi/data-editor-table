@@ -1,15 +1,17 @@
 import type { FrontierTable } from './model.js'
-import { compileFrontierTable, frontierScope } from './frontier-table.js'
-import { encodedValuesEqual, ownEncodedValue } from './document.js'
+import { compileFrontierTable, expandFrontier, frontierScope } from './frontier-table.js'
+import { fieldResolutionIssues, preserveUnreviewedFieldBases } from './field-resolution.js'
+import { encodedValuesEqual, ownEncodedValue, pathsOverlap } from './document.js'
 import { declaredRowOperation, orderOperationForIntent, rowOperationForIntent } from './intent.js'
 import { appendPreparedAction, inputRefKey, recordIntentSettlements } from './journal.js'
-import { kernelId, type ActionId, type ApplicationId, type Document, type EntityId, type IntentId, type IntentRecord, type ObservationId, type OwnedInput, type PreparedAction } from './model.js'
+import { kernelId, type ActionId, type ApplicationId, type Document, type EntityId, type FieldId, type IntentId, type IntentRecord, type ObservationId, type OwnedInput, type PreparedAction } from './model.js'
 import { captureOrderBase } from './order.js'
 import { prepareRowAction, type RowCommand } from './prepare.js'
 import { projectKernel, reservedIntentIds } from './projection.js'
 import { recoverIntentDocument } from './recovery.js'
 import type { KernelSchema } from './schema.js'
 import { policyForEntity, type KernelState } from './state.js'
+import { pathContains } from './resources.js'
 
 export type ResolutionChoice =
   | Readonly<{ kind: 'use-authority' | 'keep-local' }>
@@ -21,7 +23,7 @@ export type ResolutionRequest = Readonly<{
   observation: ObservationId
   issueIds: readonly string[]
   intentIds?: readonly IntentId[]
-  target: Readonly<{ kind: 'row'; entityId: EntityId }> | Readonly<{ kind: 'order' }>
+  target: Readonly<{ kind: 'row'; entityId: EntityId }> | Readonly<{ kind: 'field'; entityId: EntityId; fieldId: FieldId }> | Readonly<{ kind: 'order' }>
   choice: ResolutionChoice
 }>
 export type ResolutionIdentities = Readonly<{ actionId: ActionId; applicationId: ApplicationId; controlId: IntentId }>
@@ -54,28 +56,46 @@ export function prepareResolution(state: KernelState, raw: ResolutionRequest, id
     || state.journal.actions.some(action => action.id === identities.actionId || action.applicationId === identities.applicationId)
     || state.journal.intents.some(intent => intent.id === identities.controlId)) throw new Error('A resolution requires fresh action, application and control identities.')
   const projection = projectKernel(state, schema)
-  const selected = request.target.kind === 'order' ? projection.order : projection.rows.find(row => request.target.kind === 'row' && row.entityId === request.target.entityId)
+  const selected = request.target.kind === 'order' ? projection.order : projection.rows.find(row => request.target.kind !== 'order' && row.entityId === request.target.entityId)
   if (!selected || !selected.issues.length || !selected.intentIds.length) throw new Error('The selected domain has no unresolved intent conflict.')
+  const field = request.target.kind === 'field' ? schema.fields.find(field => request.target.kind === 'field' && field.id === request.target.fieldId) : null
+  if (request.target.kind === 'field' && !field) throw new Error('The reviewed field is no longer bound in this schema.')
+  if (field && request.choice.kind !== 'keep-local' && request.choice.kind !== 'use-authority') throw new Error('A field decision must explicitly keep its local value or use authority.')
+  const reviewedIssues = field && request.target.kind !== 'order' ? fieldResolutionIssues(selected.issues, request.target.entityId, field.path) : selected.issues
   const issueIds = new Set(request.issueIds)
-  if (!issueIds.size || issueIds.size !== request.issueIds.length || request.issueIds.length !== selected.issues.length || selected.issues.some(issue => !issueIds.has(issue.id)))
+  if (!issueIds.size || issueIds.size !== request.issueIds.length || request.issueIds.length !== reviewedIssues.length || reviewedIssues.some(issue => !issueIds.has(issue.id)))
     throw new Error('The decision must identify the complete current conflict review for its selected domain.')
-  const targets = [...(request.intentIds ?? selected.intentIds)]
-  if (!targets.length || new Set(targets).size !== targets.length || targets.some(id => !selected.intentIds.includes(id)))
+  const domainIntents = field ? selected.intentIds.filter(id => {
+    const operation = rowOperationForIntent(state, state.journal.intents.find(intent => intent.id === id)!)
+    return operation?.kind === 'write' && operation.groups.some(group => group.writes.some(write => pathsOverlap(write.path, field.path)))
+  }) : selected.intentIds
+  const targets = [...(request.intentIds ?? domainIntents)]
+  if (!targets.length || new Set(targets).size !== targets.length || targets.some(id => !domainIntents.includes(id)))
     throw new Error('A resolution must name exact active contributions in the reviewed domain.')
   const reserved = reservedIntentIds(state)
   if (targets.some(id => reserved.has(id))) throw new Error('A resolution cannot discard or replace a reserved request contribution.')
   const records = state.journal.intents.filter(intent => targets.includes(intent.id))
+  if (field && records.some(record => {
+    const operation = rowOperationForIntent(state, record)
+    return operation?.kind !== 'write' || operation.groups.some(group => group.writes.some(write => pathsOverlap(field.path, write.path) && !pathContains(field.path, write.path)))
+  })) throw new Error('A parent-domain write requires its complete conflict review.')
   const choice = request.choice
+  const fieldTemplates = field ? records.flatMap(record => {
+    const operation = rowOperationForIntent(state, record)
+    if (operation?.kind !== 'write') throw new Error('Field review requires stored field writes.')
+    const groups = operation.groups.map(group => ({ ...group, writes: group.writes.filter(write => choice.kind !== 'use-authority' || !pathsOverlap(field.path, write.path)) })).filter(group => group.writes.length)
+    return groups.length ? [{ record, operation: { ...operation, groups } }] : []
+  }) : null
   let commands: RowCommand[] = []
-  if (choice.kind === 'keep-local') {
-    commands = records.map(record => {
+  if (choice.kind === 'keep-local' || fieldTemplates) {
+    commands = (fieldTemplates?.map(template => template.record) ?? records).map((record, index) => {
       const ordering = orderOperationForIntent(state, record), row = rowOperationForIntent(state, record)
       if (ordering) return { kind: 'order', desired: ordering.desired }
       if (!row) throw new Error('A retained contribution requires a stored data payload.')
       if (row.kind === 'create') throw new Error('A creation collision requires explicit recreation or adoption of an existing entity.')
       if (row.kind === 'delete') return { kind: 'delete', entityId: row.entityId }
       if (row.kind === 'replace') return { kind: 'replace', entityId: row.entityId, document: row.document }
-      return { kind: 'write', entityId: row.entityId, groups: row.groups.map(group => ({ id: group.id, writes: group.writes,
+      return { kind: 'write', entityId: row.entityId, groups: (fieldTemplates?.[index]?.operation.groups ?? row.groups).map(group => ({ id: group.id, writes: group.writes,
         comparison: group.expectations.some(expected => expected.role === 'write-base' && expected.resource.kind === 'entity') ? 'entity' : 'paths',
         reads: group.expectations.flatMap(expected => expected.role === 'write-base' ? [] : [{ role: expected.role, resource: expected.resource, expected: expected.expected }]),
       })) }
@@ -101,7 +121,8 @@ export function prepareResolution(state: KernelState, raw: ResolutionRequest, id
   const frontiers = compileFrontierTable(state.journal.frontiers, state.journal.intents.map(intent => intent.id), frontierScope(state.workspace))
   const control: IntentRecord = { id: identities.controlId, actionId: identities.actionId, applicationId: identities.applicationId,
     sequence: (state.journal.intents.at(-1)?.sequence ?? 0) + 1, cause: 'resolution', inputs: [], dependencies: frontiers.intern(targets),
-    operation: { kind: 'resolve', decision: { kind: choice.kind, targets, observation: request.observation, issueIds: request.issueIds, replacements: commandIds } },
+    operation: { kind: 'resolve', decision: { kind: choice.kind, targets, observation: request.observation, issueIds: request.issueIds, replacements: commandIds,
+      ...(field && request.target.kind !== 'order' ? { field: { entityId: request.target.entityId, path: field.path } } : {}) } },
   }
   const base = decisionBase(state, control, frontiers.snapshot())
   let replacement: PreparedAction | null = null
@@ -116,11 +137,34 @@ export function prepareResolution(state: KernelState, raw: ResolutionRequest, id
         command: command.kind === 'write' ? { ...command, groups: command.groups.map((group, groupIndex) => ({ ...group, id: kernelId<'write-group'>(`${commandIds[index]}:group:${groupIndex}`) })) } : command,
       })),
     }, schema)
-    const candidate = appendPreparedAction(base, replacement, schema), projected = projectKernel(candidate, schema)
-    const invalid = [...projected.rows.flatMap(row => row.issues), ...projected.order.issues].find(issue => issue.intentIds?.some(id => commandIds.includes(id)))
+    if (field && fieldTemplates) {
+      // Validate identities, input ownership, complete write sets and action
+      // metadata before restoring only the unreviewed comparison evidence.
+      appendPreparedAction(base, replacement, schema)
+      const retainedFrontiers = compileFrontierTable(replacement.frontiers, [...base.journal.intents, ...replacement.intents].map(intent => intent.id), frontierScope(state.workspace))
+      const intents = replacement.intents.map((intent, index) => {
+        const template = fieldTemplates[index]!
+        if (intent.operation.kind !== 'write') throw new Error('A field replacement requires compiled writes.')
+        return { ...intent, dependencies: retainedFrontiers.intern([...new Set([...expandFrontier(replacement!.frontiers, intent.dependencies), ...expandFrontier(state.journal.frontiers, template.record.dependencies)])]),
+          operation: preserveUnreviewedFieldBases(template.operation, intent.operation, field.path) }
+      })
+      replacement = { ...replacement, frontiers: retainedFrontiers.snapshot(), intents }
+    }
+    const candidate = appendResolutionReplacement(base, replacement, !!field, schema), projected = projectKernel(candidate, schema)
+    const invalid = [...projected.rows.flatMap(row => row.issues), ...projected.order.issues].find(issue => issue.intentIds?.some(id => commandIds.includes(id))
+      && (!field || issue.code !== 'write-conflict'))
     if (invalid) throw new Error(invalid.message)
   }
   return ownEncodedValue({ request, identities, control, frontiers: frontiers.snapshot(), replacement }) as unknown as PreparedResolution
+}
+
+/** Field replacements include immutable comparison evidence from unreviewed
+ * contributions. Only the deterministic resolution compiler may publish these;
+ * ordinary authoring still requires entirely current compiled expectations. */
+function appendResolutionReplacement(state: KernelState, replacement: PreparedAction, field: boolean, schema: KernelSchema): KernelState {
+  if (!field) return appendPreparedAction(state, replacement, schema)
+  return Object.freeze({ ...state, inputs: Object.freeze([...state.inputs, ...replacement.inputs]), journal: Object.freeze({ frontiers: replacement.frontiers,
+    intents: Object.freeze([...state.journal.intents, ...replacement.intents]), actions: Object.freeze([...state.journal.actions, replacement.action]) }) })
 }
 
 export function appendPreparedResolution(state: KernelState, prepared: PreparedResolution, schema: KernelSchema): KernelState {
@@ -128,7 +172,7 @@ export function appendPreparedResolution(state: KernelState, prepared: PreparedR
   if (!encodedValuesEqual(ownEncodedValue(prepared), ownEncodedValue(expected))) throw new Error('A resolution must equal the complete reviewed decision and compiled payload.')
   const base = decisionBase(state, expected.control, expected.frontiers)
   if (expected.replacement) {
-    const candidate = appendPreparedAction(base, expected.replacement, schema)
+    const candidate = appendResolutionReplacement(base, expected.replacement, expected.request.target.kind === 'field', schema)
     return Object.freeze({ ...candidate, journal: Object.freeze({ ...candidate.journal,
       actions: Object.freeze(candidate.journal.actions.map(action => action.applicationId === expected.control.applicationId
         ? Object.freeze({ ...action, intentIds: Object.freeze([expected.control.id, ...action.intentIds]) }) : action)),

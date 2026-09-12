@@ -86,7 +86,7 @@ export function planOrder(state: KernelState, neutralRows: readonly IntentId[], 
         if (pending) { pending.baseline = structure(pending.baseline, row); pending.desired = structure(pending.desired, row) }
       }
     }
-    if (pending && active[index + 1]?.applicationId !== intent.applicationId && !pending.intents.some(intent => reserved.has(intent.id)) && same(pending.baseline, pending.desired)) {
+    if (pending && active[index + 1]?.applicationId !== intent.applicationId && !pending.intents.some(intent => reserved.has(intent.id) || intent.operation.kind === 'restore-resolution-order') && same(pending.baseline, pending.desired)) {
       neutral.push(...pending.intents.map(intent => intent.id)); pending = null
     }
   }

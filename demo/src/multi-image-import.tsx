@@ -33,17 +33,17 @@ function openImport() {
     catch (error) { await session.release(); throw error }
     await workspace.refresh()
     return { workspace, source, editors: [
-      { fieldId: kernelId<'field'>('image'), label: 'Image', codec: imageCodec, clearInput: '', resourceTask: { kind: 'durable' as const, definition: single.ref } },
+      { fieldId: kernelId<'field'>('image'), label: 'Image', codec: imageCodec, clearInput: '', resourceTask: { kind: 'durable' as const, definition: single.ref, accept: 'image/*', pickOnEdit: true, applyOnUpload: true } },
       { fieldId: kernelId<'field'>('name'), label: 'Name', codec: createStringCodec({ invalid: 'Enter a name.' }), clearInput: '' },
     ] }
   })().catch(error => { opening = null; throw error })
   return opening
 }
 const columns: readonly WorkspaceGridColumn[] = [
-  { id: 'image', fieldId: kernelId<'field'>('image'), header: 'Image', label: 'Image', sortable: true,
-    render: ({ value, document }) => value.kind === 'value' && typeof value.value === 'string' && value.value
-      ? <img src={value.value} alt={String(document.name || 'Imported image')} style={{ maxWidth: 128, maxHeight: 96 }} /> : 'No image' },
-  { id: 'name', fieldId: kernelId<'field'>('name'), header: 'Name', label: 'Name', sortable: true, render: ({ value }) => value.kind === 'value' ? String(value.value) : '' },
+  { id: 'image', fieldId: kernelId<'field'>('image'), header: 'Image', label: 'Image', width: 148, minWidth: 116, sortable: true,
+    render: ({ value, document }) => <div className="data-grid-image-cell">{value.kind === 'value' && typeof value.value === 'string' && value.value
+      ? <img src={value.value} alt={String(document.name || 'Imported image')} draggable={false} /> : <span>No image</span>}</div> },
+  { id: 'name', fieldId: kernelId<'field'>('name'), header: 'Name', label: 'Name', width: 420, minWidth: 220, flex: 1, sortable: true, render: ({ value }) => value.kind === 'value' ? String(value.value) : '' },
 ]
 export function MultiImageImportPage() {
   const [owner, setOwner] = useState<Owner | null>(null), [failed, setFailed] = useState(false), [attempt, setAttempt] = useState(0)
@@ -80,7 +80,7 @@ function ImportPage({ owner }: { owner: Owner }) {
       {busy ? <p role="status">Retaining image files…</p> : null}{error ? <p role="alert">{error}</p> : null}
       <button disabled={unavailable} onClick={() => owner.source.failNextSave()}>Fail next save</button>
     </section>
-    <DataGrid workspace={workspace} viewId={kernelId<'view'>('image-import')} columns={columns} editors={owner.editors} caption="Image import rows" renderActionCandidate={(task, input) => <BatchReview key={task.id} workspace={workspace} task={task} input={input} start={start} />} />
+    <DataGrid workspace={workspace} viewId={kernelId<'view'>('image-import')} columns={columns} editors={owner.editors} createRow={() => ({ document: { id: `import-${crypto.randomUUID()}`, image: null, name: '' } })} caption="Image import rows" renderActionCandidate={(task, input) => <BatchReview key={task.id} workspace={workspace} task={task} input={input} start={start} />} />
   </main>
 }
 function BatchReview({ workspace, task, input, start }: { workspace: Workspace; task: TaskState; input: OwnedInput; start: string | null }) {

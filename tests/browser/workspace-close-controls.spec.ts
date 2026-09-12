@@ -32,6 +32,7 @@ test('close review expires on new input; unknown checkpoint receipt cannot navig
   const review = page.getByRole('button', { name: 'Review before closing', exact: true })
   await review.click()
   await expect(page.getByRole('button', { name: 'Close workspace', exact: true })).toBeEnabled()
+  await page.getByRole('gridcell').click()
   await page.getByRole('button', { name: 'Edit value', exact: true }).click()
   const input = page.getByRole('textbox', { name: 'Edit value', exact: true })
   await input.fill('Unsaved raw input')
@@ -79,6 +80,7 @@ test('clean close reports release once and permits the next owner to reopen', as
 
 test('discard close requires explicit consent and does not resurrect raw input after reopening', async ({ page, context }) => {
   const { name, source } = await start(page, context)
+  await page.getByRole('gridcell').click()
   await page.getByRole('button', { name: 'Edit value', exact: true }).click()
   await page.getByRole('textbox', { name: 'Edit value', exact: true }).fill('Discard this input')
   await expect(page.getByRole('button', { name: 'Apply value', exact: true })).toBeEnabled()
@@ -98,6 +100,7 @@ test('discard close requires explicit consent and does not resurrect raw input a
   await expect.poll(() => closedCount(page)).toBe(1)
   await mount(page, name, true)
   await expect(page.getByRole('button', { name: 'Resume editing', exact: true })).toHaveCount(0)
+  await page.getByRole('gridcell').click()
   await page.getByRole('button', { name: 'Edit value', exact: true }).click()
   await expect(page.getByRole('textbox', { name: 'Edit value', exact: true })).toHaveValue('Initial')
   expect(source.writes).toBe(0)

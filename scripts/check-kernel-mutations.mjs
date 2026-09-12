@@ -9,8 +9,14 @@ import { fileURLToPath } from 'node:url'
 const execute = promisify(execFile)
 const root = fileURLToPath(new URL('../', import.meta.url))
 const temporary = await mkdtemp(path.join(tmpdir(), 'data-editor-kernel-mutations-'))
-const tests = ['protocol', 'entities', 'persistence', 'history', 'reference-model', 'structure-model', 'session', 'task', 'generated-trace', 'generated-save-model', 'generated-history-model', 'generated-task-model', 'durable-ingress'].map(name => `src/kernel/${name}.test.ts`)
+const tests = ['protocol', 'entities', 'persistence', 'history', 'resolution', 'reference-model', 'structure-model', 'session', 'task', 'generated-trace', 'generated-save-model', 'generated-history-model', 'generated-task-model', 'durable-ingress'].map(name => `src/kernel/${name}.test.ts`)
 const mutations = [
+  { id: 'rebase-unreviewed-field', file: 'src/kernel/field-resolution.ts',
+    from: 'if (!pathsOverlap(path, expected.resource.path)) return expected',
+    to: 'if (!pathsOverlap(path, expected.resource.path)) return group.expectations.find(candidate => candidate.role === expected.role && JSON.stringify(candidate.resource) === JSON.stringify(expected.resource)) ?? expected' },
+  { id: 'forget-redo-field-scope', file: 'src/kernel/history.ts',
+    from: 'const field = records.flatMap(record => {',
+    to: 'const field = records.slice(0, 0).flatMap(record => {' },
   { id: 'drop-rejected-ingress', file: 'src/kernel/durable-commit.ts',
     from: "if (transition.result.kind !== 'accepted' && !ingress)",
     to: "if (transition.result.kind !== 'accepted')" },

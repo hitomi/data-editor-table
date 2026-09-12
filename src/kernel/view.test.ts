@@ -67,3 +67,75 @@ describe('versioned display query', () => {
     expect(fixture.state.viewHistory.map(query => query.version)).toEqual([0, 1])
   })
 })
+
+describe('independent named queries', () => {
+  const left = kernelId<'view'>('left'), right = kernelId<'view'>('right')
+  it('forks the default query, fences versions per view, and leaves hidden edits in the save', () => {
+    const fixture = new KernelFixture({ a: { value: 1 }, b: { value: 2 }, c: { value: 3 } }, schema)
+    filter(fixture, { kind: 'compare', fieldId, operator: 'greater-than', value: 0 })
+    const rows = (viewId: typeof left) => projectView(fixture.state, schema, fixture.project(), viewId).rows.map(row => row.entityId)
+    fixture.apply([fixture.write('c', { value: 4 })])
+    expect(fixture.dispatch({ kind: 'view-query-set', viewId: left, expectedVersion: 1, filters: [{ columnId: 'value', predicate: equal(1) }], sort: [] }).result.kind).toBe('accepted')
+    expect(fixture.dispatch({ kind: 'view-query-set', viewId: right, expectedVersion: 1, filters: [], sort: [{ fieldId, direction: 'desc' }] }).result.kind).toBe('accepted')
+    expect(rows(left)).toEqual(['a']); expect(rows(right)).toEqual(['c', 'b', 'a'])
+    const before = fixture.state
+    expect(fixture.dispatch({ kind: 'view-query-set', viewId: left, expectedVersion: 1, filters: [], sort: [] }).result.kind).toBe('rejected')
+    expect(fixture.state).toBe(before)
+    filter(fixture, equal(2))
+    expect(rows(left)).toEqual(['a']); expect(rows(right)).toEqual(['c', 'b', 'a'])
+    expect(fixture.freeze().submission.items.flatMap(item => item.kind === 'order' ? [] : [item.entityId])).toEqual(['c'])
+  })
+
+  it('keeps the filter destination when another view attaches its editor and changes its own query', () => {
+    const fixture = new KernelFixture({ a: { value: 1 }, b: { value: 2 } }, schema)
+    expect(fixture.dispatch({ kind: 'session-opened', revision: fixture.state.revision, sessionId: kernelId<'session'>('filter'),
+      inputId: kernelId<'input'>('filter-input'), viewId: left, target: { kind: 'filter', viewId: left, columnId: 'value', queryVersion: 0 },
+      input: { kind: 'encoded', value: '1' }, reads: [] }).result.kind).toBe('accepted')
+    const editor = fixture.state.session!.editor!
+    expect(fixture.dispatch({ kind: 'session-detached', lease: editor, inputVersion: 0 }).result.kind).toBe('accepted')
+    expect(fixture.dispatch({ kind: 'session-attached', sessionId: editor.sessionId, viewId: right }).result.kind).toBe('accepted')
+    expect(fixture.dispatch({ kind: 'view-query-set', viewId: right, expectedVersion: 0, filters: [], sort: [{ fieldId, direction: 'desc' }] }).result.kind).toBe('accepted')
+    expect(fixture.state.session!.issues).toEqual([])
+    expect(fixture.dispatch({ kind: 'session-query-apply', lease: fixture.state.session!.editor!, inputVersion: 0, queryVersion: 0, predicate: equal(1) }).result.kind).toBe('accepted')
+    expect(projectView(fixture.state, schema, fixture.project(), left).rows.map(row => row.entityId)).toEqual(['a'])
+    expect(projectView(fixture.state, schema, fixture.project(), right).rows.map(row => row.entityId)).toEqual(['b', 'a'])
+    expect(fixture.state.inputs[0]!.disposition).toEqual({ kind: 'applied-to-view', viewId: left, queryVersion: 1 })
+    expect(fixture.state.viewHistory.filter(query => query.version === 1).map(query => query.viewId)).toEqual([right, left])
+    expect(fixture.state.journal.intents).toHaveLength(0)
+  })
+})
+
+it('searches typed values and catalog labels without freezing matching row membership', () => {
+  const fixture = new KernelFixture({ a: { value: ['code-a', 1] }, b: { value: false }, c: { value: 12 }, d: { value: null } }, schema)
+  const viewId = kernelId<'view'>('search')
+  const fields = [{ fieldId, labels: [{ value: 'code-a', text: 'Featured' }, { value: false, text: 'Inactive' }] }]
+  const search = (text: string) => {
+    expect(fixture.dispatch({ kind: 'view-search-set', viewId, search: { text, locale: 'en', fields } }).result.kind).toBe('accepted')
+    return projectView(fixture.state, schema, fixture.project(), viewId).rows.map(row => row.entityId)
+  }
+  expect(search('  FEATURED ')).toEqual(['a'])
+  expect(search('code-a')).toEqual(['a'])
+  expect(search('FALSE')).toEqual(['b'])
+  expect(search('inactive')).toEqual(['b'])
+  expect(search('1')).toEqual(['a', 'c'])
+  expect(search('null')).toEqual([])
+  expect(search('')).toEqual(['a', 'b', 'c', 'd'])
+  expect(search('new')).toEqual([])
+  fixture.observe({ added: { value: 'NEW RECORD' } }, 1)
+  expect(projectView(fixture.state, schema, fixture.project(), viewId).rows.map(row => row.entityId)).toEqual(['added'])
+  expect(fixture.state.journal.intents).toEqual([])
+})
+
+it('search patches preserve concurrent column filters and sort, and query changes preserve search', () => {
+  const fixture = new KernelFixture({ a: { value: 'Alpha' }, b: { value: 'Beta' } }, schema), viewId = kernelId<'view'>('search')
+  const dispatch = (text: string) => fixture.dispatch({ kind: 'view-search-set', viewId, search: { text, locale: 'en', fields: [{ fieldId }] } })
+  dispatch('a')
+  expect(fixture.dispatch({ kind: 'view-query-set', viewId, expectedVersion: 1, filters: [{ columnId: 'value', predicate: equal('Beta') }], sort: [{ fieldId, direction: 'desc' }] }).result.kind).toBe('accepted')
+  dispatch('Al')
+  expect(projectView(fixture.state, schema, fixture.project(), viewId).rows).toEqual([])
+  expect(fixture.dispatch({ kind: 'view-query-set', viewId, expectedVersion: 3, filters: [], sort: [] }).result.kind).toBe('accepted')
+  expect(projectView(fixture.state, schema, fixture.project(), viewId).rows.map(row => row.entityId)).toEqual(['a'])
+  const before = fixture.state
+  expect(fixture.dispatch({ kind: 'view-search-set', viewId, search: { text: 'lost', locale: 'en', fields: [{ fieldId: kernelId<'field'>('unknown') }] } }).result.kind).toBe('rejected')
+  expect(fixture.state).toBe(before)
+})

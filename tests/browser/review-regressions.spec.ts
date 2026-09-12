@@ -30,6 +30,7 @@ async function save(page: Page) {
 const diagnostics = (page: Page) => page.evaluate(async () => (await import('/src/test-fixtures/review-regressions.tsx')).reviewRegressionDiagnostics())
 test('permission revocation preserves authored input across reload and restoration', async ({ page, context }) => {
   const { name, source } = await start(page, context)
+  await page.getByRole('grid', { name: 'Review regressions' }).getByRole('gridcell', { name: 'Initial', exact: true }).click()
   await page.getByRole('button', { name: 'Edit value', exact: true }).click()
   await page.getByRole('textbox', { name: 'Name', exact: true }).fill('Edited')
   await page.getByRole('button', { name: 'Apply value', exact: true }).click()
@@ -91,7 +92,6 @@ test('DOM copy and paste preserve the final empty row through undo, save and reo
     const event = new ClipboardEvent('paste', { clipboardData: new DataTransfer(), bubbles: true, cancelable: true })
     event.clipboardData!.setData('text/plain', text); cell.dispatchEvent(event)
   }, text)
-  await page.getByRole('button', { name: 'Apply value', exact: true }).click()
   await expect(cells).toHaveText(['Initial', '', 'Initial', ''])
   await page.getByRole('button', { name: 'Undo', exact: true }).click()
   await expect(cells).toHaveText(['Initial', '', 'old1', 'old2'])

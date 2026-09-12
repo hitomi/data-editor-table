@@ -218,7 +218,11 @@ complete input transfer, field/session write limits and policy checks still appl
 The application must not silently replace the captured plan with current visible
 row positions when preparing a batch.
 
-RecoveryRecord is now format 10. Formats 1–9 are rejected without overwriting the
+RecoveryRecord writes now use format 16 for retained new-row session targets; format 15 introduced field-scoped conflict decisions; format 14 introduced conflict-decision undo contributions and format 13 introduced retained search definitions.
+Formats 10–15 remain readable and their next commit writes format 16; existing
+input, query history and journal records are preserved. Format 11 introduced
+localized text and typed array-membership query expressions. Format 12 introduced independent named view queries.
+Formats 1–9 are rejected without overwriting the
 stored record; this change does not provide an automatic converter for old
 workspaces. Retain original storage/checkpoints for an explicit migration path.
 The database store layout remains version 2.
@@ -262,7 +266,7 @@ cancel conversion; saved changes and reviewed-input material survive reopening.
 ## Partitioned views of one Workspace
 
 DataGrid and WorkspaceGridViewport accept an optional `rowScope: ViewPredicate`
-for a host-defined partition. The shared query applies first, then the partition.
+for a host-defined partition. The named view query applies first, then the partition.
 Counts distinguish an empty partition from a query that matches no rows in that
 partition. This is presentation filtering; authority, history and recovery remain
 complete in the same Workspace. It is not an authorization boundary.

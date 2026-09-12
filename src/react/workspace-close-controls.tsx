@@ -4,6 +4,7 @@ import type { CloseBlocker } from '../kernel/model.js'
 import { sameRecoveryValue } from '../kernel/recovery-store.js'
 import type { Workspace, WorkspaceSnapshot } from '../kernel/workspace.js'
 import { useWorkspaceSnapshot } from './workspace-react.js'
+import { retainWorkspacePointerInput } from './workspace-pointer-ownership.js'
 
 export type WorkspaceCloseMessages = Readonly<{
   review: string; label: string; clean: string; checkpoint: string; checkpointHelp: string
@@ -58,7 +59,7 @@ export function WorkspaceCloseControls({ workspace, messages, checkpoint, onClos
   }
   if (observation.lifecycle === 'closed') return <p role="status">{messages.closed}</p>
   const categories = current ? [...new Set(current.assessment.blockers.map(blocker => blocker.kind))] : []
-  return <section aria-label={messages.label}>
+  return <section aria-label={messages.label} onPointerDownCapture={event => retainWorkspacePointerInput(event.nativeEvent, workspace)}>
     <button type="button" disabled={pending || observation.lifecycle === 'fenced'} onClick={inspect}>{messages.review}</button>
     {current ? <fieldset disabled={pending}>
       <legend>{messages.label}</legend>

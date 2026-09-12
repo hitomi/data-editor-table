@@ -566,7 +566,7 @@
   .business-grid__workspace th,
   .business-grid__workspace td { border-color: var(--grid-border); }
   .business-grid__workspace th { background: var(--grid-subtle-surface); }
-  .business-grid__workspace [aria-selected='true'] { background: var(--grid-selection-fill); }
+  .business-grid__workspace [aria-selected='true']:not([role='gridcell']) { background: var(--grid-selection-fill); }
   .business-grid__workspace :focus-visible { outline: 2px solid var(--grid-accent); outline-offset: 2px; }
   .business-grid__workspace [role='alert'] { color: var(--grid-invalid); }
   .business-grid__workspace button {
@@ -580,8 +580,8 @@
   .business-grid__workspace button:hover:not(:disabled) { background: var(--grid-hover); border-color: var(--grid-accent); }
   .business-grid__workspace button:disabled { color: var(--grid-muted); background: var(--grid-subtle-surface); opacity: .55; }
   .business-grid__workspace button[aria-pressed='true'] { background: var(--grid-accent-soft); border-color: var(--grid-accent); color: var(--grid-accent-strong); }
-  .business-grid__workspace th[scope="col"] button { border: 0; border-radius: 0; background: transparent; color: inherit; }
-  .business-grid__workspace th[scope="col"] button:hover:not(:disabled) { background: transparent; color: var(--grid-accent-strong); }
+  .business-grid__workspace th[scope="col"] > button { border: 0; border-radius: 0; background: transparent; color: inherit; }
+  .business-grid__workspace th[scope="col"] > button:hover:not(:disabled) { background: transparent; color: var(--grid-accent-strong); }
   .business-grid__workspace input:not([type='checkbox']):not([type='radio']),
   .business-grid__workspace select, .business-grid__workspace textarea {
     border: 1px solid var(--grid-border-strong); border-radius: 6px;
@@ -595,4 +595,40 @@
 
 @layer business-grid.theme {
   .business-grid__workspace-editor { border: 1px solid var(--grid-border-strong); border-radius: var(--grid-radius); background: var(--grid-surface); color: var(--grid-text); }
+}
+
+@layer business-grid.components {
+  .business-grid__workspace .business-grid__workspace-row-controls > button { border: 0; background: transparent; color: inherit; }
+}
+
+
+.business-grid__issue-marker {
+  color: var(--grid-error-text, #9f1239);
+  background: var(--grid-error-background, #ffe4e6);
+  font-weight: 700;
+}
+
+@layer business-grid.components {
+  .business-grid__workspace th[scope='col'] > :is(.business-grid__workspace-filter, .business-grid__workspace-sort) {
+    border: 0;
+    border-inline-start: var(--grid-cell-border-width) solid var(--grid-border);
+    border-radius: 0;
+    background: transparent;
+    color: var(--grid-muted);
+  }
+  .business-grid__workspace th[scope='col'] > :is(.business-grid__workspace-filter, .business-grid__workspace-sort):is(:focus-visible, :active, [data-active='true']) {
+    background: #e9eef5;
+    color: var(--grid-accent);
+    outline: 0;
+  }
+  .business-grid__workspace-corner > span {
+    border-color: transparent transparent var(--grid-muted) transparent;
+    opacity: 0.75;
+  }
+  @media (hover: hover) {
+    .business-grid__workspace th[scope='col'] > :is(.business-grid__workspace-filter, .business-grid__workspace-sort):hover:not(:disabled):not([aria-disabled='true']) {
+      background: #e9eef5;
+      color: var(--grid-accent);
+    }
+  }
 }

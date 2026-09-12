@@ -2,7 +2,7 @@ import { WorkspaceOpenError } from './workspace-open-error.js'
 import { useEffect, useRef, useState } from 'react'
 import { DataGrid, Workspace, kernelId, defineKernelSchema, openIndexedDbRecovery, useWorkspaceSnapshot, prepareRowAction,
   createStringCodec, createNumberCodec, createIsoDateCodec, createSingleChoiceCodec, createMultiChoiceCodec, createBooleanChoiceCodec, workspaceEn,
-  type Document, type RowCommand, type WorkspaceGridColumn, type WorkspaceGridEditor, type WorkspaceGridFilter, type WorkspaceTextCodec } from 'data-editor-table'
+  type Document, type RowCommand, type WorkspaceGridColumn, type WorkspaceGridEditor, type WorkspaceTextCodec } from 'data-editor-table'
 import { openDemoSource, type DemoSource } from './demo-source.js'
 import { openImageTask } from './image-task.js'
 import { initialRows } from './playground-data.js'
@@ -34,6 +34,7 @@ const schema = defineKernelSchema({ version: kernelId<'schema-version'>('invento
     }
     return errors
   } })
+function createInventoryRow() { return { document: { id: crypto.randomUUID(), image: null, name: 'Untitled item', quantity: 0, deliveryDate: '2026-09-30', status: 'draft', tags: [], active: true } } }
 const scope = { sourceId: 'playground-inventory-v1', id: kernelId<'scope'>('inventory'), epoch: kernelId<'scope-epoch'>('v1') }
 const policy = { version: kernelId<'policy-version'>('v1'), create: true, order: true,
   defaultEntity: { write: true, replace: true, delete: true, readonlyPaths: [] }, entities: [] }
@@ -50,10 +51,19 @@ function openInventory() {
     catch (error) { await session.release(); throw error }
     await workspace.refresh()
     if (!restore) await workspace.setSaveSchedule({ mode: 'debounced', debounceMs: 700 })
-    const editors: readonly WorkspaceGridEditor[] = definitions.map(editor => editor.fieldId !== 'image' ? editor : { ...editor, resourceTask: { kind: 'durable', definition: imageTask.ref } })
+    const editors: readonly WorkspaceGridEditor[] = definitions.map(editor => editor.fieldId !== 'image' ? editor : { ...editor, resourceTask: { kind: 'durable', definition: imageTask.ref, accept: 'image/*', pickOnEdit: true, applyOnUpload: true } })
     return { workspace, source, editors }
   })().catch(error => { opening = null; throw error })
   return opening
+}
+const columnLayouts: Record<string, Pick<WorkspaceGridColumn, 'width' | 'minWidth' | 'flex'>> = {
+  image: { width: 116, minWidth: 96 },
+  name: { width: 260, minWidth: 180, flex: 2 },
+  quantity: { width: 150, minWidth: 120, flex: 1 },
+  deliveryDate: { width: 190, minWidth: 160, flex: 1 },
+  status: { width: 150, minWidth: 120, flex: 1 },
+  tags: { width: 250, minWidth: 180, flex: 2 },
+  active: { width: 110, minWidth: 90 },
 }
 const columns: readonly WorkspaceGridColumn[] = definitions.map(editor => ({
   ...(editor.fieldId === 'quantity' ? { fill: ({ sourceValues, targetIndex }: import('data-editor-table').WorkspaceFillContext) => {
@@ -63,14 +73,13 @@ const columns: readonly WorkspaceGridColumn[] = definitions.map(editor => ({
     })
     return { kind: 'value' as const, value: numbers[0]! + targetIndex * (numbers.length > 1 ? numbers[1]! - numbers[0]! : 1) }
   } } : {}),
-  id: editor.fieldId, fieldId: editor.fieldId, header: editor.label, label: editor.label, sortable: true,
-  render: ({ value, document }) => editor.fieldId === 'image' ? value.kind === 'value' && typeof value.value === 'string' && value.value
-    ? <img src={value.value} alt={String(document.name)} style={{ maxWidth: 96, maxHeight: 64 }} /> : 'No image'
+  ...columnLayouts[editor.fieldId],
+  ...(editor.fieldId === 'quantity' ? { align: 'end' as const } : {}),
+  id: editor.fieldId, fieldId: editor.fieldId, header: editor.label, label: editor.label, sortable: editor.fieldId !== 'image',
+  render: ({ value, document }) => editor.fieldId === 'image' ? <div className="data-grid-image-cell">{value.kind === 'value' && typeof value.value === 'string' && value.value
+    ? <img src={value.value} alt={String(document.name)} draggable={false} /> : <span>No image</span>}</div>
     : (editor.codec.display ?? editor.codec.format)(value) }))
-const filters: readonly WorkspaceGridFilter[] = [{ columnId: 'name', label: 'Name filter', codec: {
-  format: predicate => predicate?.kind === 'compare' && typeof predicate.value === 'string' ? predicate.value : '',
-  parse: text => ({ kind: 'valid', predicate: text ? { kind: 'compare', fieldId: kernelId<'field'>('name'), operator: 'contains', value: text } : null }),
-} }]
+
 
 export function PlaygroundPage() {
   const [owner, setOwner] = useState<Owner | null>(null), [failed, setFailed] = useState(false), [attempt, setAttempt] = useState(0)
@@ -83,10 +92,11 @@ export function PlaygroundPage() {
 }
 function Inventory({ owner: { workspace, source, editors } }: { owner: Owner }) {
   const snapshot = useWorkspaceSnapshot(workspace), { state } = snapshot
+  const view = workspace.getView(kernelId<'view'>('inventory'))
   const [target, setTarget] = useState(''), [deleteReview, setDeleteReview] = useState<{ target: string; revision: number } | null>(null)
   const timing = useRef<'immediate' | 'debounced'>('debounced')
   const [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null)
-  const row = snapshot.view.rows.find(row => row.entityId === target) ?? snapshot.view.rows[0]
+  const row = view.rows.find(row => row.entityId === target) ?? view.rows[0]
   const unavailable = busy || state.authority.content.kind !== 'complete' || snapshot.capabilities.close.lifecycle !== 'open'
     || snapshot.ingress.pending.length > 0 || (snapshot.storage !== null && snapshot.storage.kind !== 'idle') || snapshot.recovery.running
   async function run(operation: () => Promise<void>) {
@@ -103,7 +113,7 @@ function Inventory({ owner: { workspace, source, editors } }: { owner: Owner }) 
     const commands: RowCommand[] = []
     if (kind === 'add' || kind === 'duplicate') {
       const document: Document = kind === 'duplicate' && row?.preview ? { ...row.preview, id: crypto.randomUUID(), name: `${row.preview.name} copy` }
-        : { id: crypto.randomUUID(), image: null, name: 'Untitled item', quantity: 0, deliveryDate: '2026-09-30', status: 'draft', tags: [], active: true }
+        : createInventoryRow().document
       commands.push({ kind: 'create', entityId: kernelId<'entity'>(crypto.randomUUID()), document })
     } else if (row && kind === 'delete') {
       if (deleteReview?.target !== row.entityId || deleteReview.revision !== state.revision) throw new Error('Review deletion again')
@@ -135,17 +145,17 @@ function Inventory({ owner: { workspace, source, editors } }: { owner: Owner }) 
       }) }}>Simulate remote change</button><span>{state.commits.length} saves</span>
     </div></header>
     <section className="demo-row-actions" aria-label="Row actions"><label>Row action target <select aria-label="Row action target" value={row?.entityId ?? ''} disabled={unavailable} onChange={event => { setTarget(event.target.value); setDeleteReview(null) }}>
-      {snapshot.view.rows.map(row => <option key={row.entityId} value={row.entityId}>{String(row.preview?.name)}</option>)}</select></label>
+      {view.rows.map(row => <option key={row.entityId} value={row.entityId}>{String(row.preview?.name)}</option>)}</select></label>
       <button disabled={unavailable} onClick={() => { void run(() => rowAction('add')) }}>Add row</button>
       <button disabled={unavailable || !row} onClick={() => { void run(() => rowAction('duplicate')) }}>Duplicate row</button>
-      <button disabled={unavailable || !row || state.view.sort.length > 0 || state.view.filters.length > 0} onClick={() => { void run(() => rowAction('up')) }}>Move row up</button>
-      <button disabled={unavailable || !row || state.view.sort.length > 0 || state.view.filters.length > 0} onClick={() => { void run(() => rowAction('down')) }}>Move row down</button>
+      <button disabled={unavailable || !row || view.query.sort.length > 0 || view.query.filters.length > 0 || !!view.query.search?.text.trim()} onClick={() => { void run(() => rowAction('up')) }}>Move row up</button>
+      <button disabled={unavailable || !row || view.query.sort.length > 0 || view.query.filters.length > 0 || !!view.query.search?.text.trim()} onClick={() => { void run(() => rowAction('down')) }}>Move row down</button>
       <label><input type="checkbox" disabled={unavailable || !row} checked={!!row && deleteReview?.target === row.entityId && deleteReview.revision === state.revision}
         onChange={event => setDeleteReview(event.target.checked && row ? { target: row.entityId, revision: state.revision } : null)} />Delete the selected row: {String(row?.preview?.name ?? '')}</label>
       <button disabled={unavailable || !row || deleteReview?.target !== row.entityId || deleteReview.revision !== state.revision} onClick={() => { void run(() => rowAction('delete')) }}>Delete row</button>
       {error ? <p role="alert">{error}</p> : null}
     </section>
-    <section className="demo-grid-panel" style={{ overflow: 'auto' }}><DataGrid workspace={workspace} viewId={kernelId<'view'>('inventory')} columns={columns} editors={editors} filters={filters} caption="Inventory items" /></section>
+    <section className="demo-grid-panel" style={{ overflow: 'auto' }}><DataGrid workspace={workspace} viewId={kernelId<'view'>('inventory')} columns={columns} editors={editors} createRow={createInventoryRow} caption="Inventory items" /></section>
     <aside className="demo-inspector"><JsonPanel title="Authoritative JSON" value={state.authority.content.kind === 'complete' ? state.authority.content.snapshot.entities.map(entity => entity.document) : null} />
       <JsonPanel title="Dirty" value={snapshot.projection.changes} /><JsonPanel title="Conflicts" value={snapshot.projection.rows.filter(row => row.issues.length > 0)} /></aside>
   </main>

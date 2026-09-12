@@ -160,16 +160,17 @@ function createNeutralPrefix(state: KernelState, facts: ProjectionFacts) {
 
 function effectiveRowIntents(state: KernelState, facts: ProjectionFacts, active: readonly RowIntent[], reserved: ReadonlySet<IntentId>) {
   const rows = new Map<EntityId, RowIntent[]>(), neutral = new Set<IntentId>()
+  const restored = new Set(state.journal.intents.filter(intent => intent.operation.kind === 'restore-resolution-row').map(intent => intent.id))
   for (const intent of active) { const row = rows.get(intent.operation.entityId) ?? []; row.push(intent); rows.set(intent.operation.entityId, row) }
   for (const row of rows.values()) {
     if (row.some(intent => reserved.has(intent.id))) continue
-    let prefix: RowIntent[] = [], append = createNeutralPrefix(state, facts)
+    let prefix: RowIntent[] = [], append = createNeutralPrefix(state, facts), requiresReview = false
     for (let index = 0; index < row.length; index++) {
       const intent = row[index]!
-      prefix.push(intent)
+      prefix.push(intent); requiresReview ||= restored.has(intent.id)
       const isNeutral = append(intent)
       if (row[index + 1]?.applicationId === intent.applicationId) continue
-      if (isNeutral) { prefix.forEach(intent => neutral.add(intent.id)); prefix = []; append = createNeutralPrefix(state, facts) }
+      if (isNeutral && !requiresReview) { prefix.forEach(intent => neutral.add(intent.id)); prefix = []; append = createNeutralPrefix(state, facts) }
     }
   }
   return { active: active.filter(intent => !neutral.has(intent.id)), neutral: Object.freeze([...neutral]) }

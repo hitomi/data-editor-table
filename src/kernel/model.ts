@@ -124,7 +124,7 @@ export type InputDisposition =
   | Readonly<{ kind: 'session'; sessionId: SessionId }>
   | Readonly<{ kind: 'task'; taskId: TaskId }>
   | Readonly<{ kind: 'intents'; intentIds: readonly IntentId[] }>
-  | Readonly<{ kind: 'applied-to-view'; queryVersion: number }>
+  | Readonly<{ kind: 'applied-to-view'; viewId?: ViewId; queryVersion: number }>
   | Readonly<{ kind: 'settled-intents'; proofs: readonly IntentSettlement[] }>
   | Readonly<{ kind: 'superseded'; by: InputRef }>
   | Readonly<{ kind: 'discarded'; by: IntentId }>
@@ -154,6 +154,7 @@ export type ResolutionDecision = Readonly<{
   observation: ObservationId
   issueIds: readonly string[]
   replacements: readonly IntentId[]
+  field?: Readonly<{ entityId: EntityId; path: StoragePath }>
 }>
 export type IntentOperation = DataOperation
   | Readonly<{ kind: 'undo'; target: ApplicationId; sourceEntityId: EntityId; entityId: EntityId; targets: readonly IntentId[]; frontier: FrontierRef;
@@ -161,8 +162,10 @@ export type IntentOperation = DataOperation
   | Readonly<{ kind: 'undo-order'; target: ApplicationId; targets: readonly IntentId[]; restorations: readonly IntentId[]; frontier: FrontierRef; compensation: Extract<DataOperation, { kind: 'order' }> | null }>
   | Readonly<{ kind: 'redo'; target: ApplicationId; sourceIntentId: IntentId; sourceEntityId: EntityId; entityId: EntityId; replay: Exclude<DataOperation, { kind: 'order' }> }>
   | Readonly<{ kind: 'redo-order'; target: ApplicationId; sourceIntentId: IntentId; replay: Extract<DataOperation, { kind: 'order' }> }>
+  | Readonly<{ kind: 'restore-resolution-row'; target: ApplicationId; resolution: IntentId; sourceIntentId: IntentId; entityId: EntityId; replay: Exclude<DataOperation, { kind: 'order' }> }>
+  | Readonly<{ kind: 'restore-resolution-order'; target: ApplicationId; resolution: IntentId; sourceIntentId: IntentId; replay: Extract<DataOperation, { kind: 'order' }> }>
   | Readonly<{ kind: 'undo-resolution'; target: ApplicationId; resolution: IntentId; recoveryId: RecoveryId }>
-  | Readonly<{ kind: 'redo-resolution'; target: ApplicationId; sourceIntentId: IntentId; decision: ResolutionDecision; recoveries: readonly RecoveryId[] }>
+  | Readonly<{ kind: 'redo-resolution'; target: ApplicationId; sourceIntentId: IntentId; decision: ResolutionDecision; recoveries: readonly RecoveryId[]; restored?: readonly IntentId[] }>
   | Readonly<{ kind: 'resolve'; decision: ResolutionDecision }>
   | Readonly<{ kind: 'discard'; targets: readonly IntentId[] }>
 export type IntentRecord = Readonly<{
@@ -253,17 +256,20 @@ export type EditorLease = Readonly<{ viewId: ViewId; sessionId: SessionId; gener
 /** Compiled display expressions contain encoded values and storage bindings;
  * neither a callback nor a filtered row snapshot enters recoverable state. */
 export type ViewPredicate =
-  | Readonly<{ kind: 'compare'; fieldId: FieldId; operator: 'equals' | 'contains' | 'less-than' | 'greater-than'; value: EncodedValue }>
+  | Readonly<{ kind: 'compare'; fieldId: FieldId; operator: 'equals' | 'contains' | 'less-than' | 'greater-than' | 'text-contains' | 'text-equals' | 'includes'; value: EncodedValue; locale?: string }>
   | Readonly<{ kind: 'missing'; fieldId: FieldId }>
   | Readonly<{ kind: 'all' | 'any'; predicates: readonly ViewPredicate[] }>
   | Readonly<{ kind: 'not'; predicate: ViewPredicate }>
 export type ViewFilter = Readonly<{ columnId: string; predicate: ViewPredicate }>
 export type ViewSort = Readonly<{ fieldId: FieldId; direction: 'asc' | 'desc' }>
-export type ViewQuery = Readonly<{ version: number; filters: readonly ViewFilter[]; sort: readonly ViewSort[] }>
+export type ViewSearchField = Readonly<{ fieldId: FieldId; labels?: readonly Readonly<{ value: EncodedValue; text: string }>[] }>
+export type ViewSearch = Readonly<{ text: string; locale: string; fields: readonly ViewSearchField[] }>
+export type ViewQuery = Readonly<{ viewId?: ViewId; version: number; search?: ViewSearch; filters: readonly ViewFilter[]; sort: readonly ViewSort[] }>
+export type SessionCreation = Omit<Extract<DataOperation, { kind: 'create' }>, 'kind' | 'restoresEntity'>
 export type SessionTarget =
   | Readonly<{ kind: 'cell'; field: FieldRef }>
-  | Readonly<{ kind: 'bulk'; fields: readonly FieldRef[] }>
-  | Readonly<{ kind: 'filter'; columnId: string; queryVersion: number }>
+  | Readonly<{ kind: 'bulk'; fields: readonly FieldRef[]; creations?: readonly SessionCreation[] }>
+  | Readonly<{ kind: 'filter'; viewId?: ViewId; columnId: string; queryVersion: number }>
 export type Session = Readonly<{
   id: SessionId
   input: InputRef

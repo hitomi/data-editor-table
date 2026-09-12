@@ -84,7 +84,7 @@ export function reduceKernel(state: KernelState, event: KernelEvent, schema: Ker
       case 'session-opened': case 'session-attached': case 'session-detached': case 'session-input':
       case 'session-reconfirmed': case 'session-retargeted': case 'session-apply': case 'session-query-apply': case 'session-cancelled':
         candidate = reduceSession(state, event, schema); break
-      case 'view-query-set': candidate = setViewQuery(state, event, schema); break
+      case 'view-query-set': case 'view-search-set': candidate = setViewQuery(state, event, schema); break
       case 'prepared-action': candidate = appendPreparedAction(state, event.prepared, schema); break
       case 'prepared-undo': candidate = appendPreparedUndo(state, event.prepared); break
       case 'prepared-redo': candidate = appendPreparedRedo(state, event.prepared, schema); break

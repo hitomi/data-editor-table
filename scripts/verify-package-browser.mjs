@@ -89,6 +89,8 @@ async function verifyBrowser(name, browserType) {
       const save = page.getByRole('button', { name: '保存更改', exact: true })
       await expect(grid.getByRole('gridcell')).toHaveText('Packed row')
       await expect(save).toBeDisabled()
+      await expect(page.getByRole('button', { name: '编辑值', exact: true })).toBeDisabled()
+      await grid.getByRole('gridcell', { name: 'Packed row', exact: true }).click()
       await page.getByRole('button', { name: '编辑值', exact: true }).click()
       const editor = page.getByRole('textbox', { name: 'Name', exact: true })
       await expect(editor).toHaveValue('Packed row')

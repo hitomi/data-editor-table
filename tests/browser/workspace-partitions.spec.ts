@@ -30,6 +30,7 @@ test('two partitions share one owner while new selection and retained editor tar
   await alpha.getByRole('button', { name: 'Apply value', exact: true }).click()
   await expect(alpha.getByRole('gridcell')).toHaveText('Beta')
   await expect(beta.getByText('No rows yet.', { exact: true })).toBeVisible()
+  await alpha.getByRole('gridcell', { name: 'Beta', exact: true }).click()
   await alpha.getByRole('button', { name: 'Edit value', exact: true }).click()
   await expect(alpha.getByRole('textbox', { name: 'Value', exact: true })).toHaveValue('Beta')
   await alpha.getByRole('button', { name: 'Discard input', exact: true }).click()

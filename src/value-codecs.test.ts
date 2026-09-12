@@ -48,6 +48,15 @@ test('dates validate actual Gregorian days without timezone normalization', () =
   for (const text of ['1900-02-29', '2023-02-29', '2024-04-31', '0000-01-01', '2024-13-01', '2024-01-00', '2024-1-1', '2024-01-01T00:00:00Z']) expect(codec.parse(text).kind).toBe('invalid')
 })
 
+test('optional date strings preserve an empty stored date without converting null or absence', () => {
+  const codec = createIsoDateCodec({ invalid, allowEmpty: true })
+  expect(codec.format({ kind: 'value', value: '' })).toBe('')
+  expect(codec.parse('')).toEqual({ kind: 'valid', value: { kind: 'value', value: '' } })
+  expect(codec.parse('2026-02-30').kind).toBe('invalid')
+  expect(() => codec.format({ kind: 'value', value: null })).toThrow()
+  expect(() => createIsoDateCodec({ invalid, allowEmpty: true, empty: 'null' })).toThrow()
+})
+
 test('choice tokens preserve value types and own the catalog without parsing labels', async () => {
   const { createSingleChoiceCodec } = await import('./value-codecs.js')
   const options = [{ value: 1 as string | number, label: 'Numeric one' }, { value: '1', label: 'Text one' }, { value: '', label: 'Empty text' }]

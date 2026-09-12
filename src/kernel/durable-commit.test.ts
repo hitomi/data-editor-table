@@ -1,3 +1,4 @@
+import { canonicalEncodedValue, ownEncodedValue } from './document.js'
 import { describe, expect, it, vi } from 'vitest'
 import { KernelFixture } from '../../tests/kernel/fixtures.js'
 import { RecoveryFixture } from '../../tests/kernel/recovery-fixture.js'
@@ -20,6 +21,24 @@ const open: KernelEvent = { kind: 'session-opened', revision: 0, sessionId: kern
 const id = (name: string) => kernelId<'ingress'>(name)
 
 describe('durable semantic commit barrier', () => {
+  it.each([10, 11, 12, 13, 14, 15] as const)('reads the complete format %s root and writes its successor in format 16 without changing retained input', async format => {
+    const { fixture, resources, storage, session } = setup()
+    const write = await prepareRecoveryWrite(session.lease, 1, null, open, reduceKernel(fixture.state, open, fixture.schema), resources)
+    expect(write.record.format).toBe(16)
+    const { candidateHash: _hash, ...token } = write.record.commit.token
+    const body = { ...write.record, format, commit: { ...write.record.commit, token } }
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonicalEncodedValue(ownEncodedValue(body))))
+    const candidateHash = `sha256:${[...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('')}`
+    const legacy = { ...write, record: { ...write.record, format, commit: { ...write.record.commit, token: { ...token, candidateHash } } } }
+    expect((await session.commit(legacy)).kind).toBe('committed')
+    const restored = await DurableCommitBarrier.restore({ initialState: fixture.state, schema: fixture.schema, session: storage.acquire() })
+    expect(restored.getState().session?.rawInput).toEqual(open.input)
+    expect(restored.getState().inputs).toEqual(write.record.transition.state.inputs)
+    await restored.commit({ kind: 'read-started', ticket: 'next-read' })
+    expect(storage.writes.at(-1)!.record.format).toBe(16)
+    expect(restored.getState().session?.rawInput).toEqual(open.input)
+  })
+
   it.each([false, true])('retains input when a new lease wins during resource preparation (preparation fails=%s)', async fails => {
     const { fixture, resources, storage, barrier, queue } = setup()
     await queue.event(id('open'), open).completion

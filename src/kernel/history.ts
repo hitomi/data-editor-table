@@ -1,8 +1,10 @@
+import { recordIntentSettlements } from './journal.js'
+import { preserveUnreviewedFieldBases } from './field-resolution.js'
 import { applyDocumentPatches, encodedValuesEqual, isDocument, ownEncodedValue, readDocument } from './document.js'
-import { currentHistoryEntity, declaredOrderOperation, declaredResolution, declaredRowOperation, intentFrontierForEntity, rowOperationForIntent, undoBranch } from './intent.js'
+import { currentHistoryEntity, declaredOrderOperation, declaredResolution, declaredRowOperation, intentFrontierForEntity, rowOperationForIntent, undoBranch, undoSettlementSuggestions } from './intent.js'
 import { registerLocalEntity } from './entities.js'
 import { prepareRowAction, type RowCommand } from './prepare.js'
-import { projectKernel } from './projection.js'
+import { projectKernel, reservedIntentIds } from './projection.js'
 import type { KernelSchema } from './schema.js'
 import { kernelId, type ActionId, type ActionRecord, type ApplicationId, type Document, type EntityId, type ExpectedResource,
   type InputRecord, type IntentId, type IntentRecord, type Patch, type RecoveryEntry, type ResourceValue, type StoragePath, type WriteGroup } from './model.js'
@@ -46,9 +48,9 @@ export function projectHistory(state: KernelState): HistoryProjection {
     const intents = action.intentIds.map(id => records.get(id)!)
     const first = intents[0]
     if (!first) throw new Error('A history application must retain its journal records.')
-    if (first.operation.kind === 'undo' || first.operation.kind === 'undo-order' || first.operation.kind === 'undo-resolution') {
+    if (first.operation.kind === 'undo' || first.operation.kind === 'undo-order' || first.operation.kind === 'undo-resolution' || first.operation.kind === 'restore-resolution-row' || first.operation.kind === 'restore-resolution-order') {
       const target = undo.pop()
-      if (!target || target.applicationId !== first.operation.target || intents.some(intent => (intent.operation.kind !== 'undo' && intent.operation.kind !== 'undo-order' && intent.operation.kind !== 'undo-resolution') || intent.operation.target !== target.applicationId))
+      if (!target || target.applicationId !== first.operation.target || intents.some(intent => (intent.operation.kind !== 'undo' && intent.operation.kind !== 'undo-order' && intent.operation.kind !== 'undo-resolution' && intent.operation.kind !== 'restore-resolution-row' && intent.operation.kind !== 'restore-resolution-order') || intent.operation.target !== target.applicationId))
         throw new Error('Undo must reference the current complete history application.')
       redo.push(target)
     } else if (first.operation.kind === 'redo' || first.operation.kind === 'redo-order' || first.operation.kind === 'redo-resolution') {
@@ -225,6 +227,21 @@ export function prepareUndo(state: KernelState, identities: UndoIdentities): Pre
     if (used.has(id) || intents.some(intent => intent.id === id)) throw new Error('Resolution undo identities must be fresh.')
     const recovered = prepareDecisionRecovery(state, record.id, id, recoveryId)
     inputs.push(...recovered.inputs); recoveries.push(recovered.entry)
+    // Reopen the reviewed contributions under new identities. Their original
+    // comparisons stay intact; receipt and discard facts are never removed.
+    for (const originalId of declaredResolution(record)!.targets) {
+      const original = state.journal.intents.find(intent => intent.id === originalId)!
+      const row = declaredRowOperation(original), order = declaredOrderOperation(original)
+      if (!row && !order) continue
+      const replayId = kernelId<'intent'>(`${id}:restore:${originalId}`)
+      const common = { target: target.applicationId, resolution: record.id, sourceIntentId: originalId }
+      const replay = row?.kind === 'write' ? { ...row, groups: row.groups.map((group, index) => ({ ...group, id: kernelId<'write-group'>(`${replayId}:group:${index}`) })) } : row
+      intents.push({ id: replayId, actionId: identities.actionId, applicationId: identities.applicationId, sequence: ++sequence, cause: 'undo', inputs: [],
+        dependencies: frontiers.intern([record.id, ...expandFrontier(state.journal.frontiers, original.dependencies)]), operation: replay
+          ? { kind: 'restore-resolution-row', ...common, entityId: replay.entityId, replay }
+          : { kind: 'restore-resolution-order', ...common, replay: order! },
+      })
+    }
     intents.push({ id, actionId: identities.actionId, applicationId: identities.applicationId, sequence: ++sequence, cause: 'undo',
       inputs: recovered.entry.inputs, dependencies: frontiers.intern([record.id]), operation: { kind: 'undo-resolution', target: target.applicationId, resolution: record.id, recoveryId },
     })
@@ -240,7 +257,7 @@ export function appendPreparedUndo(state: KernelState, prepared: PreparedUndo): 
   if (prepared.revision !== state.revision) throw new Error('Prepared undo is stale; preserve its target and prepare against the current history frontier.')
   const expected = prepareUndo(state, { actionId: prepared.action.id, applicationId: prepared.action.applicationId,
     controls: prepared.intents.flatMap(intent => {
-      if (intent.operation.kind === 'undo-order' || intent.operation.kind === 'undo-resolution') return []
+      if (intent.operation.kind === 'undo-order' || intent.operation.kind === 'undo-resolution' || intent.operation.kind === 'restore-resolution-row' || intent.operation.kind === 'restore-resolution-order') return []
       if (intent.operation.kind !== 'undo') throw new Error('Prepared undo can only contain undo controls.')
       return [{ entityId: intent.operation.sourceEntityId, intentId: intent.id }]
     }),
@@ -292,10 +309,15 @@ export function prepareRedo(state: KernelState, identities: RedoIdentities, sche
       operation: { kind: 'redo-resolution' as const, target: target.applicationId, sourceIntentId: record.id,
         decision: { ...decision, replacements: decision.replacements.map(id => ids.get(id) ?? id) },
         recoveries: state.recoveries.filter(entry => entry.resolution === record.id && entry.state === 'available').map(entry => entry.id),
+        restored: state.journal.intents.filter(intent => (intent.operation.kind === 'restore-resolution-row' || intent.operation.kind === 'restore-resolution-order') && intent.operation.resolution === record.id).map(intent => intent.id),
       },
     }] : []
   })
-  const base = { ...state, journal: { ...state.journal, frontiers: frontiers.snapshot(), intents: [...state.journal.intents, ...controls] } }
+  const reserved = reservedIntentIds(state)
+  if (controls.some(control => control.operation.kind === 'redo-resolution' && control.operation.restored?.some(id => reserved.has(id))))
+    throw new Error('Wait for the exact submission outcome before redoing this resolution.')
+  const controlled = { ...state, journal: { ...state.journal, frontiers: frontiers.snapshot(), intents: [...state.journal.intents, ...controls] } }
+  const base = recordIntentSettlements(controlled, undoSettlementSuggestions(controlled))
   const preceding = new Set(base.journal.intents.map(intent => intent.id))
   const dataRecords = records.filter(record => !declaredResolution(record))
   const commands = dataRecords.map(record => {
@@ -324,15 +346,27 @@ export function prepareRedo(state: KernelState, identities: RedoIdentities, sche
   const prepared = prepareRowAction(base, { action: { id: target.id, applicationId: identities.applicationId, label: target.label, saveAtomicity: target.saveAtomicity },
     commands, inputs: [], cause: 'redo',
   }, schema)
-  const data = prepared.intents.map((intent, index) => {
-    const original = dataRecords[index]!, replay = intent.operation
+  const replayFrontiers = compileFrontierTable(prepared.frontiers, [...base.journal.intents, ...prepared.intents].map(intent => intent.id), frontierScope(state.workspace))
+  const data = prepared.intents.map((preparedIntent, index) => {
+    const original = dataRecords[index]!
+    let intent = preparedIntent, replay = intent.operation
+    const field = records.flatMap(record => {
+      const decision = declaredResolution(record)
+      return decision?.field && decision.replacements.includes(original.id) ? [decision.field] : []
+    })[0]
+    if (field) {
+      const template = declaredRowOperation(original)
+      if (template?.kind !== 'write' || replay.kind !== 'write') throw new Error('A field decision requires its stored write template.')
+      replay = preserveUnreviewedFieldBases(template, replay, field.path)
+      intent = { ...intent, dependencies: replayFrontiers.intern([...new Set([...expandFrontier(prepared.frontiers, intent.dependencies), ...expandFrontier(state.journal.frontiers, original.dependencies)])]) }
+    }
     const control = { target: target.applicationId, sourceIntentId: original.id }
     if (replay.kind === 'order') return { ...intent, operation: { kind: 'redo-order' as const, ...control, replay } }
     if (replay.kind !== 'create' && replay.kind !== 'write' && replay.kind !== 'replace' && replay.kind !== 'delete') throw new Error('Redo requires compiled data.')
     return { ...intent, operation: { kind: 'redo' as const, ...control, sourceEntityId: declaredRowOperation(original)!.entityId, entityId: replay.entityId, replay } }
   })
   const intents = [...controls, ...data]
-  return ownEncodedValue({ revision: state.revision, frontiers: prepared.frontiers, target: target.applicationId, action: { ...prepared.action, intentIds: intents.map(intent => intent.id) }, intents, inputs: [], recoveries: [] }) as unknown as PreparedRedo
+  return ownEncodedValue({ revision: state.revision, frontiers: replayFrontiers.snapshot(), target: target.applicationId, action: { ...prepared.action, intentIds: intents.map(intent => intent.id) }, intents, inputs: [], recoveries: [] }) as unknown as PreparedRedo
 }
 
 export function appendPreparedRedo(state: KernelState, prepared: PreparedRedo, schema: KernelSchema): KernelState {

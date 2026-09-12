@@ -22,6 +22,45 @@ async function setup() {
 }
 
 describe('Workspace ingress in durable roots', () => {
+  it('owns typing before session opening is acknowledged and restores the complete text', async () => {
+    const { workspace, storage, restore } = await setup()
+    const original = workspace.getState().session!
+    await workspace.dispatch({ kind: 'session-cancelled', sessionId: original.id, inputVersion: original.input.version, lease: original.editor })
+    const entered = deferred<void>(), gate = deferred<void>()
+    storage.beforeCommit = async () => { storage.beforeCommit = null; entered.resolve(); await gate.promise }
+    const writer = workspace.beginEditing({ kind: 'session-opened', revision: workspace.getState().revision,
+      sessionId: kernelId<'session'>('typing-before-ack'), inputId: kernelId<'input'>('typing-before-ack'), viewId: kernelId<'view'>('view'),
+      target: { kind: 'filter', columnId: 'filter', queryVersion: 0 }, input: { kind: 'encoded', value: 'n' }, reads: [] })
+    await entered.promise
+    expect(workspace.getState().session).toBeNull()
+    const composing = writer.type({ kind: 'encoded', value: 'ni' }, 'composing')
+    const complete = writer.type({ kind: 'encoded', value: '你' }, 'idle')
+    expect(writer.read()).toEqual({ kind: 'encoded', value: '你' })
+    gate.resolve()
+    expect((await writer.result).kind).toBe('accepted')
+    await Promise.all([composing.completion, complete.completion])
+    expect(workspace.getState().session).toMatchObject({ editor: writer.lease, rawInput: { value: '你' }, composition: 'idle' })
+    await writer.type({ kind: 'encoded', value: '你好' }).completion
+    expect((await restore()).getState().session).toMatchObject({ rawInput: { value: '你好' }, composition: 'idle', editor: null })
+  })
+
+  it('retains both a rejected opening and its dependent typing without writing into the current session', async () => {
+    const { workspace, restore } = await setup()
+    const original = workspace.getState().session!
+    const writer = workspace.beginEditing({ kind: 'session-opened', revision: workspace.getState().revision - 1,
+      sessionId: kernelId<'session'>('rejected-opening'), inputId: kernelId<'input'>('rejected-opening'), viewId: kernelId<'view'>('view'),
+      target: { kind: 'filter', columnId: 'filter', queryVersion: 0 }, input: { kind: 'encoded', value: 'new' }, reads: [] })
+    const typed = writer.type({ kind: 'encoded', value: 'new text' })
+    expect((await writer.result).kind).toBe('rejected')
+    await typed.completion
+    expect(workspace.getState().session).toEqual(original)
+    expect(writer.read()).toEqual({ kind: 'encoded', value: 'new text' })
+    const reopened = await restore()
+    expect(reopened.getState().session?.rawInput).toEqual(original.rawInput)
+    expect(reopened.getIngress().pending).toEqual(workspace.getIngress().pending)
+    expect(reopened.getIngress().pending).toHaveLength(2)
+  })
+
   it('persists the complete IME predecessor chain and isolates late composition from a restored editor', async () => {
     const { workspace, storage, restore } = await setup(), lease = workspace.getState().session!.editor!
     const entered = deferred<void>(), gate = deferred<void>(), start = storage.writes.length
@@ -310,11 +349,17 @@ describe('Workspace ingress in durable roots', () => {
     const opening = workspace.dispatch({ kind: 'session-opened', revision: workspace.getState().revision, sessionId: kernelId<'session'>('later-editor'), inputId: kernelId<'input'>('later-input'),
       viewId: kernelId<'view'>('later-view'), target: { kind: 'filter', columnId: 'filter', queryVersion: 0 }, input: { kind: 'encoded', value: 'later input' }, reads: [] })
     gate.resolve(); await disposing
-    expect((await opening).kind).toBe('rejected')
+    expect((await opening).kind).toBe('accepted')
     expect(workspace.getIngress().pending.some(entry => entry.id === original.id)).toBe(false)
-    await workspace.refresh()
     const restored = await restore()
-    expect(restored.getIngress().pending).toContainEqual(expect.objectContaining({ payload: expect.objectContaining({ event: expect.objectContaining({ input: { kind: 'encoded', value: 'later input' } }) }) }))
+    expect(restored.getState().session).toMatchObject({
+      id: 'later-editor', rawInput: { kind: 'encoded', value: 'later input' },
+      target: { kind: 'filter', columnId: 'filter', queryVersion: 0 },
+    })
+    expect(restored.getState().inputs).toContainEqual(expect.objectContaining({
+      ref: { id: 'later-input', version: 0 }, input: { kind: 'encoded', value: 'later input' },
+      disposition: { kind: 'session', sessionId: 'later-editor' },
+    }))
     expect(restored.getIngress().receipts.find(receipt => receipt.id === original.id)?.disposition).toBe('returned')
   })
 

@@ -1,3 +1,4 @@
+import { observeResize } from './workspace-resize.js'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 export type WorkspaceMenuAction = Readonly<{ id: string; label: string; disabled: boolean; run(): void }>
@@ -19,10 +20,10 @@ export function WorkspaceContextMenu({ anchor, actions, label, close, isCurrent 
     }
     place()
     node.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus()
-    const observer = new ResizeObserver(place); observer.observe(node)
+    const stopResize = observeResize([node], place)
     window.addEventListener('resize', place)
     return () => {
-      observer.disconnect(); window.removeEventListener('resize', place)
+      stopResize(); window.removeEventListener('resize', place)
       if (node.contains(document.activeElement) && anchor.element.isConnected) anchor.element.focus()
     }
   }, [anchor])

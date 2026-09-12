@@ -25,6 +25,7 @@ for (const cancellation of ['none', 'button', 'escape', 'api'] as const) test(`r
   page.on('pageerror', error => errors.push(error.message))
   await mount(page, name)
   await holdConversion(page)
+  await page.getByRole('grid', { name: 'Photos A' }).getByRole('gridcell').click()
   await page.getByRole('button', { name: 'Edit value', exact: true }).click()
   await expect(page.getByLabel('Choose a file', { exact: true })).toBeEnabled()
   if (cancelled) await page.getByLabel('Choose a file', { exact: true }).setInputFiles({ name: 'photo.svg', mimeType: 'image/svg+xml', buffer: Buffer.from(body) })
@@ -59,6 +60,7 @@ for (const cancellation of ['none', 'button', 'escape', 'api'] as const) test(`r
   }
   await page.getByRole('button', { name: 'View B', exact: true }).click()
   await expect(page.getByRole('grid', { name: 'Photos B' }).getByRole('gridcell')).toHaveText('Upload B')
+  await page.getByRole('grid', { name: 'Photos B' }).getByRole('gridcell').click()
   await page.getByRole('button', { name: 'Edit value', exact: true }).click()
   await page.getByRole('textbox', { name: 'Photo', exact: true }).fill('B unfinished input')
   await page.evaluate(() => document.dispatchEvent(new Event('release-photo')))
@@ -99,6 +101,7 @@ for (const cancellation of ['none', 'button', 'escape', 'api'] as const) test(`r
 test('permission-blocked file result survives IndexedDB reopening and requires explicit application', async ({ page }) => {
   const name = `permission-upload-${crypto.randomUUID()}`
   await mount(page, name); await holdConversion(page)
+  await page.getByRole('grid', { name: 'Photos A' }).getByRole('gridcell').click()
   await page.getByRole('button', { name: 'Edit value', exact: true }).click()
   await page.getByLabel('Choose a file', { exact: true }).setInputFiles({ name: '原始照片.svg', mimeType: 'image/svg+xml', buffer: Buffer.from(body) })
   await expect(page.locator('html')).toHaveAttribute('data-conversion-started', 'yes')

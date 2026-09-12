@@ -9,6 +9,9 @@ export default defineConfig({
       'data-editor-table': fileURLToPath(new URL('./src/index.ts', import.meta.url)),
     },
   },
+  // Route and recovery fixtures import these entry points lazily. Prebundle
+  // them together so first use cannot reload an active editing session.
+  optimizeDeps: { include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-runtime'] },
   root: 'demo',
   server: { host: '127.0.0.1', port: 4178 },
 })

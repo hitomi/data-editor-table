@@ -124,6 +124,7 @@ export async function openIndexedDbRecovery(options: Readonly<{ databaseName: st
                 const existing = await request(outcomes.get(key)) as CheckpointResult | undefined
                 if (existing) { assertCheckpointResult(commit, existing); return existing }
                 let result: CheckpointResult
+                const writes: Promise<IDBValidKey>[] = []
                 if (!sameRecoveryValue(commit.parent, current.checkpoint) || !checkpointMatchesRoot(write, current.root)) {
                   result = { kind: 'not-stored', commit, issue: { code: 'checkpoint-storage', message: 'The checkpoint head or semantic root changed.' } }
                 } else {
@@ -133,11 +134,12 @@ export async function openIndexedDbRecovery(options: Readonly<{ databaseName: st
                     if (!previous) throw new Error('The replaced checkpoint head is missing.')
                     assertCheckpointReplacement(write, { commit: previous.commit, checkpoint: { metadata: previous.snapshot.metadata, sha256: previous.snapshot.sha256, contents: [] } })
                   }
-                  await request(tx.objectStore('checkpoints').put(stored, key))
-                  await request(tx.objectStore('heads').put({ ...current, checkpoint: commit.token } satisfies Head, workspace.id))
+                  writes.push(request(tx.objectStore('checkpoints').put(stored, key)))
+                  writes.push(request(tx.objectStore('heads').put({ ...current, checkpoint: commit.token } satisfies Head, workspace.id)))
                   result = { kind: 'stored', commit, head: commit.token }
                 }
-                await request(outcomes.put(result, key))
+                writes.push(request(outcomes.put(result, key)))
+                await Promise.all(writes)
                 return result
               })
             })
@@ -190,6 +192,7 @@ export async function openIndexedDbRecovery(options: Readonly<{ databaseName: st
               const existing = await request(outcomes.get(key)) as RecoveryCommitResult | undefined
               if (existing) { assertRecoveryResult(commit, existing); return existing }
               let result: RecoveryCommitResult
+              const writes: Promise<IDBValidKey>[] = []
               if (!sameRecoveryValue(commit.parent, current.root) || !sameRecoveryValue(record.checkpointParent, current.checkpoint)) result = negative(commit, 'The semantic or checkpoint parent changed; this candidate was not committed.')
               else {
                 if (current.checkpoint) {
@@ -198,15 +201,20 @@ export async function openIndexedDbRecovery(options: Readonly<{ databaseName: st
                   if (!stored) throw new Error('The checkpoint being consumed is missing.')
                   assertCheckpointConsumption(record, { commit: stored.commit, checkpoint: { metadata: stored.snapshot.metadata, sha256: stored.snapshot.sha256, contents: [] } })
                 }
+                // Enqueue the complete write set in one JS turn. If unload
+                // prevents a request's success callback from continuing, IDB
+                // may still commit requests already queued. Awaiting between
+                // these puts could publish a record without its root/receipt.
                 for (const entry of record.manifest.entries) {
-                  await request(tx.objectStore('resources').put(contents.get(entry.descriptor.id)!, resourceKey(workspace, entry.descriptor.id, entry.sha256)))
+                  writes.push(request(tx.objectStore('resources').put(contents.get(entry.descriptor.id)!, resourceKey(workspace, entry.descriptor.id, entry.sha256))))
                 }
-                await request(tx.objectStore('records').put(record, workspace.id))
+                writes.push(request(tx.objectStore('records').put(record, workspace.id)))
                 const root = recoveryRoot(commit)
-                await request(tx.objectStore('heads').put({ ...current, root, checkpoint: null } satisfies Head, workspace.id))
+                writes.push(request(tx.objectStore('heads').put({ ...current, root, checkpoint: null } satisfies Head, workspace.id)))
                 result = { kind: 'committed', commit, root }
               }
-              await request(outcomes.put(result, key))
+              writes.push(request(outcomes.put(result, key)))
+              await Promise.all(writes)
               return result
             })
           })

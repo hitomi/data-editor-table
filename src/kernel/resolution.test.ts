@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { KernelFixture } from '../../tests/kernel/fixtures.js'
+import { KernelFixture, permissiveSchema } from '../../tests/kernel/fixtures.js'
 import { SourceFixture } from '../../tests/kernel/source-fixture.js'
 import { kernelId, type EntityId } from './model.js'
 import { prepareResolution, type ResolutionChoice, type ResolutionRequest } from './resolution.js'
@@ -58,10 +58,142 @@ function redo(fixture: KernelFixture, accepted = true) {
 }
 
 describe('reviewed conflict resolutions', () => {
+  it.each(['use-authority', 'keep-local'] as const)('resolves one independently authored field through %s while another conflict remains', async kind => {
+    const initial = { a: { x: 0, y: 0, hidden: 7 } }
+    const fixture = new KernelFixture(initial, { ...permissiveSchema, fields: ['x', 'y'].map(id => ({ id: kernelId<'field'>(id), path: [id], readonly: false })) })
+    const source = new SourceFixture(fixture.state.workspace.scope, initial)
+    fixture.apply([fixture.write('a', { x: 1 })], 'row', 'x input')
+    const other = fixture.apply([fixture.write('a', { y: 2 })], 'row', 'y input')
+    source.external({ a: { x: 3, y: 4, hidden: 9 } }); await read(fixture, source)
+    const fieldRequest = (): ResolutionRequest => {
+      const row = review(fixture, { kind })
+      return { ...row, target: { kind: 'field', entityId: entity('a'), fieldId: kernelId<'field'>('x') },
+        issueIds: fixture.project().rows[0]!.issues.filter(issue => issue.comparison?.resources.some(resource => resource.kind === 'path' && resource.path[0] === 'x')).map(issue => issue.id) }
+    }
+    const prepared = prepare(fixture, fieldRequest())
+    expect(fixture.dispatch({ kind: 'prepared-resolution', prepared }).result.kind).toBe('accepted')
+    expect(fixture.project().rows[0]?.preview).toEqual({ x: kind === 'keep-local' ? 1 : 3, y: 2, hidden: 9 })
+    expect(fixture.project().rows[0]?.issues.some(issue => issue.intentIds?.includes(other.intents[0]!.id))).toBe(true)
+    expect(fixture.state.settlements.some(proof => proof.intentId === other.intents[0]!.id)).toBe(false)
+    expect(fixture.project().changes).toEqual([])
+    undo(fixture)
+    expect(fixture.project().rows[0]?.preview).toEqual({ x: 1, y: 2, hidden: 9 })
+    redo(fixture)
+    expect(fixture.project().rows[0]?.preview).toEqual({ x: kind === 'keep-local' ? 1 : 3, y: 2, hidden: 9 })
+    resolve(fixture, { kind: 'keep-local' })
+    await save(fixture, source)
+    expect(source.snapshot().rows[0]?.document).toEqual({ x: kind === 'keep-local' ? 1 : 3, y: 2, hidden: 9 })
+  })
+
+  it.each(['use-authority', 'keep-local'] as const)('preserves an unreviewed conflict inside the same write group through %s and history', async kind => {
+    const initial = { a: { x: 0, y: 0, hidden: 7 } }
+    const fixture = new KernelFixture(initial, { ...permissiveSchema, fields: ['x', 'y'].map(id => ({ id: kernelId<'field'>(id), path: [id], readonly: false })) })
+    const source = new SourceFixture(fixture.state.workspace.scope, initial)
+    fixture.apply([fixture.write('a', { x: 1, y: 2 })], 'row', 'both original fields')
+    source.external({ a: { x: 3, y: 4, hidden: 9 } }); await read(fixture, source)
+    const prepared = prepare(fixture, { ...review(fixture, { kind }), target: { kind: 'field', entityId: entity('a'), fieldId: kernelId<'field'>('x') } })
+    expect(fixture.dispatch({ kind: 'prepared-resolution', prepared }).result.kind).toBe('accepted')
+    const verifyRemaining = () => {
+      expect(fixture.project().rows[0]?.preview).toEqual({ x: kind === 'keep-local' ? 1 : 3, y: 2, hidden: 9 })
+      const conflict = fixture.project().rows[0]?.issues.find(issue => issue.code === 'write-conflict')?.comparison
+      expect(conflict).toBeDefined()
+      const index = conflict!.resources.findIndex(resource => resource.kind === 'path' && resource.path[0] === 'y')
+      expect(conflict!.base[index]).toEqual({ kind: 'value', value: 0 })
+      expect(conflict!.remote[index]).toEqual({ kind: 'value', value: 4 })
+      expect(fixture.project().changes).toEqual([])
+    }
+    verifyRemaining()
+    for (let cycle = 0; cycle < 2; cycle++) {
+      undo(fixture)
+      expect(fixture.project().rows[0]?.preview).toEqual({ x: 1, y: 2, hidden: 9 })
+      redo(fixture)
+      verifyRemaining()
+    }
+    resolve(fixture, { kind: 'keep-local' })
+    await save(fixture, source)
+    expect(source.snapshot().rows[0]?.document).toEqual({ x: kind === 'keep-local' ? 1 : 3, y: 2, hidden: 9 })
+  })
+
+  it('rejects forged field comparisons and preserves captured business reads and revoked permissions', () => {
+    for (const blocked of ['forged', 'semantic-read', 'policy'] as const) {
+      const fixture = new KernelFixture({ a: { x: 0, y: 0 } }, { ...permissiveSchema,
+        fields: [{ id: kernelId<'field'>('x'), path: ['x'], readonly: false }] })
+      fixture.apply([fixture.write('a', { x: 1, y: 2 }, blocked === 'semantic-read' ? {
+        reads: [{ role: 'semantic-read', resource: { kind: 'path', entityId: entity('a'), path: ['y'] } }],
+      } : {})], 'row', 'complete input')
+      fixture.observe({ a: { x: 3, y: 4 } }, 1)
+      if (blocked === 'policy') {
+        const policy = fixture.state.policy
+        fixture.dispatch({ kind: 'policy-observed', policy: { ...policy, version: kernelId<'policy-version'>('revoked'), defaultEntity: { ...policy.defaultEntity, write: false } } })
+      }
+      const request: ResolutionRequest = { ...review(fixture, { kind: 'keep-local' }),
+        target: { kind: 'field', entityId: entity('a'), fieldId: kernelId<'field'>('x') },
+        issueIds: fixture.project().rows[0]!.issues.filter(issue => issue.comparison?.resources.some(resource => resource.kind === 'path' && resource.path[0] === 'x')).map(issue => issue.id) }
+      const before = fixture.state
+      if (blocked === 'forged') {
+        const prepared = prepare(fixture, request), replacement = prepared.replacement!
+        const intents = replacement.intents.map(intent => {
+          if (intent.operation.kind !== 'write') throw new Error('Expected field write')
+          return { ...intent, operation: { ...intent.operation, groups: intent.operation.groups.map(group => ({ ...group,
+            expectations: group.expectations.map(expected => expected.resource.kind === 'path' && expected.resource.path[0] === 'y'
+              ? { ...expected, expected: { kind: 'value' as const, value: 4 } } : expected),
+          })) } }
+        })
+        expect(fixture.dispatch({ kind: 'prepared-resolution', prepared: { ...prepared, replacement: { ...replacement, intents } } }).result.kind).toBe('rejected')
+      } else expect(() => prepare(fixture, request)).toThrow()
+      expect(fixture.state).toBe(before)
+      expect(fixture.state.inputs[0]?.disposition.kind).toBe('intents')
+      expect(fixture.project().changes).toEqual([])
+    }
+  })
+
+  it.each(['use-authority', 'keep-local'] as const)('preserves a saved sibling through field %s undo and redo', async kind => {
+    const initial = { a: { x: 0, y: 0 } }, fixture = new KernelFixture(initial, { ...permissiveSchema,
+      fields: [{ id: kernelId<'field'>('x'), path: ['x'], readonly: false }] })
+    const source = new SourceFixture(fixture.state.workspace.scope, initial)
+    fixture.apply([fixture.write('a', { x: 1, y: 2 })])
+    fixture.apply([fixture.write('a', { x: 2, y: 5 })])
+    source.external({ a: { x: 3, y: 0 } }); await read(fixture, source)
+    const prepared = prepare(fixture, { ...review(fixture, { kind }), target: { kind: 'field', entityId: entity('a'), fieldId: kernelId<'field'>('x') } })
+    expect(fixture.dispatch({ kind: 'prepared-resolution', prepared }).result.kind).toBe('accepted')
+    await save(fixture, source)
+    const saved = { x: kind === 'keep-local' ? 2 : 3, y: 5 }
+    expect(source.snapshot().rows[0]?.document).toEqual(saved)
+    undo(fixture)
+    expect(fixture.project().rows[0]?.preview).toEqual({ x: 2, y: 5 })
+    redo(fixture)
+    expect(fixture.project().rows[0]?.preview).toEqual(saved)
+    expect(fixture.project().rows[0]?.issues).toEqual([])
+    expect(fixture.project().changes).toEqual([])
+    expect(source.writes).toBe(1)
+  })
+
+  it('preserves a restored contribution and its input while an exact submission owns it', async () => {
+    const initial = { a: { x: 0 } }, fixture = new KernelFixture(initial), source = new SourceFixture(fixture.state.workspace.scope, initial)
+    fixture.apply([fixture.write('a', { x: 1 })], 'row', 'original one')
+    source.external({ a: { x: 3 } }); await read(fixture, source)
+    resolve(fixture, { kind: 'use-authority' })
+    source.external(initial); await read(fixture, source)
+    undo(fixture)
+    expect(fixture.project().rows[0]?.issues).toEqual([])
+    const request = fixture.freeze().submission, before = fixture.state
+    expect(() => redo(fixture)).toThrow(/submission/i)
+    expect(fixture.state).toBe(before)
+    expect(fixture.state.recoveries.at(-1)?.state).toBe('available')
+    const result = await source.submit(request)
+    if (result.kind !== 'applied') throw new Error('Expected exact application')
+    expect(fixture.dispatch({ kind: 'exact-receipt', receipt: result.receipt }).result.kind).toBe('accepted')
+    await read(fixture, source)
+    expect(source.snapshot().rows[0]?.document).toEqual({ x: 1 })
+    redo(fixture)
+    expect(fixture.state.recoveries.at(-1)?.state).toBe('discarded')
+  })
+
   it('does not discard recovered input when current policy rejects replaying the resolution', async () => {
     const initial = { a: { x: 0 } }, fixture = new KernelFixture(initial), source = new SourceFixture(fixture.state.workspace.scope, initial)
     fixture.apply([fixture.write('a', { x: 1 })]); source.external({ a: { x: 3 } }); await read(fixture, source)
-    resolve(fixture, { kind: 'keep-local' }); await save(fixture, source); undo(fixture); await save(fixture, source)
+    resolve(fixture, { kind: 'keep-local' }); await save(fixture, source); undo(fixture)
+    expect(fixture.project().rows[0]?.issues.length).toBeGreaterThan(0)
     const policy = fixture.state.policy
     fixture.dispatch({ kind: 'policy-observed', policy: { ...policy, version: kernelId<'policy-version'>('no-replay'), defaultEntity: { ...policy.defaultEntity, write: false } } })
     const before = fixture.state
@@ -83,11 +215,12 @@ describe('reviewed conflict resolutions', () => {
       else if (result.kind === 'not-applied') fixture.dispatch({ kind: 'not-applied', proof: result.proof })
       else throw new Error('Expected definitive result')
       await read(fixture, source)
-      expect(fixture.project().rows[0]?.preview).toEqual({ x: appliedOutcome ? 3 : 4 })
+      expect(fixture.project().rows[0]?.preview).toEqual({ x: 1 })
+      expect(fixture.project().rows[0]?.issues.length).toBeGreaterThan(0)
       expect(fixture.state.recoveries[0]?.state).toBe('available')
       expect(fixture.state.inputs.find(input => input.ref.id === fixture.state.recoveries[0]!.inputs[0]!.id)?.disposition.kind).toBe('recovery')
-      if (appliedOutcome) await save(fixture, source)
-      else expect(fixture.project().changes).toEqual([])
+      expect(fixture.project().changes).toEqual([])
+      expect(source.snapshot().rows[0]?.document).toEqual({ x: appliedOutcome ? 1 : 4 })
     }
   })
 
@@ -101,7 +234,8 @@ describe('reviewed conflict resolutions', () => {
     const recovery = fixture.state.recoveries.at(-1)!
     expect(recovery.state).toBe('available')
     expect(fixture.state.inputs.find(input => input.ref.id === recovery.inputs[0]!.id)).toMatchObject({ input: { kind: 'encoded', value: 'original text' }, disposition: { kind: 'recovery', recoveryId: recovery.id } })
-    expect(fixture.project().rows[0]?.preview).toEqual({ x: 3 })
+    expect(fixture.project().rows[0]?.preview).toEqual({ x: 1 })
+    expect(fixture.project().rows[0]?.issues.length).toBeGreaterThan(0)
     expect(fixture.state.settlements.find(entry => entry.intentId === original.intents[0]!.id)).toBe(proof)
     redo(fixture)
     expect(fixture.state.recoveries[0]?.state).toBe('discarded')
@@ -118,9 +252,11 @@ describe('reviewed conflict resolutions', () => {
     resolve(fixture, { kind: 'keep-local' }); await save(fixture, source)
     undo(fixture)
     expect(fixture.state.recoveries.at(-1)?.state).toBe('available')
-    expect(fixture.project().rows[0]?.preview).toEqual({ x: 3 })
-    await save(fixture, source)
-    redo(fixture); await save(fixture, source)
+    expect(fixture.project().rows[0]?.preview).toEqual({ x: 1 })
+    expect(fixture.project().rows[0]?.issues.length).toBeGreaterThan(0)
+    expect(fixture.project().changes).toEqual([])
+    redo(fixture)
+    expect(fixture.project().rows[0]?.issues).toEqual([])
     expect(fixture.project().rows[0]?.preview).toEqual({ x: 1 })
     expect(fixture.state.recoveries.every(entry => entry.state === 'discarded')).toBe(true)
   })
@@ -182,6 +318,23 @@ describe('reviewed conflict resolutions', () => {
     expect(fixture.state.entities.find(binding => binding.entityId === 'recreated')?.kind).toBe('bound')
   })
 
+  it.each([false, true])('reopens a deleted-row conflict when undoing recreation (saved: %s)', async committed => {
+    const initial = { a: { x: 0, hidden: 7 } }, fixture = new KernelFixture(initial), source = new SourceFixture(fixture.state.workspace.scope, initial)
+    fixture.apply([fixture.write('a', { x: 1 })], 'row', 'original one')
+    source.external({}); await read(fixture, source)
+    resolve(fixture, { kind: 'recreate', entityId: entity('recreated') })
+    if (committed) await save(fixture, source)
+    undo(fixture)
+    const original = fixture.project().rows.find(row => row.entityId === 'a')!
+    expect(original.issues.length).toBeGreaterThan(0)
+    expect(original.existence).toBe('remote-deleted')
+    expect(fixture.state.recoveries.at(-1)?.state).toBe('available')
+    redo(fixture)
+    expect(fixture.project().rows.find(row => row.entityId === 'a')?.issues ?? []).toEqual([])
+    await save(fixture, source)
+    expect(source.snapshot().rows.map(row => row.document)).toEqual([{ x: 1, hidden: 7 }])
+  })
+
   it('adopts an explicitly selected existing lifetime and fully validates read-only hidden fields', async () => {
     const initial = { a: { x: 0, hidden: 7 } }, fixture = new KernelFixture(initial), source = new SourceFixture(fixture.state.workspace.scope, initial)
     fixture.apply([{ kind: 'create', entityId: entity('local'), proposedKey: 'a', document: { x: 1 } }])
@@ -195,6 +348,40 @@ describe('reviewed conflict resolutions', () => {
     expect(request.items.map(item => item.kind)).toEqual(['update'])
     expect(source.rows.size).toBe(1)
     expect(fixture.state.entities.find(binding => binding.entityId === 'local')?.kind).toBe('local')
+  })
+
+  it.each([false, true])('restores a creation collision through repeated adoption undo and redo (saved: %s)', async committed => {
+    const initial = { a: { x: 0, hidden: 7 } }, fixture = new KernelFixture(initial), source = new SourceFixture(fixture.state.workspace.scope, initial)
+    fixture.apply([{ kind: 'create', entityId: entity('local'), proposedKey: 'a', document: { x: 1, hidden: 7 } }], 'row', 'created row')
+    resolve(fixture, { kind: 'adopt-existing', entityId: entity('a'), document: { x: 1, hidden: 7 } }, entity('local'))
+    if (committed) await save(fixture, source)
+    for (let cycle = 0; cycle < 2; cycle++) {
+      undo(fixture)
+      const collision = fixture.project().rows.find(row => row.entityId === 'local')!
+      expect(collision.preview).toEqual({ x: 1, hidden: 7 })
+      expect(collision.issues.some(issue => issue.code === 'create-key-collision')).toBe(true)
+      redo(fixture)
+      expect(fixture.project().rows.flatMap(row => row.issues)).toEqual([])
+    }
+    if (fixture.project().changes.length) await save(fixture, source)
+    expect(source.snapshot().rows.map(row => row.document)).toEqual([{ x: 1, hidden: 7 }])
+  })
+
+  it('restores an order conflict without losing remotely inserted members and redoes the reviewed decision', async () => {
+    const initial = { a: { x: 0 }, b: { x: 0 } }, fixture = new KernelFixture(initial), source = new SourceFixture(fixture.state.workspace.scope, initial)
+    fixture.apply([{ kind: 'order', desired: [entity('b'), entity('a')] }])
+    source.external({ a: { x: 0 }, b: { x: 0 }, c: { x: 0 } }); await read(fixture, source)
+    const authority = fixture.project().order.authority
+    expect(fixture.project().order.issues.length).toBeGreaterThan(0)
+    resolve(fixture, { kind: 'use-authority' }, 'order')
+    expect(fixture.project().order.preview).toEqual(authority)
+    undo(fixture)
+    expect(fixture.project().order.preview).toEqual([entity('b'), entity('a'), authority[2]])
+    expect(fixture.project().order.issues.length).toBeGreaterThan(0)
+    redo(fixture)
+    expect(fixture.project().order.preview).toEqual(authority)
+    expect(fixture.project().order.issues).toEqual([])
+    expect(source.writes).toBe(0)
   })
 
   it('requires a complete reviewed membership for an order merge after remote insertion', async () => {

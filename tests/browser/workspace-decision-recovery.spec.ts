@@ -19,6 +19,7 @@ for (const cancel of [false, true]) test(`decision undo retains its complete bun
     }, { name, restore })
   }
   await mount(false)
+  await page.getByRole('grid', { name: 'Workspace rows' }).getByRole('gridcell', { name: 'Alpha', exact: true }).click()
   for (const text of ['first original', 'second original']) {
     await page.getByRole('button', { name: 'Edit value', exact: true }).click()
     await page.getByRole('textbox', { name: 'Edit value', exact: true }).fill(text)
@@ -42,6 +43,8 @@ for (const cancel of [false, true]) test(`decision undo retains its complete bun
   await expect(panel.getByRole('textbox', { name: 'Original input 2', exact: true })).toHaveValue('second original')
   await mount(true)
   await panel.getByLabel('Starting text').selectOption({ label: 'Original input 2' })
+  await expect(panel.getByRole('button', { name: 'Review recovery target', exact: true })).toBeDisabled()
+  await page.getByRole('gridcell').first().click()
   await panel.getByRole('button', { name: 'Review recovery target', exact: true }).click()
   await page.getByRole('gridcell', { name: 'Beta', exact: true }).click()
   await expect(panel.getByRole('button', { name: 'Open reviewed recovery edit', exact: true })).toBeDisabled()
@@ -61,6 +64,7 @@ for (const cancel of [false, true]) test(`decision undo retains its complete bun
   await expect(panel.getByRole('textbox')).toHaveCount(2)
   await page.getByRole('button', { name: cancel ? 'Discard input' : 'Apply value', exact: true }).click()
   await expect(panel).toHaveCount(0)
+  await expect(page.getByRole('gridcell').nth(1)).toHaveAttribute('aria-selected', 'true')
   if (!cancel) {
     await page.getByRole('button', { name: 'Save changes', exact: true }).click()
     await expect(page.getByRole('button', { name: 'Refresh rows', exact: true })).toBeEnabled()
@@ -68,7 +72,8 @@ for (const cancel of [false, true]) test(`decision undo retains its complete bun
   }
   await mount(true)
   await expect(panel).toHaveCount(0)
-  await expect(page.getByRole('gridcell')).toHaveText(['Server', cancel ? 'Beta' : 'second original'])
+  await expect(page.getByRole('gridcell')).toHaveText(['second original', cancel ? 'Beta' : 'second original'])
+  expect(await page.evaluate(async () => (await import('/src/test-fixtures/durable-workspace.ts')).workspaceForReactFixture().getProjection().rows[0]!.issues.length)).toBeGreaterThan(0)
   expect(source.writes).toBe(cancel ? 0 : 1)
   expect(source.snapshot().rows.map(row => row.document)).toEqual([{ value: 'Server', hidden: 9 }, { value: cancel ? 'Beta' : 'second original', hidden: 8 }])
   const dispositions = await page.evaluate(async () => {

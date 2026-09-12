@@ -1,9 +1,21 @@
 import { expect, test } from 'vitest'
-import { bindMatrix, decodeMatrix, encodeMatrix, parseMatrixValues } from './clipboard.js'
+import { bindMatrix, clipboardFits, resolveOperationLimits, decodeMatrix, encodeMatrix, parseMatrixValues } from './clipboard.js'
 import { kernelId } from './kernel/model.js'
 import { createNumberCodec, createStringCodec } from './value-codecs.js'
 
 const a = kernelId<'entity'>('a'), b = kernelId<'entity'>('b'), x = kernelId<'field'>('x'), y = kernelId<'field'>('y')
+
+test('clipboard limits count UTF-8 bytes and reject invalid configuration', () => {
+  expect(resolveOperationLimits()).toEqual({ maxClipboardBytes: 2_000_000, maxMutations: 10_000 })
+  expect(clipboardFits('汉字', 6)).toBe(true)
+  expect(clipboardFits('汉字', 5)).toBe(false)
+  expect(clipboardFits('😀', 3)).toBe(false)
+  expect(clipboardFits('😀', 4)).toBe(true)
+  for (const value of [0, -1, 1.5, Infinity, NaN]) {
+    expect(() => resolveOperationLimits({ maxClipboardBytes: value })).toThrow('positive safe integer')
+    expect(() => resolveOperationLimits({ maxMutations: value })).toThrow('positive safe integer')
+  }
+})
 
 test('all cells must parse before a matrix exposes any write values', () => {
   const layout = { rows: [a, b], columns: [{ columnId: 'X', fieldId: x }, { columnId: 'Y', fieldId: y }] }
@@ -54,4 +66,34 @@ test('matrix input recognition requires an explicit version and valid identity a
   expect(readMatrixInput({ kind: 'encoded', value: { ...valid, layout: { ...valid.layout, rows: [a, a] } } })).toBeNull()
   expect(readMatrixInput({ kind: 'encoded', value: { ...valid, layout: { rows: [], columns: [] } } })).toBeNull()
   expect(readMatrixInput({ kind: 'encoded', value: 'ordinary text' })).toBeNull()
+})
+
+test('ragged paste binds only its captured row widths and preserves explicit empty cells', async () => {
+  const { readMatrixInput } = await import('./clipboard.js')
+  const layout = { rows: [a, b], columns: [{ columnId: 'X', fieldId: x }, { columnId: 'Y', fieldId: y }], rowWidths: [2, 1] }
+  const input = { format: 'workspace-matrix:3', text: 'first\t\nsecond', layout }
+  expect(readMatrixInput({ kind: 'encoded', value: input })).toEqual(input)
+  expect(bindMatrix(input.text, layout)).toEqual([
+    { field: { entityId: a, fieldId: x }, text: 'first' }, { field: { entityId: a, fieldId: y }, text: '' },
+    { field: { entityId: b, fieldId: x }, text: 'second' },
+  ])
+  for (const text of ['first\t\nsecond\tadded', 'first\nsecond', 'first\t\nsecond\nextra']) expect(() => bindMatrix(text, layout)).toThrow('dimensions')
+  expect(readMatrixInput({ kind: 'encoded', value: { ...input, format: 'workspace-matrix:1' } })).toBeNull()
+  expect(readMatrixInput({ kind: 'encoded', value: { ...input, layout: { ...layout, rowWidths: [2, 0] } } })).toBeNull()
+})
+
+test('sparse matrix holes never parse or write unselected fields, including alias columns', async () => {
+  const { readMatrixInput } = await import('./clipboard.js')
+  const layout = { rows: [a, b], columns: [{ columnId: 'x', fieldId: x }, { columnId: 'x-copy', fieldId: x }, { columnId: 'y', fieldId: y }],
+    members: [{ entityId: a, columnId: 'x' }, { entityId: b, columnId: 'y' }] }
+  const input = { format: 'workspace-matrix:2', text: '1\tinvalid-alias\tignored\ninvalid-number\tignored\tkept', layout }
+  expect(readMatrixInput({ kind: 'encoded', value: input })).toEqual(input)
+  expect(parseMatrixValues(input.text, layout, new Map([[x, createNumberCodec({ invalid: 'Invalid number' })], [y, createStringCodec({ invalid: 'Invalid text' })]]))).toEqual({ kind: 'valid', values: [
+    { field: { entityId: a, fieldId: x }, value: { kind: 'value', value: 1 } },
+    { field: { entityId: b, fieldId: y }, value: { kind: 'value', value: 'kept' } },
+  ] })
+  expect(readMatrixInput({ kind: 'encoded', value: { ...input, format: 'workspace-matrix:1' } })).toBeNull()
+  const outside = { ...layout, members: [{ entityId: a, columnId: 'missing' }] }
+  expect(() => bindMatrix(input.text, outside)).toThrow('captured axes')
+  expect(readMatrixInput({ kind: 'encoded', value: { ...input, layout: outside } })).toBeNull()
 })

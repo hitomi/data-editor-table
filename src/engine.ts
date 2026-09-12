@@ -23,3 +23,5 @@ export type { SaveScheduleOptions } from './kernel/save-schedule.js'
 export type { SubmissionRef } from './kernel/persistence.js'
 export * from './value-codecs.js'
 export * from './clipboard.js'
+
+export * from './filter-codecs.js'

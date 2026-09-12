@@ -14,7 +14,7 @@ const policy = { version: kernelId<'policy-version'>('policy'), create: true, or
 let workspace: Workspace
 let checkpointSession: IndexedDbRecoverySession
 let rejectNextStorageWrite = false
-let loseSemanticAcknowledgement = false
+let loseSemanticAcknowledgement: boolean | string = false
 let holdSemanticWrite: Readonly<{ entered: () => void; released: Promise<void> }> | null = null
 let loseCheckpointAcknowledgement = false, checkpointWrites = 0, checkpointLookups = 0
 const fresh = () => crypto.randomUUID()
@@ -51,7 +51,11 @@ export async function startDurableWorkspace(databaseName: string, restore: boole
     }
     if (rejectNextStorageWrite) { rejectNextStorageWrite = false; return session.lookup(write.record.commit) }
     const result = await session.commit(write)
-    if (loseSemanticAcknowledgement) { loseSemanticAcknowledgement = false; throw new Error('Semantic acknowledgement lost') }
+    const event = write.record.event
+    if (loseSemanticAcknowledgement === true || typeof loseSemanticAcknowledgement === 'string' && event.kind === 'session-input'
+      && event.composition === 'idle' && event.input.kind === 'encoded' && event.input.value === loseSemanticAcknowledgement) {
+      loseSemanticAcknowledgement = false; throw new Error('Semantic acknowledgement lost')
+    }
     return result
   }, checkpoints: { ...session.checkpoints,
     commit: async (write: Parameters<typeof session.checkpoints.commit>[0]) => {
@@ -221,7 +225,27 @@ export function workspaceDiagnostics() {
     tasks: workspace.getState().tasks.map(task => ({ id: task.id, kind: task.kind, outcome: task.execution?.outcome?.kind })), sessionInput: workspace.getState().session?.rawInput }
 }
 export function workspaceForReactFixture() { return workspace }
-export function loseNextWorkspaceAcknowledgement() { loseSemanticAcknowledgement = true }
+
+export async function applyCompoundFieldEdit() {
+  const entityId = workspace.getProjection().rows[0]!.entityId, ref = { id: kernelId<'input'>(fresh()), version: 0 }
+  const prepared = prepareRowAction(workspace.getState(), {
+    action: { id: kernelId<'action'>(fresh()), applicationId: kernelId<'application'>(fresh()), label: 'Compound edit', saveAtomicity: 'row' }, cause: 'user',
+    inputs: [{ ref, input: { kind: 'encoded', value: 'Local and sibling 2' } }],
+    commands: [{ id: kernelId<'intent'>(fresh()), inputs: [ref], dependencies: [], command: { kind: 'write', entityId,
+      groups: [{ id: kernelId<'write-group'>(fresh()), comparison: 'paths', reads: [], writes: [{ kind: 'set', path: ['value'], value: 'Local' }, { kind: 'set', path: ['sibling'], value: 2 }] }] } }],
+  }, schema)
+  const result = await workspace.dispatch({ kind: 'prepared-action', prepared })
+  if (result.kind !== 'accepted') throw new Error(JSON.stringify(result))
+}
+export function loseNextWorkspaceAcknowledgement(exactIdleInput?: string) { loseSemanticAcknowledgement = exactIdleInput ?? true }
+let semanticWriteHeld = false
+let releaseHeldSemanticWrite: (() => void) | null = null
+export function holdNextWorkspaceWrite() {
+  semanticWriteHeld = false
+  holdSemanticWrite = { entered: () => { semanticWriteHeld = true }, released: new Promise<void>(resolve => { releaseHeldSemanticWrite = resolve }) }
+}
+export function workspaceWriteIsHeld() { return semanticWriteHeld }
+export function releaseWorkspaceWrite() { releaseHeldSemanticWrite?.(); releaseHeldSemanticWrite = null }
 export async function reconcileWorkspaceInput() { return workspace.reconcileStorage() }
 
 export async function closeDurableWorkspace() {

@@ -37,6 +37,10 @@ function openProducts() {
     try { workspace = await Workspace.openDurable({ scope, schema, policy, source, session, restore: (await session.load()) !== null, recovery: 'manual' }) }
     catch (error) { await session.release(); throw error }
     await workspace.refresh()
+    // Keep a recovered owner accessible even if retained work temporarily
+    // blocks configuration. Its recovery controls must remain reachable.
+    if (workspace.getState().schedule.mode !== 'debounced' || workspace.getState().schedule.debounceMs !== 250)
+      await workspace.setSaveSchedule({ mode: 'debounced', debounceMs: 250 })
     return workspace
   })().catch(error => { opening = null; throw error })
   return opening
@@ -46,6 +50,7 @@ const integration = `const workspace = await Workspace.openDurable({
   restore: true, recovery: 'manual',
 })
 await workspace.refresh()
+await workspace.setSaveSchedule({ mode: 'debounced', debounceMs: 250 })
 
 <DataGrid workspace={workspace} viewId={viewId}
   caption="Products" columns={columns} editors={editors} />`
@@ -61,7 +66,7 @@ export function QuickStartPage() {
   }, [attempt])
   return <main className="quick-start-page">
     <header className="quick-start-header"><div><p className="demo-eyebrow">Quick start</p><h1>Products workspace</h1>
-      <p>Edit products and save changes. This example stores its data in this browser.</p></div></header>
+      <p>Edit products; changes save automatically after a pause. This example stores its data in this browser.</p></div></header>
     <section className="quick-start-workspace"><div className="quick-start-grid-panel">
       {workspace ? <DataGrid workspace={workspace} viewId={kernelId<'view'>('quick-start')} columns={columns} editors={editors} caption="Quick-start products" />
         : failed ? <WorkspaceOpenError databaseName="quick-start-workspace-v1" message="Could not open products. Existing browser data has been retained." retryLabel="Retry opening products" retry={() => { setFailed(false); setAttempt(value => value + 1) }} />

@@ -30,6 +30,7 @@ test('unassigned stored bytes can be downloaded after reload and explicitly rele
   const [download] = await Promise.all([page.waitForEvent('download'), panel.getByRole('link', { name: 'Download original.txt', exact: true }).click()])
   expect(await readFile((await download.path())!, 'utf8')).toBe(bytes)
   await panel.getByRole('checkbox').check()
+  await page.getByRole('grid', { name: 'Workspace rows' }).getByRole('gridcell').click()
   await page.getByRole('button', { name: 'Edit value', exact: true }).click()
   await expect(page.getByRole('textbox', { name: 'Edit value', exact: true })).toBeVisible()
   await expect(remove).toBeDisabled()

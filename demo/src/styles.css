@@ -196,3 +196,7 @@ button, input, select { font: inherit; }
 .demo-example-page p { margin: 0; line-height: 1.5; }
 .demo-example-page > header { display: grid; gap: 12px; }
 .demo-row-actions button[aria-pressed='true'] { background: #e8efff; border-color: #2563eb; color: #1d4ed8; }
+
+.demo-transfer-row-controls { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 400; }
+.demo-transfer-row-controls input { margin: 0; }
+.demo-transfer-row-controls button { padding: 2px 6px; }

@@ -99,8 +99,6 @@ test('copied quoted text passes through retained paste, authoritative save and r
     event.clipboardData!.setData('text/plain', text)
     cell.dispatchEvent(event)
   }, text)
-  await expect(page.getByRole('textbox', { name: 'Edit value', exact: true })).toHaveValue(text)
-  await page.getByRole('button', { name: 'Apply value', exact: true }).click()
   await expect(cells.last()).toHaveText(value)
   await page.getByRole('button', { name: 'Save changes', exact: true }).click()
   await expect.poll(() => source.writes).toBe(1)

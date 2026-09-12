@@ -1,3 +1,4 @@
+import type { ViewId } from './model.js'
 import { createWorkspaceCheckpoint, validateWorkspaceCheckpoint, type WorkspaceCheckpoint } from './checkpoint.js'
 import type { IngressCheckpoint } from './ingress-checkpoint.js'
 import { assertReviewedDisposition, type IngressDispositionEvent } from './ingress-disposition.js'
@@ -18,7 +19,7 @@ import { prepareHistoryCommand } from './history-command.js'
 import { projectCapabilities, type BlockedCapability, type SemanticCapabilities } from './capabilities.js'
 import { reduceKernel, type CommandResult, type KernelEvent, type KernelTransition, type TransitionEffect } from './transition.js'
 import { prepareResolution, type ResolutionRequest } from './resolution.js'
-import type { SessionEvent } from './session.js'
+import { captureSessionOpeningContext, type SessionEvent } from './session.js'
 import { projectView, type ViewEvent } from './view.js'
 import type { TaskCommand, TaskEffect } from './task.js'
 import { ResourceStore } from './resource-store.js'
@@ -466,7 +467,17 @@ export class Workspace {
     if (this.#projection?.state !== this.#state) this.#projection = { state: this.#state, value: projectKernel(this.#state, this.#schema) }
     return this.#projection.value
   }
-  getView() {
+  #namedViews = new Map<ViewId, Readonly<{ state: KernelState; value: ReturnType<typeof projectView> }>>()
+  getView(viewId?: ViewId) {
+    if (viewId !== undefined) {
+      if (this.#namedViews.size && this.#namedViews.values().next().value!.state !== this.#state) this.#namedViews.clear()
+      let cached = this.#namedViews.get(viewId)
+      if (!cached) {
+        cached = { state: this.#state, value: projectView(this.#state, this.#schema, this.getProjection(), viewId) }
+        this.#namedViews.set(viewId, cached)
+      }
+      return cached.value
+    }
     if (this.#view?.state !== this.#state) this.#view = { state: this.#state, value: projectView(this.#state, this.#schema, this.getProjection()) }
     return this.#view.value
   }
@@ -495,6 +506,31 @@ export class Workspace {
   }
   getInputProjection(lease: EditorLease) { return this.#ingress.inputProjection(lease) }
   enqueueInput(envelope: InputEnvelope) { return this.#ingress.input(envelope) }
+  /** Retain keystrokes while durable session admission is still awaiting its
+   * receipt. The producer never needs to predict a lease or buffer business input. */
+  beginEditing(raw: Extract<SessionEvent, { kind: 'session-opened' }>) {
+    const command = ownEncodedValue(raw) as unknown as typeof raw
+    const lease: EditorLease = Object.freeze({ sessionId: command.sessionId, viewId: command.viewId, generation: this.#state.editorGeneration + 1 })
+    const result = this.dispatch(command)
+    let sequence = 0, previous: IngressId | null = null
+    return Object.freeze({
+      sessionId: command.sessionId, target: command.target, lease, result,
+      read: (): OwnedInput => {
+        const projected = this.getInputProjection(lease)
+        if (projected) return projected.input
+        const pending = this.getIngress().pending.filter(entry => entry.payload.kind === 'input' && entry.payload.envelope.lease.sessionId === command.sessionId).at(-1)
+        return pending?.payload.kind === 'input' ? pending.payload.envelope.input : command.input
+      },
+      type: (input: OwnedInput, composition: InputEnvelope['composition'] = 'idle') => {
+        if (this.#state.session?.editor?.sessionId === lease.sessionId) return this.typeInput(lease, input, composition)
+        const ingressId = kernelId<'ingress'>(id())
+        const envelope: InputEnvelope = { ingressId, lease, inputSequence: ++sequence,
+          predecessor: previous ? { kind: 'ingress', id: previous } : { kind: 'published', inputVersion: 0 }, input, composition }
+        previous = ingressId
+        return this.enqueueInput(envelope)
+      },
+    })
+  }
   typeInput(lease: EditorLease, input: OwnedInput, composition: InputEnvelope['composition'] = 'idle') {
     return this.enqueueInput(this.#ingress.envelope(kernelId<'ingress'>(id()), lease, input, composition))
   }
@@ -665,9 +701,13 @@ export class Workspace {
       if (owned.kind !== 'save-schedule-configured' && owned.kind !== 'prepared-action' && owned.kind !== 'prepared-undo' && owned.kind !== 'prepared-redo' && owned.kind !== 'prepared-resolution' && owned.kind !== 'policy-observed'
         && owned.kind !== 'session-opened' && owned.kind !== 'session-attached' && owned.kind !== 'session-detached' && owned.kind !== 'session-input'
         && owned.kind !== 'session-reconfirmed' && owned.kind !== 'session-retargeted' && owned.kind !== 'session-apply' && owned.kind !== 'session-query-apply'
-        && owned.kind !== 'session-cancelled' && owned.kind !== 'view-query-set'
+        && owned.kind !== 'session-cancelled' && owned.kind !== 'view-query-set' && owned.kind !== 'view-search-set'
         && owned.kind !== 'task-cancelled' && owned.kind !== 'task-consume' && owned.kind !== 'task-reapply') throw new Error('Transport facts may only enter through the Workspace executor.')
-      return (await this.#commit(owned)).result
+      // Capture once at admission for every opening producer, before any queued
+      // write can advance the revision. Never refresh a stale caller's reads.
+      const admitted = owned.kind === 'session-opened' && owned.context === undefined && owned.revision === this.#state.revision
+        ? { ...owned, context: captureSessionOpeningContext(this.#state, owned.target, owned.reads, this.#schema) } : owned
+      return (await this.#commit(admitted)).result
     } catch (error) { return { kind: 'rejected', issue: issue(error) } }
   }
 

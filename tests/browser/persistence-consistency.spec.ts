@@ -33,6 +33,7 @@ for (const scenario of ['intermediate', 'later', 'reload-failure'] as const) {
     await mount(page, name, false)
     const cell = page.getByRole('grid', { name: 'Persistence consistency' }).getByRole('gridcell')
     await expect(cell).toHaveText('Initial')
+    await cell.click()
     await page.getByRole('button', { name: 'Edit value', exact: true }).click()
     await page.getByRole('textbox', { name: 'Name', exact: true }).fill('  Submitted  ')
     await page.getByRole('button', { name: 'Apply value', exact: true }).click()
@@ -72,6 +73,7 @@ for (const scenario of ['intermediate', 'later', 'reload-failure'] as const) {
     source.readHook = null
     await mount(page, name, true)
     await expect(cell).toHaveText(expected)
+    await cell.click()
     await page.getByRole('button', { name: 'Edit value', exact: true }).click()
     await expect(page.getByRole('textbox', { name: 'Name', exact: true })).toHaveValue(expected)
     expect(source.requests).toHaveLength(1)

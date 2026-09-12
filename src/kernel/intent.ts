@@ -33,7 +33,7 @@ function restorationControl(state: KernelState, id: IntentId) {
  * IDs, so exact coverage settles compensation instead of its historical target. */
 export function rowOperationForIntent(state: KernelState, intent: IntentRecord): RowOperation | null {
   const operation = intent.operation
-  if (operation.kind === 'order' || operation.kind === 'undo-order' || operation.kind === 'redo-order' || operation.kind === 'resolve' || operation.kind === 'undo-resolution' || operation.kind === 'redo-resolution') return null
+  if (operation.kind === 'order' || operation.kind === 'undo-order' || operation.kind === 'redo-order' || operation.kind === 'restore-resolution-order' || operation.kind === 'resolve' || operation.kind === 'undo-resolution' || operation.kind === 'redo-resolution') return null
   if (operation.kind === 'undo' && undoBranch(state, operation) === 'suppress') return null
   return declaredRowOperation(intent)
 }
@@ -41,9 +41,9 @@ export function rowOperationForIntent(state: KernelState, intent: IntentRecord):
 /** Historical payload identities remain reserved even when a branch is off. */
 export function declaredRowOperation(intent: IntentRecord): RowOperation | null {
   const operation = intent.operation
-  if (operation.kind === 'order' || operation.kind === 'undo-order' || operation.kind === 'redo-order' || operation.kind === 'resolve' || operation.kind === 'undo-resolution' || operation.kind === 'redo-resolution') return null
+  if (operation.kind === 'order' || operation.kind === 'undo-order' || operation.kind === 'redo-order' || operation.kind === 'restore-resolution-order' || operation.kind === 'resolve' || operation.kind === 'undo-resolution' || operation.kind === 'redo-resolution') return null
   if (operation.kind === 'undo') return operation.compensation
-  if (operation.kind === 'redo') return operation.replay
+  if (operation.kind === 'redo' || operation.kind === 'restore-resolution-row') return operation.replay
   if (operation.kind === 'create' || operation.kind === 'write' || operation.kind === 'replace' || operation.kind === 'delete') return operation
   throw new Error('This structural/control operation still requires its normalizer.')
 }
@@ -52,7 +52,7 @@ export function declaredOrderOperation(intent: IntentRecord): Extract<DataOperat
   const operation = intent.operation
   if (operation.kind === 'order') return operation
   if (operation.kind === 'undo-order') return operation.compensation
-  if (operation.kind === 'redo-order') return operation.replay
+  if (operation.kind === 'redo-order' || operation.kind === 'restore-resolution-order') return operation.replay
   return null
 }
 
@@ -74,6 +74,9 @@ export function orderOperationForIntent(state: KernelState, intent: IntentRecord
 export function undoSettlementSuggestions(state: KernelState): readonly IntentSettlement[] {
   const settled = new Set(state.settlements.map(proof => proof.intentId)), suggestions: IntentSettlement[] = []
   for (const record of state.journal.intents) {
+    if (record.operation.kind === 'redo-resolution') for (const id of record.operation.restored ?? []) {
+      if (!settled.has(id)) { suggestions.push({ kind: 'discarded', intentId: id, by: record.id }); settled.add(id) }
+    }
     if ((record.operation.kind === 'undo-resolution' || record.operation.kind === 'redo-resolution') && !settled.has(record.id)) {
       suggestions.push({ kind: 'control-completed', intentId: record.id }); settled.add(record.id)
     }

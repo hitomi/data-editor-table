@@ -40,7 +40,8 @@ type FieldColumnCommon<Row, Value> = Readonly<{
   /** Fields are editable by default. Use false or a predicate for read-only cells. */
   editable?: boolean | ((row: Row) => boolean)
   layout?: GridColumnLayout
-  validate?: (value: Value, row: Row) => GridValueResult<Value>
+  validate?: (value: Value) => GridValueResult<Value>
+  validateWithRow?: (value: Value, row: Row) => GridValueResult<Value>
   sortable?: boolean
   filterable?: boolean
   bulkEditable?: boolean
@@ -112,6 +113,13 @@ export type GridColumnHelper<
   >
 }>
 
+// Recognize the assignment implementation itself. A host may relabel a field
+// or replace its validation without changing which document field it writes.
+const fieldAssignments = new WeakMap<object, readonly [string]>()
+export function gridFieldAssignment(setter: object | undefined) {
+  return setter && fieldAssignments.get(setter)
+}
+
 /** Creates field-backed columns without repetitive getValue/setValue callbacks. */
 export function createGridColumnHelper<
   Row,
@@ -138,16 +146,19 @@ export function createGridColumnHelper<
           ...(emptyLabel === undefined ? {} : { emptyLabel }),
         })
     const editablePredicate = typeof editable === 'function' ? editable : undefined
-    return Object.freeze({
+    const definition = Object.freeze({
       ...column,
       key: typeof columnKey === 'string' ? columnKey : fieldName,
       ...(resolvedTypeOptions === undefined ? {} : { typeOptions: resolvedTypeOptions }),
+      storagePath: Object.freeze([fieldName]),
       getValue: (row: Record<string, unknown>) => row[fieldName],
       ...(editable === false ? {} : {
         setValue: (row: Record<string, unknown>, value: unknown) => ({ ...row, [fieldName]: value }),
       }),
       ...(editablePredicate === undefined ? {} : { isEditable: editablePredicate }),
     })
+    if (definition.setValue) fieldAssignments.set(definition.setValue, Object.freeze([fieldName]))
+    return definition
   }
   return Object.freeze({ field }) as unknown as GridColumnHelper<Row, Schema>
 }

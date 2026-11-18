@@ -1,3 +1,4 @@
+import type { GridInputCodec } from './input-codec.js'
 import {
   useId,
   useLayoutEffect,
@@ -96,6 +97,32 @@ type GridSingleSelectInternalEditDraft<Value extends GridChoiceValue> =
   GridSingleSelectEditDraft<Value> & Readonly<{
     [singleSelectEditOrigin]: Readonly<{ value: Value | null }>
   }>
+
+/** Preserve the private origin across owned copies and journal encoding.
+ * Disabled initial values remain valid only when the user keeps that value. */
+function singleSelectInputCodec<Value extends GridChoiceValue>(): GridInputCodec<GridSingleSelectEditDraft<Value>> {
+  const origin = (draft: GridSingleSelectEditDraft<Value>) => {
+    const captured = (draft as Partial<GridSingleSelectInternalEditDraft<Value>>)[singleSelectEditOrigin]
+    if (!captured) throw new Error('A single-select draft requires its original value.')
+    return captured.value
+  }
+  const restore = (value: Value | null, original: Value | null): GridSingleSelectInternalEditDraft<Value> => ({
+    value, [singleSelectEditOrigin]: Object.freeze({ value: original }),
+  })
+  return {
+    version: 'single-select-input:1',
+    copy: draft => restore(draft.value, origin(draft)),
+    equals: (left, right) => Object.is(left.value, right.value) && Object.is(origin(left), origin(right)),
+    encode: draft => ({ value: draft.value, original: origin(draft) }),
+    decode: encoded => {
+      if (!encoded || typeof encoded !== 'object' || Array.isArray(encoded)) throw new Error('Invalid single-select input.')
+      const data = encoded as Readonly<{ value: Value | null; original: Value | null }>
+      if (![data.value, data.original].every(value => value === null || typeof value === 'string' || typeof value === 'number'))
+        throw new Error('Invalid single-select input values.')
+      return restore(data.value, data.original)
+    },
+  }
+}
 
 export function createSingleSelectCellType<Value extends GridChoiceValue>(
   options: GridSingleSelectCellTypeOptions<Value> & Readonly<{ emptyValue: null }>,
@@ -245,6 +272,7 @@ function createSingleSelectBehavior<
       parse,
     },
     edit: {
+      inputCodec: singleSelectInputCodec<Value>(),
       exit: 'explicit',
       begin: (value) => ({
         value,

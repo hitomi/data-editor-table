@@ -1,14 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
 import { createDataGridBinding } from '../react/data-grid.js'
-import type { GridDataSource } from '../data/data-source.js'
+import { testGridSource } from '../../tests/unit/authority.js'
 import { zhCN } from '../locales/zh-cn.js'
+import { createImageCellType } from './image.js'
 import { createBooleanCellType } from './boolean.js'
 import { createGridColumnHelper } from './column-helper.js'
-import {
-  createStandardCellTypeRegistry,
-  type StandardGridCellTypeSchema,
-} from './standard-registry.js'
+import { createStandardCellTypeRegistry } from './standard-registry.js'
 
 type Row = Readonly<{
   id: string
@@ -101,6 +99,20 @@ describe('createStandardCellTypeRegistry', () => {
   })
 })
 
+it('reads row context only for the row-dependent image validation policy', () => {
+  let rowReads = 0
+  const context = { get row() { rowReads++; return row }, columnKey: 'image', typeOptions: undefined }
+  const options = { alt: () => '', label: () => '', resolveSrc: (value: string | null) => value, upload: () => '' }
+  const scalar = createImageCellType<Row, string>({ ...options, validate: value => ({ ok: true, value: String(value) }) })
+  const contextual = createImageCellType<Row, string>({ ...options,
+    validateWithRow: (value, product) => ({ ok: true, value: product.id + '/' + value }),
+  })
+  expect(scalar.behavior.value.validate('photo', context)).toEqual({ ok: true, value: 'photo' })
+  expect(rowReads).toBe(0)
+  expect(contextual.behavior.value.validate('photo', context)).toEqual({ ok: true, value: 'row-1/photo' })
+  expect(rowReads).toBe(1)
+})
+
 describe('createGridColumnHelper', () => {
   it('creates editable field columns and lifts choice options into typeOptions', () => {
     const column = createGridColumnHelper<Row>()
@@ -126,31 +138,8 @@ describe('createGridColumnHelper', () => {
 describe('DataGrid default registry', () => {
   it('creates a localized binding without an explicit registry', () => {
     const column = createGridColumnHelper<Row>()
-    const dataSource: GridDataSource<Row, string, StandardGridCellTypeSchema> = {
-      columns: [column.field('name', { label: 'Name', type: 'string' })],
-      getRowKey: (entry) => entry.id,
-      getSnapshot: () => ({
-        rows: [row],
-        status: 'ready',
-        version: 1,
-        scope: { kind: 'complete' },
-      }),
-      subscribe: () => () => undefined,
-      persistence: {
-        mode: 'manual-save',
-        commit: async (request) => ({
-          operationId: request.operationId,
-          applied: {
-            rows: request.rows,
-            status: 'ready',
-            version: 2,
-            scope: { kind: 'complete' },
-          },
-        }),
-      },
-    }
-
-    const binding = createDataGridBinding({ dataSource, locale: zhCN })
+    const { dataSource } = testGridSource<Row>([row], [column.field('name', { label: 'Name', type: 'string' })])
+    const binding = createDataGridBinding({ dataSource, initial: { locale: zhCN } })
     expect(binding.registry.names()).toEqual([
       'string',
       'number',

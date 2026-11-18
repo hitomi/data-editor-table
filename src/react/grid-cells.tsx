@@ -2,7 +2,7 @@ import { memo, useCallback, useMemo, type ReactNode, type Ref } from 'react'
 
 import type { GridCellTypeSchema } from '../cell-types/contracts.js'
 import type { GridRuntimeReactView } from '../cell-types/react-view-contracts.js'
-import type { GridController, GridDispatchResult } from '../controller/grid-controller.js'
+import type { GridController, GridCommandResult } from '../controller/grid-controller.js'
 import {
   selectGridCell,
   selectGridRowDeleteAvailability,
@@ -59,7 +59,7 @@ export type DataGridRowHeaderActionContext<
   rowLabel: string
   selected: boolean
   deleteAvailability: GridRowDeleteAvailability
-  selectRow: () => GridDispatchResult
+  selectRow: () => GridCommandResult
 }>
 
 export type DataGridRowHeaderActions<
@@ -334,9 +334,10 @@ function GridRowHeaderActionsBoundary<
   const selector = useMemo(() => (
     snapshot: GridControllerSnapshot<Row, RowKey>,
   ) => selectDraftRow(snapshot, rowKey), [rowKey])
-  const row = useGridSelector(controller, selector)
-  if (row === null) return null
-  const selectRow = () => {
+  const selectedRow = useGridSelector(controller, selector, (a, b) => a.row === b.row && a.entityId === b.entityId)
+  const { row, entityId } = selectedRow
+  if (row === null || !entityId) return null
+  const selectRow = (): GridCommandResult<void> => {
     const snapshot = controller.getSnapshot()
     const firstColumn = snapshot.columns[0]?.key
     const lastColumn = snapshot.columns.at(-1)?.key
@@ -344,7 +345,7 @@ function GridRowHeaderActionsBoundary<
       return {
         accepted: false,
         revision: snapshot.revision,
-        reason: 'This row cannot be selected because the grid has no columns.',
+        issue: { code: 'invalid-input', message: 'This row cannot be selected because the grid has no columns.' },
       }
     }
     const cell = { rowKey, columnKey: firstColumn }
@@ -355,7 +356,7 @@ function GridRowHeaderActionsBoundary<
         anchor: cell,
         focus: { rowKey, columnKey: lastColumn },
       },
-    })
+    }, { kind: 'row', rowKey, entityId })
   }
   return <span className="business-grid__row-header-actions" data-grid-row-header-actions="">{actions({
     controller,
@@ -400,14 +401,15 @@ function GridCellImpl<
     dom.registerCell(point, node)
   }, [dom, point])
   if (!cell) return null
+  const target = { kind: 'row' as const, rowKey, entityId: cell.entityId }
 
-  const reportRejected = (result: GridDispatchResult) => {
+  const reportRejected = (result: GridCommandResult) => {
     reportGridRejectedAction(controller, result, messages.rejectedAction)
   }
   const requestEffect = (name: string, input: unknown) => {
-    const result = controller.dispatch({ type: 'cell/run-effect', cell: point, effect: name, input })
+    const result = controller.dispatch({ type: 'cell/run-effect', cell: point, effect: name, input }, target)
     reportRejected(result)
-    const id = effectId(result)
+    const id = result.accepted ? result.value.effectId : ''
     let cancelled = false
     return { id, cancel: () => {
       if (cancelled || !id) return
@@ -460,10 +462,10 @@ function GridCellImpl<
     >
       {cell.valid ? <CellView
         columnKey={column.key}
-        commitValue={(value) => reportRejected(controller.dispatch({ type: 'cell/set-value', cell: point, value }))}
+        commitValue={(value) => reportRejected(controller.dispatch({ type: 'cell/set-value', cell: point, value }, target))}
         displayText={cell.displayText}
         editable={cell.editable}
-        requestEdit={() => reportRejected(controller.dispatch({ type: 'edit/start', cell: point }))}
+        requestEdit={() => reportRejected(controller.dispatch({ type: 'edit/start', cell: point }, target))}
         requestEffect={requestEffect}
         row={cell.row}
         typeOptions={column.typeOptions}
@@ -477,7 +479,7 @@ function GridCellImpl<
       triggerLabel={messages.changedCellOriginalValue(displayedOriginal)}
       onRevert={() => {
         const activeCell = controller.getSnapshot().interaction.activeCell
-        const result = controller.dispatch({ type: 'cell/revert', cell: point })
+        const result = controller.dispatch({ type: 'cell/revert', cell: point }, target)
         reportRejected(result)
         if (result.accepted) queueMicrotask(() => {
           if (!activeCell || !dom.focusCell(activeCell, false)) dom.focusGrid()
@@ -576,7 +578,7 @@ function selectDraftRow<Row, RowKey extends GridRowKey>(
   snapshot: GridControllerSnapshot<Row, RowKey>,
   rowKey: RowKey,
 ) {
-  return gridSelectorIndex(snapshot).rows.get(rowKey) ?? null
+  return { row: gridSelectorIndex(snapshot).rows.get(rowKey) ?? null, entityId: snapshot.draft.entityAt(rowKey) }
 }
 
 function equalColumnHeader(
@@ -605,7 +607,8 @@ function equalCellSelection<Row, RowKey extends GridRowKey>(
 ) {
   if (left === right) return true
   if (!left || !right) return false
-  return left.row === right.row
+  return left.entityId === right.entityId
+    && left.row === right.row
     && left.column === right.column
     && left.valid === right.valid
     && Object.is(left.value, right.value)
@@ -631,10 +634,6 @@ function equalCellIssue<RowKey extends GridRowKey>(
     && left.message === right.message)
 }
 
-function effectId(result: GridDispatchResult) {
-  if (!result.accepted || typeof result.payload !== 'object' || result.payload === null || !('effectId' in result.payload)) return ''
-  const value = (result.payload as { effectId?: unknown }).effectId
-  return typeof value === 'string' ? value : ''
-}
+
 
 export type GridCellRef<RowKey extends GridRowKey> = Ref<HTMLElement> | ((point: GridPoint<RowKey>, node: HTMLElement | null) => void)

@@ -9,7 +9,7 @@ export type GridTransition<State, Effect, Result = void, Internal = undefined> =
 export type GridRuntimeIssue =
   | Readonly<{ code: 'destroyed'; message: string }>
   | Readonly<{ code: 'busy'; message: string }>
-  | Readonly<{ code: 'exception'; message: string }>
+  | Readonly<{ code: 'exception'; message: string; error: unknown }>
 
 type GridRuntimeOptions<State, Event, Effect, Internal> = Readonly<{
   initialState: State
@@ -44,6 +44,8 @@ export class GridControllerRuntime<State extends Readonly<{ revision: number }>,
 
   getInternalState = (): Internal => this.#internal
 
+  get busy() { return this.#busy }
+
   get destroyed() {
     return this.#destroyed
   }
@@ -73,6 +75,7 @@ export class GridControllerRuntime<State extends Readonly<{ revision: number }>,
         return reject({
           code: 'exception',
           message: error instanceof Error ? error.message : String(error),
+          error,
         }, this.#state.revision)
       }
       if (this.#destroyed) return reject(destroyedIssue(), this.#state.revision)

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createStandardCellTypeRegistry, type StandardGridCellTypeSchema } from '../cell-types/standard-registry.js'
 import { compileGridColumns } from '../data/runtime-columns.js'
-import type { GridDraftState } from '../model/grid-model.js'
+import type { GridReadModel } from '../model/grid-model.js'
 import { resolveGridLayout } from './controller-state.js'
 import { prepareGridDraftPublication } from './draft-commands.js'
 import { clearInteraction } from './selection-model.js'
@@ -10,10 +10,12 @@ const registry = createStandardCellTypeRegistry<number>()
 const columns = compileGridColumns<number, StandardGridCellTypeSchema>([{
   key: 'value', label: 'Value', type: 'number', getValue: (row) => row,
 }], registry.behaviors)
-const draft: GridDraftState<number, number> = {
-  revision: 0, rows: [0, 1], baselineRows: [0, 1], baselineVersion: 'base',
+const draft: GridReadModel<number, number> = {
+  entityAt: () => undefined, revision: 0, rows: [0, 1], baselineRows: [0, 1], baselineVersion: 'base',
   dirtyCells: [], validationIssues: [], conflicts: [], insertedRowKeys: [], deletedRowKeys: [],
-  orderDirty: false, undoStack: [], redoStack: [],
+  orderDirty: false, orderConflict: null,
+  savePlan: { excluded: [], proposedRows: [], saveableRowKeys: [], saveableDeletedRowKeys: [], blockedChangedRowKeys: [],
+    saveableRowCount: 0, blockedRowCount: 0, orderChanged: false, canSave: false }, undoStack: [], redoStack: [],
 }
 const sizes = { rowHeight: 36, headerHeight: 36, rowIndicatorWidth: 48 }
 const input = {
@@ -34,8 +36,7 @@ describe('typed Draft publication', () => {
     if (!result.ok || !result.changes) throw new Error('Expected a prepared row transition')
     expect(result.changes.draft).toBe(next)
     expect(result.changes.draft.undoStack).toBe(next.undoStack)
-    expect(result.changes.view.visibleRowKeys).toEqual([0, 1, 2])
-    expect(result.changes.interaction.activeCell?.rowKey).toBe(2)
+    expect(result.changes).toMatchObject({ view: { visibleRowKeys: [0, 1, 2] }, interaction: { activeCell: { rowKey: 2 } } })
     expect(result.changes).toMatchObject({ edit: null, bulk: null })
     expect(input.view.visibleRowKeys).toEqual([0, 1])
   })

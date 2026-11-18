@@ -1,3 +1,4 @@
+import { createDemoGridSource } from './demo-data-source'
 import {
   useCallback,
   useEffect,
@@ -8,18 +9,15 @@ import {
 } from 'react'
 import {
   DataGrid,
-  GridCommitError,
   createDataGridBinding,
   createImageCellType,
   createStandardCellTypeRegistry,
   useGridSelector,
   type GridCellTypeSchemaOf,
   type GridColumn,
-  type GridDataSource,
-  type GridDataSourceSnapshot,
   type GridImageColumnOptions,
-  type GridReadyDataSourceSnapshot,
   type GridStringColumnOptions,
+  type GridSourceVersion,
 } from 'data-editor-table'
 
 type ImportRow = {
@@ -34,7 +32,7 @@ type PreparedImage = Readonly<{
 }>
 
 type ImportTargetPlan = Readonly<{
-  sourceRevision: number
+  sourceVersion: GridSourceVersion
   draftRevision: number
   viewRevision: number
   visibleRowKeys: readonly string[]
@@ -47,6 +45,14 @@ type ImportStatus =
   | Readonly<{ kind: 'success'; message: string }>
   | Readonly<{ kind: 'cancelled'; message: string }>
   | Readonly<{ kind: 'error'; message: string }>
+
+// Host-owned file ingress survives route detachment until an atomic import
+// accepts it or the user explicitly discards it. Confirmed rows still belong
+// exclusively to the controller kernel.
+const importMemory: { status: ImportStatus; pending: Map<string, readonly File[]> } = import.meta.hot?.data.importMemory ?? {
+  status: { kind: 'idle', message: 'Ready for image files.' }, pending: new Map(),
+}
+if (import.meta.hot) import.meta.hot.dispose(data => { data.importMemory = importMemory })
 
 const MAX_FILES = 24
 const MAX_FILE_BYTES = 8 * 1024 * 1024
@@ -88,6 +94,7 @@ type ImportSchema = GridCellTypeSchemaOf<typeof registry>
 
 const imageColumn = {
   key: 'image',
+  storagePath: ['image'],
   label: 'Image',
   type: 'image',
   layout: { basis: 148, min: 116 },
@@ -103,6 +110,7 @@ const imageColumn = {
 
 const nameColumn = {
   key: 'name',
+  storagePath: ['name'],
   label: 'Name',
   type: 'string',
   layout: { basis: 420, min: 220, flex: 1 },
@@ -118,83 +126,29 @@ const nameColumn = {
   GridStringColumnOptions | undefined
 >
 
-class ImportStore {
-  readonly listeners = new Set<() => void>()
-  snapshot: GridDataSourceSnapshot<ImportRow> = {
-    rows: initialRows,
-    status: 'ready',
-    version: 0,
-    scope: { kind: 'complete' },
-  }
-  nextId = 4
-  saveCount = 0
-  failNextSave = false
-
-  subscribe = (listener: () => void) => {
-    this.listeners.add(listener)
-    return () => { this.listeners.delete(listener) }
-  }
-
-  publish(next: GridDataSourceSnapshot<ImportRow>) {
-    this.snapshot = next
-    this.listeners.forEach((listener) => { listener() })
-  }
-}
-
-const store = new ImportStore()
-
-const dataSource: GridDataSource<ImportRow, string, ImportSchema> = {
+const createSource = () => createDemoGridSource<ImportRow, ImportSchema>({
+  name: 'multi-image', initialRows, delay: 180,
   columns: [imageColumn, nameColumn],
-  getRowKey: (row) => row.id,
-  getSnapshot: () => store.snapshot,
-  subscribe: store.subscribe,
-  refresh: () => { store.publish(store.snapshot) },
-  persistence: {
-    mode: 'auto-save',
-    debounceMs: 350,
-    commit: async (request) => {
-      await wait(180)
-      if (store.failNextSave) {
-        store.failNextSave = false
-        throw new GridCommitError(
-          'transient',
-          'The simulated save failed. The imported draft is still available to retry.',
-        )
-      }
-      if (!Object.is(request.sourceVersion, store.snapshot.version)) {
-        throw new GridCommitError(
-          'source-version-conflict',
-          'The import could not be saved because the source changed.',
-        )
-      }
-      store.saveCount += 1
-      const next = {
-        rows: request.rows,
-        status: 'ready',
-        version: Number(request.sourceVersion) + 1,
-        scope: { kind: 'complete' },
-      } satisfies GridReadyDataSourceSnapshot<ImportRow>
-      store.publish(next)
-      return { operationId: request.operationId, applied: next }
-    },
-  },
+  persistence: { mode: 'auto-save', debounceMs: 350 },
   rows: {
     create: () => ({
-      id: `import-row-${store.nextId++}`,
+      id: `import-row-${crypto.randomUUID()}`,
       image: null,
       name: '',
     }),
     duplicate: (row) => ({
       ...row,
-      id: `import-row-${store.nextId++}`,
+      id: `import-row-${crypto.randomUUID()}`,
       name: row.name ? `${row.name} copy` : '',
     }),
     canDelete: () => true,
   },
-}
+})
 
-const binding = createDataGridBinding({ dataSource, registry })
-if (import.meta.hot) import.meta.hot.dispose(() => { binding.destroy() })
+const sourceOwner: ReturnType<typeof createSource> = import.meta.hot?.data.sourceOwner ?? createSource()
+const { dataSource, store } = sourceOwner
+const binding: ReturnType<typeof createDataGridBinding<ImportRow, string, ImportSchema>> = import.meta.hot?.data.binding ?? createDataGridBinding({ dataSource, initial: { registry } })
+if (import.meta.hot) import.meta.hot.dispose(data => { data.sourceOwner = sourceOwner; data.binding = binding })
 
 export function MultiImageImportPage() {
   const controller = binding.controller
@@ -209,12 +163,11 @@ export function MultiImageImportPage() {
     () => store.saveCount,
     () => store.saveCount,
   )
-  const [status, setStatus] = useState<ImportStatus>({
-    kind: 'idle',
-    message: 'Ready for image files.',
-  })
+  const [status, renderStatus] = useState<ImportStatus>(importMemory.status)
+  const setStatus = useCallback((next: ImportStatus) => { importMemory.status = next; renderStatus(next) }, [])
   const [dropActive, setDropActive] = useState(false)
   const activeBatch = useRef<AbortController | null>(null)
+  const activeImportId = useRef<string | null>(null)
   const batchRevision = useRef(0)
   const dragDepth = useRef(0)
   const mounted = useRef(true)
@@ -224,12 +177,16 @@ export function MultiImageImportPage() {
     return () => {
       mounted.current = false
       batchRevision.current += 1
+      if (activeBatch.current) importMemory.status = { kind: 'error', message: 'The import was paused. Its files are retained for retry at the current selection.' }
       activeBatch.current?.abort()
       activeBatch.current = null
     }
   }, [])
 
-  const importFiles = useCallback(async (files: readonly File[]) => {
+  const importFiles = useCallback(async (files: readonly File[], retainedId?: string) => {
+    const importId = retainedId ?? crypto.randomUUID()
+    importMemory.pending.set(importId, Object.freeze([...files]))
+    activeImportId.current = importId
     const revision = batchRevision.current + 1
     batchRevision.current = revision
     activeBatch.current?.abort()
@@ -245,13 +202,20 @@ export function MultiImageImportPage() {
       return
     }
 
-    const targetPlan = captureTargetPlan(controller)
-
-    setStatus({
-      kind: 'processing',
-      message: `Reading ${files.length} ${files.length === 1 ? 'image' : 'images'}…`,
-    })
     try {
+      if (controller.getSnapshot().source.status === 'loading') {
+        setStatus({ kind: 'processing', message: 'Waiting for rows to load before importing…' })
+        await waitForImportRows(controller, batch.signal)
+        if (!isCurrentBatch(revision, batch, batchRevision, activeBatch, mounted)) return
+      }
+      const source = controller.getSnapshot().source
+      if (source.status === 'error' && source.version === '')
+        throw new Error('Rows could not be loaded. Refresh the table and retry the retained import.')
+      const targetPlan = captureTargetPlan(controller)
+      setStatus({
+        kind: 'processing',
+        message: `Reading ${files.length} ${files.length === 1 ? 'image' : 'images'}…`,
+      })
       const prepared = await Promise.all(
         files.map(async (file): Promise<PreparedImage> => ({
           dataUrl: await readFileAsDataUrl(file, batch.signal),
@@ -263,8 +227,8 @@ export function MultiImageImportPage() {
       const result = controller.applyTransaction((transaction) => {
         if (!matchesTargetPlan(transaction.base, targetPlan)) {
           transaction.abort({
-            code: 'stale-import-target',
-            message: 'The grid changed while the images were being read. Drop the files again.',
+            code: 'stale-target', domainCode: 'stale-import-target',
+            message: 'The grid changed while the images were being read. The original files are retained. Retry at the current selection.',
           })
         }
 
@@ -286,6 +250,8 @@ export function MultiImageImportPage() {
         })
         return
       }
+      importMemory.pending.delete(importId)
+      activeImportId.current = null
       setStatus({
         kind: 'success',
         message: `Imported ${prepared.length} ${prepared.length === 1 ? 'image' : 'images'} as one transaction.`,
@@ -300,18 +266,20 @@ export function MultiImageImportPage() {
         message: `${message} No rows were changed.`,
       })
     }
-  }, [controller])
+  }, [controller, setStatus])
 
   const cancelImport = useCallback(() => {
     if (!activeBatch.current) return
     batchRevision.current += 1
     activeBatch.current.abort()
     activeBatch.current = null
+    if (activeImportId.current) importMemory.pending.delete(activeImportId.current)
+    activeImportId.current = null
     setStatus({
       kind: 'cancelled',
       message: 'Import cancelled. No rows were changed.',
     })
-  }, [])
+  }, [setStatus])
 
   useEffect(() => {
     const consume = (event: globalThis.DragEvent) => {
@@ -391,6 +359,16 @@ export function MultiImageImportPage() {
           {status.kind === 'processing' ? (
             <button type="button" onClick={cancelImport}>Cancel import</button>
           ) : null}
+          {status.kind !== 'processing' && importMemory.pending.size > 0 ? <>
+            <button type="button" onClick={() => {
+              const retained = importMemory.pending.entries().next().value
+              if (retained) void importFiles(retained[1], retained[0])
+            }}>Retry retained import at selection</button>
+            <button type="button" onClick={() => {
+              importMemory.pending.clear()
+              setStatus({ kind: 'cancelled', message: 'Retained import files discarded.' })
+            }}>Discard retained imports</button>
+          </> : null}
         </div>
       </header>
 
@@ -527,6 +505,19 @@ function isOwnedBatch(
     batchRef.current === batch
 }
 
+function waitForImportRows(controller: typeof binding.controller, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    const abort = () => { unsubscribe(); reject(signal.reason) }
+    const unsubscribe = controller.subscribe(() => {
+      if (controller.getSnapshot().source.status === 'loading') return
+      unsubscribe()
+      signal.removeEventListener('abort', abort)
+      resolve()
+    })
+    signal.addEventListener('abort', abort, { once: true })
+  })
+}
+
 function captureTargetPlan(
   controller: typeof binding.controller,
 ): ImportTargetPlan {
@@ -536,7 +527,7 @@ function captureTargetPlan(
     ? -1
     : snapshot.view.visibleRowKeys.indexOf(activeRowKey)
   return Object.freeze({
-    sourceRevision: snapshot.source.revision,
+    sourceVersion: snapshot.source.version,
     draftRevision: snapshot.draft.revision,
     viewRevision: snapshot.view.revision,
     visibleRowKeys: Object.freeze([...snapshot.view.visibleRowKeys]),
@@ -548,7 +539,7 @@ function matchesTargetPlan(
   snapshot: ReturnType<typeof binding.controller.getSnapshot>,
   plan: ImportTargetPlan,
 ) {
-  return snapshot.source.revision === plan.sourceRevision &&
+  return snapshot.source.version === plan.sourceVersion &&
     snapshot.draft.revision === plan.draftRevision &&
     snapshot.view.revision === plan.viewRevision &&
     snapshot.view.visibleRowKeys.length === plan.visibleRowKeys.length &&
@@ -577,8 +568,4 @@ function persistenceLabel(
 
 function formatBytes(bytes: number) {
   return `${Math.round(bytes / (1024 * 1024))} MB`
-}
-
-function wait(ms: number) {
-  return new Promise<void>((resolve) => { window.setTimeout(resolve, ms) })
 }

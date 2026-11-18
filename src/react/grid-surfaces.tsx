@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 
-import type { GridPersistenceMode, GridPersistenceStatus } from '../model/grid-model.js'
+import type { GridPersistenceMode, GridPersistenceStatus, GridSaveTarget } from '../model/grid-model.js'
 import { GridDialog } from './grid-layers.js'
 
 export type GridToolbarState = Readonly<{
@@ -19,6 +19,7 @@ export type GridToolbarState = Readonly<{
   canRedo: boolean
   canBulkEdit: boolean
   canSave: boolean
+  saveTarget: Omit<GridSaveTarget, 'origin'>
   showBulkEdit: boolean
   persistenceMode: GridPersistenceMode
   persistenceStatus: GridPersistenceStatus
@@ -98,7 +99,7 @@ export function GridToolbar({
     </button> : null}
     {state.persistenceMode === 'manual-save' ? <button
       className="business-grid__button business-grid__button--primary"
-      disabled={!state.canSave || state.persistenceStatus === 'saving'}
+      disabled={!state.canSave}
       type="button"
       onClick={onSave}
     >{state.persistenceStatus === 'saving' ? messages.saving : messages.saveChanges}</button> : null}

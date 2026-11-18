@@ -1,6 +1,5 @@
 import {
   useEffect,
-  useLayoutEffect,
   useRef,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
@@ -17,6 +16,7 @@ import type {
 } from './react-view-contracts.js'
 import { formatDefaultApplyToCells, resolveCellTypeMessages } from './messages.js'
 import { defineCellTypeFactory } from './registry.js'
+import { GridCellEditorPopover } from '../react/grid-layers.js'
 
 export type GridBooleanCellTypeOptions = Readonly<{
   trueLabel?: string
@@ -38,6 +38,7 @@ export type GridBooleanCellTypeMessages = Readonly<{
   value: string
   chooseValue: string
   cancel: string
+  apply: string
   applyToCells: (count: number) => string
 }>
 
@@ -53,6 +54,7 @@ const DEFAULT_BOOLEAN_MESSAGES: GridBooleanCellTypeMessages = Object.freeze({
   value: 'Value',
   chooseValue: 'Choose true or false',
   cancel: 'Cancel',
+  apply: 'Apply',
   applyToCells: formatDefaultApplyToCells,
 })
 
@@ -86,7 +88,7 @@ export function createBooleanCellType(
           format: (value) => value ? 'TRUE' : 'FALSE',
           parse: (raw) => parseBoolean(raw, trueLabel, falseLabel, messages),
         },
-        edit: { begin: (value) => !value, commit: success },
+        edit: { exit: 'explicit', begin: (value) => value, commit: success },
         ...(typeof clearValue === 'boolean' ? { clear: () => success(clearValue) } : {}),
         compare: (left, right) => Number(left) - Number(right),
         filter: {
@@ -105,7 +107,7 @@ export function createBooleanCellType(
       },
       view: {
         Cell: (props) => <BooleanCell {...props} falseLabel={falseLabel} trueLabel={trueLabel} />,
-        Editor: BooleanEditor,
+        Editor: (props) => <BooleanEditor {...props} falseLabel={falseLabel} messages={messages} trueLabel={trueLabel} />,
         BulkEditor: (props) => <BooleanBulkEditor {...props} falseLabel={falseLabel} messages={messages} trueLabel={trueLabel} />,
         presentation: {
           content: 'padded',
@@ -130,8 +132,9 @@ function BooleanCell<Row>({
   const cancelPendingPointer = useRef<(() => void) | null>(null)
   useEffect(() => () => cancelPendingPointer.current?.(), [])
   const armToggle = (event: ReactPointerEvent<HTMLSpanElement>) => {
-    if (!editable || event.button !== 0) return
     cancelPendingPointer.current?.()
+    // Selection modifiers choose cells; they must not author a value change.
+    if (!editable || event.button !== 0 || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return
     const pointerId = event.pointerId
     const startX = event.clientX
     const startY = event.clientY
@@ -167,13 +170,46 @@ function BooleanCell<Row>({
 }
 
 function BooleanEditor<Row>({
-  claimInitialActivation,
+  ariaDescriptionId,
+  ariaInvalid,
+  ariaLabel,
+  cancel,
   commit,
-}: GridCellEditorProps<Row, boolean, boolean>) {
-  useLayoutEffect(() => {
-    if (claimInitialActivation()) commit()
-  }, [claimInitialActivation, commit])
-  return <span aria-hidden="true" />
+  draft,
+  falseLabel,
+  messages,
+  setDraft,
+  trueLabel,
+}: GridCellEditorProps<Row, boolean, boolean> & Readonly<{
+  falseLabel: string
+  messages: GridBooleanCellTypeMessages
+  trueLabel: string
+}>) {
+  const anchor = useRef<HTMLButtonElement>(null)
+  return <>
+    <button aria-haspopup="dialog" className="data-grid-cell-editor data-grid-choice-editor-button" ref={anchor} type="button">
+      {draft ? trueLabel : falseLabel}
+    </button>
+    <GridCellEditorPopover anchor={anchor} ariaLabel={ariaLabel} onCancel={cancel}>
+      <form className="data-grid-choice-popover" onSubmit={(event) => { event.preventDefault(); commit() }}>
+        <strong>{messages.chooseValue}</strong>
+        <div className="data-grid-choice-options">
+          <label>{messages.value}<input
+            aria-label={messages.value}
+            aria-describedby={ariaDescriptionId ?? undefined}
+            aria-invalid={ariaInvalid || undefined}
+            checked={draft}
+            type="checkbox"
+            onChange={(event) => setDraft(event.currentTarget.checked)}
+          />{draft ? trueLabel : falseLabel}</label>
+        </div>
+        <div className="data-grid-choice-popover__actions">
+          <button className="business-grid__button" type="button" onClick={cancel}>{messages.cancel}</button>
+          <button className="business-grid__button business-grid__button--primary" type="submit">{messages.apply}</button>
+        </div>
+      </form>
+    </GridCellEditorPopover>
+  </>
 }
 
 function BooleanBulkEditor({

@@ -12,7 +12,7 @@ import {
   freezeRange,
   rangeForHitTarget,
 } from './selection-model.js'
-import type { GridKeyboardCommand } from './controller-contracts.js'
+import type { GridKeyboardCommand } from './controller-interaction.js'
 
 export type GridInteractionTransition<RowKey extends GridRowKey> =
   | Readonly<{ ok: true; state: GridInteractionState<RowKey> }>
@@ -73,74 +73,42 @@ export function replaceGridRanges<RowKey extends GridRowKey>(
   }
 }
 
-export function reconcileInteractionAfterViewChange<RowKey extends GridRowKey>(
-  state: GridInteractionState<RowKey>,
-  rows: readonly RowKey[],
-  columns: readonly string[],
+/** Re-express the selected row members in the new geometry. Split an old
+ * rectangle when an unselected row moves into its middle. */
+export function reconcileGridSelection<Key extends GridRowKey>(
+  state: GridInteractionState<Key>, before: readonly Key[], after: readonly Key[],
 ) {
   const active = state.activeCell
-  if (!active || !isGridPointAvailable(active, rows, columns)) {
-    return clearInteraction<RowKey>()
-  }
-  return freezeInteraction({
-    ...clearInteraction<RowKey>(),
-    activeCell: freezePoint(active),
-    ranges: Object.freeze([freezeRange({ anchor: active, focus: active })]),
-    activeRangeIndex: 0,
-  })
-}
-
-/**
- * A local row reorder changes range geometry but not the identity of selected
- * cells. Preserve every still-valid key-based range and active point while
- * ending transient pointer/fill/action state tied to the old geometry.
- */
-export function reconcileInteractionAfterRowReorder<
-  RowKey extends GridRowKey,
->(
-  state: GridInteractionState<RowKey>,
-  rows: readonly RowKey[],
-  columns: readonly string[],
-) {
-  const ranges = state.ranges.flatMap((range, originalIndex) =>
-    isGridRangeAvailable(range, rows, columns)
-      ? [{ range: freezeRange(range), originalIndex }]
-      : [],
-  )
-  if (ranges.length === 0) {
-    const active = state.activeCell
-    if (!active || !isGridPointAvailable(active, rows, columns)) {
-      return clearInteraction<RowKey>()
+  if (!active || !after.includes(active.rowKey)) return clearInteraction<Key>()
+  const oldPositions = new Map(before.map((key, index) => [key, index]))
+  const newPositions = new Map(after.map((key, index) => [key, index]))
+  const ranges: GridRange<Key>[] = []
+  let activeRangeIndex = 0
+  for (const [index, range] of state.ranges.entries()) {
+    const anchor = oldPositions.get(range.anchor.rowKey), focus = oldPositions.get(range.focus.rowKey)
+    if (anchor === undefined || focus === undefined) return clearInteraction<Key>()
+    const positions: number[] = []
+    for (let i = Math.min(anchor, focus); i <= Math.max(anchor, focus); i++) {
+      const position = newPositions.get(before[i]!)
+      if (position === undefined) return clearInteraction<Key>()
+      positions.push(position)
     }
-    const point = freezePoint(active)
-    return freezeInteraction({
-      activeCell: point,
-      ranges: Object.freeze([freezeRange({ anchor: point, focus: point })]),
-      activeRangeIndex: 0,
-      gesture: null,
-      fillPreview: null,
-      actionSession: null,
-    })
+    positions.sort((a, b) => a - b)
+    const forward = newPositions.get(range.anchor.rowKey)! <= newPositions.get(range.focus.rowKey)!
+    const newFocus = newPositions.get(range.focus.rowKey)!
+    for (let i = 0; i < positions.length; i++) {
+      const start = positions[i]!
+      while (i + 1 < positions.length && positions[i + 1] === positions[i]! + 1) i++
+      const end = positions[i]!
+      if (index === state.activeRangeIndex && start <= newFocus && newFocus <= end) activeRangeIndex = ranges.length
+      ranges.push(freezeRange({
+        anchor: { columnKey: range.anchor.columnKey, rowKey: after[forward ? start : end]! },
+        focus: { columnKey: range.focus.columnKey, rowKey: after[forward ? end : start]! },
+      }))
+    }
   }
-  const activeRangeIndex = Math.max(
-    0,
-    ranges.findIndex((entry) => entry.originalIndex === state.activeRangeIndex),
-  )
-  const active = state.activeCell && isGridPointAvailable(
-    state.activeCell,
-    rows,
-    columns,
-  )
-    ? freezePoint(state.activeCell)
-    : ranges[activeRangeIndex]!.range.focus
-  return freezeInteraction({
-    activeCell: active,
-    ranges: Object.freeze(ranges.map((entry) => entry.range)),
-    activeRangeIndex,
-    gesture: null,
-    fillPreview: null,
-    actionSession: null,
-  })
+  return freezeInteraction({ ...clearInteraction<Key>(), activeCell: active, ranges: Object.freeze(ranges),
+    activeRangeIndex: ranges.length ? activeRangeIndex : null })
 }
 
 export function startGridPointer<RowKey extends GridRowKey>(

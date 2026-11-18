@@ -1,3 +1,5 @@
+> 历史设计文档：描述 0.3.1 基线，不是当前数据协议。当前实施以 [状态内核重构方案](state-kernel-refactor-plan.md) 和 [保存协议](persistence-consistency.md) 为准。旧测试列表也不代表此次迁移已完成测试验收。
+
 # 业务数据批量编辑器 v2 设计与实施方案
 
 > 状态：M5 test candidate ready（等待用户验收）

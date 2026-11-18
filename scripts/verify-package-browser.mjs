@@ -89,11 +89,15 @@ async function verifyBrowser(name, browserType) {
       await page.keyboard.press('Enter')
       await page.getByRole('gridcell').filter({ hasText: 'Packed edit' }).waitFor()
       await save.click()
-      if (!(await save.isDisabled())) {
-        throw new Error('The packed remote grid did not settle after saving.')
-      }
-
-      const editedCell = page.getByRole('gridcell').filter({ hasText: 'Packed edit' })
+      await page.waitForFunction((key) => {
+        const record = JSON.parse(sessionStorage.getItem(key))
+        return record?.document?.name === 'Packed edit' && record.outcomes.length === 1
+          && record.outcomes[0].kind === 'applied'
+      }, `test-authority:packed-${structureOnly ? 'structure' : 'theme'}`)
+      await page.reload()
+      const editedCell = page.getByRole('gridcell', { name: 'Packed edit', exact: true })
+      await editedCell.waitFor()
+      if (!(await save.isDisabled())) throw new Error('The reopened packed grid retained a dirty edit.')
       await editedCell.click({ button: 'right' })
       const menu = page.locator('.business-grid-menu')
       await menu.waitFor()

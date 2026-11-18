@@ -11,10 +11,10 @@ const domains = new Set([
 ])
 const executionModules = new Set([
   'grid-controller.js', 'controller-workflow.js', 'controller-runtime.js',
-  'controller-effects.js', 'persistence-effects.js',
+  'controller-effects.js', 'kernel-persistence-effects.js',
 ])
 const failures = []
-for (const directory of ['controller', 'data', 'model', 'layout']) {
+for (const directory of ['controller', 'data', 'model', 'layout', 'kernel']) {
   for (const file of files(path.join(root, directory))) {
     if (!file.endsWith('.ts') || file.endsWith('.test.ts')) continue
     const source = fs.readFileSync(file, 'utf8')

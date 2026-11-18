@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { GridPersistenceEffectRunner } from './persistence-effects.js'
+import { GridKernelPersistenceRunner } from './kernel-persistence-effects.js'
+import { deferred, testAuthority } from '../../tests/unit/authority.js'
+import { persistenceGrid } from '../../tests/unit/persistence-grid.js'
+import type { ServerAuthority } from '../kernel/source.js'
 
 afterEach(() => vi.useRealTimers())
 
@@ -7,56 +10,52 @@ describe('persistence effect resources', () => {
   it('replaces a debounce timer and invalidates queued immediate work on cancellation', async () => {
     vi.useFakeTimers()
     const send = vi.fn()
-    const runner = new GridPersistenceEffectRunner({ commit: vi.fn(), send })
-    runner.run({ type: 'schedule', token: 1, delay: 800, retry: false })
-    runner.run({ type: 'schedule', token: 2, delay: 800, retry: true })
+    const runner = new GridKernelPersistenceRunner(testAuthority([]).source, send, { readAtLeast: vi.fn() })
+    runner.run({ type: 'schedule', token: 1, delay: 800 })
+    runner.run({ type: 'schedule', token: 2, delay: 800 })
     await vi.advanceTimersByTimeAsync(800)
-    expect(send.mock.calls).toEqual([[{ type: 'schedule/due', token: 2, retry: true }]])
+    expect(send.mock.calls).toEqual([[{ type: 'schedule/due', token: 2 }]])
     send.mockClear()
-    runner.run({ type: 'schedule', token: 3, delay: 0, retry: false })
+    runner.run({ type: 'schedule', token: 3, delay: 0 })
     runner.run({ type: 'cancel-schedule' })
     await Promise.resolve()
     expect(send).not.toHaveBeenCalled()
     runner.destroy()
   })
 
-  it('aborts replaced refreshes and ignores their late completion', async () => {
-    const send = vi.fn()
-    const pending: Array<{ signal: AbortSignal; resolve: () => void }> = []
-    const runner = new GridPersistenceEffectRunner({
-      commit: vi.fn(), send,
-      refresh: ({ signal }) => new Promise<void>((resolve) => pending.push({ signal, resolve })),
-    })
-    runner.run({ type: 'refresh', token: 1 })
-    await Promise.resolve()
-    runner.run({ type: 'refresh', token: 2 })
-    await Promise.resolve()
-    expect(pending[0]?.signal.aborted).toBe(true)
-    pending[0]!.resolve()
-    pending[1]!.resolve()
-    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1))
-    expect(send).toHaveBeenCalledWith({ type: 'refresh/completed', token: 2 })
-    runner.destroy()
+  it('supersedes a replaced refresh and ignores its late completion', async () => {
+    const { grid, server } = await persistenceGrid()
+    const early = deferred<ServerAuthority>()
+    server.source.readAtLeast.mockReturnValueOnce(early.promise)
+    const replaced = grid.refresh()
+    const latest = server.snapshot([{ id: 'a', name: 'Current', count: 1 }], 2)
+    server.source.readAtLeast.mockResolvedValueOnce(latest)
+    expect(await grid.refresh()).toEqual({ status: 'refreshed' })
+    expect(await replaced).toEqual({ status: 'superseded' })
+    early.resolve(server.current())
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(grid.getSnapshot().source).toMatchObject({ status: 'ready', version: 'v2' })
+    grid.destroy()
   })
 
-  it('cancels timers and aborts refresh on destroy without publishing a late result', async () => {
+  it('cancels scheduled work and settles an outstanding read on destroy', async () => {
+    const { grid, server } = await persistenceGrid()
+    const pending = deferred<ServerAuthority>()
+    server.source.readAtLeast.mockReturnValueOnce(pending.promise)
+    const read = grid.refresh()
+    const listener = vi.fn()
+    grid.subscribe(listener)
+    expect(grid.destroy()).toEqual({ status: 'closed' })
+    expect(await read).toMatchObject({ status: 'blocked', issue: { code: 'closed' } })
+    pending.resolve(server.current())
+    await Promise.resolve()
+    expect(listener).not.toHaveBeenCalled()
+
     vi.useFakeTimers()
     const send = vi.fn()
-    let signal: AbortSignal | undefined
-    let resolve: (() => void) | undefined
-    const runner = new GridPersistenceEffectRunner({
-      commit: vi.fn(), send,
-      refresh: (context) => {
-        signal = context.signal
-        return new Promise<void>((done) => { resolve = done })
-      },
-    })
-    runner.run({ type: 'refresh', token: 1 })
-    runner.run({ type: 'schedule', token: 2, delay: 800, retry: false })
-    await Promise.resolve()
+    const runner = new GridKernelPersistenceRunner(server.source, send, { readAtLeast: vi.fn() })
+    runner.run({ type: 'schedule', token: 1, delay: 100 })
     runner.destroy()
-    expect(signal?.aborted).toBe(true)
-    resolve!()
     await vi.runAllTimersAsync()
     expect(send).not.toHaveBeenCalled()
   })

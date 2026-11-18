@@ -1,15 +1,16 @@
+import { kernelId } from '../kernel/model.js'
 import { describe, expect, it } from 'vitest'
 import type { GridBulkSession, GridEditSession } from '../model/grid-model.js'
 import { decideGridSessionExit, gridDraftSessionIssue, type GridDraftCommandOwner } from './session-policy.js'
 
 const cell = { rowKey: 'row', columnKey: 'value' }
 const edit: GridEditSession<string> = {
-  revision: 4, startedRevision: 1, sourceRevision: 1, cell,
+  id: 'edit', entityId: kernelId<'entity'>('row'), revision: 4, startedRevision: 1, sourceRevision: 1, cell,
   originalValue: 0, draftValue: 'input', status: 'editing', composing: false, error: null,
 }
 const bulk: GridBulkSession<string> = {
-  revision: 3, sourceRevision: 1, draftRevision: 1, viewRevision: 1,
-  selectionSignature: '', columnKey: 'value', targetCells: [cell], draft: 'input', error: null,
+  id: 'bulk', revision: 3,
+  columnKey: 'value', targets: [], draft: 'input', error: null,
 }
 const empty = { edit: null, bulk: null, filterSession: null }
 
@@ -35,15 +36,15 @@ describe('session ownership and exit policy', () => {
   })
 
   it('rejects orphaned session owners but permits session-independent cell effects', () => {
-    expect(gridDraftSessionIssue(empty, 4, { kind: 'edit-commit', cell, editRevision: 4 }, 'writing')).toContain('no longer current')
-    expect(gridDraftSessionIssue(empty, 4, { kind: 'cell-effect', cell, editRevision: 4 }, 'writing')).toContain('no longer belongs')
+    expect(gridDraftSessionIssue(empty, 4, { kind: 'edit-commit', cell, editRevision: 4 }, 'writing')?.message).toContain('no longer current')
+    expect(gridDraftSessionIssue(empty, 4, { kind: 'cell-effect', cell, editRevision: 4 }, 'writing')?.message).toContain('no longer belongs')
     expect(gridDraftSessionIssue(empty, 4, { kind: 'cell-effect', cell, editRevision: null }, 'writing')).toBeNull()
   })
 
   it('requires the current bulk revision and prevents another surface from writing', () => {
     expect(gridDraftSessionIssue({ ...empty, bulk }, 4, { kind: 'bulk-apply', bulkRevision: 3 }, 'writing')).toBeNull()
-    expect(gridDraftSessionIssue({ ...empty, bulk }, 4, { kind: 'bulk-apply', bulkRevision: 2 }, 'writing')).toContain('bulk edit')
-    const filterSession = { revision: 1, columnKey: 'value', conditions: [], combine: 'all' as const, error: null }
-    expect(gridDraftSessionIssue({ ...empty, filterSession }, 4, { kind: 'external' }, 'writing')).toContain('filter edit')
+    expect(gridDraftSessionIssue({ ...empty, bulk }, 4, { kind: 'bulk-apply', bulkRevision: 2 }, 'writing')?.message).toContain('bulk edit')
+    const filterSession = { id: 'filter', revision: 1, columnKey: 'value', conditions: [], combine: 'all' as const, error: null }
+    expect(gridDraftSessionIssue({ ...empty, filterSession }, 4, { kind: 'external' }, 'writing')?.message).toContain('filter edit')
   })
 })

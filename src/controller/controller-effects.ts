@@ -1,5 +1,7 @@
-import type { GridControllerSnapshot, GridPoint, GridRowKey, GridRuntimeCellEffect, GridRuntimeValueContext, GridValueResult } from '../model/grid-model.js'
-import type { GridEffectPort, GridEffectRequest, GridEffectResult } from './controller-contracts.js'
+import { copyGridCellEffectResult, copyGridHostEffectResult } from './effect-results.js'
+import type { GridCompiledDocumentModel } from '../data/runtime-columns.js'
+import type { GridPoint, GridRowKey, GridRuntimeCellEffect, GridRuntimeValueContext, GridValueResult } from '../model/grid-model.js'
+import type { GridEffectInput, GridEffectPort, GridEffectRequest, GridEffectResult } from './controller-contracts.js'
 import type { GridActiveEffect } from './effect-coordinator.js'
 
 export type GridCellEffectOperation<Row, RowKey extends GridRowKey> = Readonly<{
@@ -19,7 +21,7 @@ export type GridExternalEffectOperation<RowKey extends GridRowKey, Effect> = Rea
 
 export type GridControllerEffectEvent<Row, RowKey extends GridRowKey, Effect> =
   | Readonly<{ type: 'cell/completed'; operation: GridCellEffectOperation<Row, RowKey>; result: GridValueResult<unknown> }>
-  | Readonly<{ type: 'external/completed'; operation: GridExternalEffectOperation<RowKey, Effect>; result: GridEffectResult<RowKey, Effect> }>
+  | Readonly<{ type: 'external/completed'; operation: GridExternalEffectOperation<RowKey, Effect>; result: GridEffectResult }>
   | Readonly<{ type: 'external/failed'; operation: GridExternalEffectOperation<RowKey, Effect>; error: unknown }>
 
 /** Owns AbortControllers, never semantic effect ownership or controller state. */
@@ -28,14 +30,15 @@ export class GridControllerEffectRunner<Row, RowKey extends GridRowKey, Effect> 
   readonly #send: (event: GridControllerEffectEvent<Row, RowKey, Effect>) => void
   #destroyed = false
 
-  constructor(send: (event: GridControllerEffectEvent<Row, RowKey, Effect>) => void) {
+  constructor(send: (event: GridControllerEffectEvent<Row, RowKey, Effect>) => void, private readonly model: GridCompiledDocumentModel<Row>) {
     this.#send = send
   }
 
   runCell(operation: GridCellEffectOperation<Row, RowKey>) {
     const { active, definition, input, context } = operation
     this.#execute(active,
-      (signal) => definition.run(input, context, signal),
+      async (signal) => copyGridCellEffectResult(this.model, operation.target.columnKey,
+        await definition.run(structuredClone(input), context, signal)),
       (result) => this.#send({ type: 'cell/completed', operation, result }),
       (error) => this.#send({ type: 'cell/completed', operation, result: {
         ok: false, issue: { code: 'exception', message: error instanceof Error ? error.message : String(error) },
@@ -46,10 +49,14 @@ export class GridControllerEffectRunner<Row, RowKey extends GridRowKey, Effect> 
   runExternal(
     operation: GridExternalEffectOperation<RowKey, Effect>,
     port: GridEffectPort<Row, RowKey, Effect>,
-    getSnapshot: () => GridControllerSnapshot<Row, RowKey>,
+    cells: readonly GridEffectInput<Row, RowKey>[],
   ) {
     this.#execute(operation.active,
-      (signal) => port.run(operation.request.effect, { signal, getSnapshot }),
+      async (signal) => {
+        const owner = operation.request.owner
+        const result = await port.run(structuredClone(operation.request.effect), { signal, owner: structuredClone(owner), cells })
+        return copyGridHostEffectResult(this.model, operation, result)
+      },
       (result) => this.#send({ type: 'external/completed', operation, result }),
       (error) => this.#send({ type: 'external/failed', operation, error }),
     )
@@ -75,18 +82,22 @@ export class GridControllerEffectRunner<Row, RowKey extends GridRowKey, Effect> 
     if (this.#destroyed) return
     const abort = new AbortController()
     this.#active.set(owner, abort)
+    let started = false
     const current = () => !this.#destroyed && !abort.signal.aborted && this.#active.get(owner) === abort
     void Promise.resolve().then(() => {
-      if (current()) return run(abort.signal)
-      return undefined
+      if (!current()) throw new Error('The task was cancelled before it started.')
+      started = true
+      return run(abort.signal)
     }).then((value) => {
-      if (!current()) return
-      this.#active.delete(owner)
-      completed(value as Value)
+      if (this.#destroyed) return
+      if (this.#active.get(owner) === abort) this.#active.delete(owner)
+      // Cancellation revokes application permission, not an already produced
+      // result. The Runtime retains stale results for explicit review/reapply.
+      completed(value)
     }, (error: unknown) => {
-      if (!current()) return
-      this.#active.delete(owner)
-      failed(error)
+      if (this.#destroyed) return
+      if (this.#active.get(owner) === abort) this.#active.delete(owner)
+      failed(started ? error : new Error('The task was cancelled; its input is retained.'))
     })
   }
 }

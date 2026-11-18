@@ -1,30 +1,31 @@
-import type { GridPoint, GridRowKey } from '../model/grid-model.js'
+import type { GridRowKey, GridTargetDependency } from '../model/grid-model.js'
 
 export type GridActiveEffect<RowKey extends GridRowKey> = Readonly<{
+  generation?: string
+  targets: readonly (GridTargetDependency<RowKey> & Readonly<{ columnKey: string; access: 'read' | 'write' }>)[]
+  sessionId?: string
   source?: number
   edit?: number
   persistence?: number
-  cell?: GridPoint<RowKey>
-  cellRevision?: number
   cellScope?: string
 }>
 
 export type GridEffectOwnershipState<RowKey extends GridRowKey> = Readonly<{
+  pending: ReadonlySet<GridActiveEffect<RowKey>>
   external: ReadonlyMap<string, GridActiveEffect<RowKey>>
   cells: ReadonlyMap<string, GridActiveEffect<RowKey>>
   cellScopes: ReadonlyMap<string, string>
-  cellRevisions: ReadonlyMap<string, number>
 }>
 
 export function initialGridEffectOwnershipState<RowKey extends GridRowKey>(): GridEffectOwnershipState<RowKey> {
-  return Object.freeze({ external: new Map(), cells: new Map(), cellScopes: new Map(), cellRevisions: new Map() })
+  return Object.freeze({ pending: new Set<GridActiveEffect<RowKey>>(), external: new Map(), cells: new Map(), cellScopes: new Map() })
 }
 
 export class GridEffectCoordinator<RowKey extends GridRowKey> {
+  #pending = new Set<GridActiveEffect<RowKey>>()
   #external = new Map<string, GridActiveEffect<RowKey>>()
   #cells = new Map<string, GridActiveEffect<RowKey>>()
   #cellScopes = new Map<string, string>()
-  #cellRevisions = new Map<string, number>()
   readonly #isCurrent: (effect: GridActiveEffect<RowKey>) => boolean
 
   readonly #cancel: (effect: GridActiveEffect<RowKey>) => void
@@ -40,31 +41,30 @@ export class GridEffectCoordinator<RowKey extends GridRowKey> {
 
   restoreState(state: GridEffectOwnershipState<RowKey>) {
     // Maps are shared read-only until the first mutation in this input.
+    this.#pending = state.pending as Set<GridActiveEffect<RowKey>>
     this.#external = state.external as Map<string, GridActiveEffect<RowKey>>
     this.#cells = state.cells as Map<string, GridActiveEffect<RowKey>>
     this.#cellScopes = state.cellScopes as Map<string, string>
-    this.#cellRevisions = state.cellRevisions as Map<string, number>
     this.#owned = false
   }
 
   captureState(): GridEffectOwnershipState<RowKey> {
+    // A rollback checkpoint can be captured midway through a command.
+    // Its maps must survive subsequent writes in the same input.
+    this.#owned = false
     return Object.freeze({
-      external: this.#external, cells: this.#cells,
-      cellScopes: this.#cellScopes, cellRevisions: this.#cellRevisions,
+      pending: this.#pending, external: this.#external, cells: this.#cells,
+      cellScopes: this.#cellScopes,
     })
   }
 
   #write() {
     if (this.#owned) return
+    this.#pending = new Set(this.#pending)
     this.#external = new Map(this.#external)
     this.#cells = new Map(this.#cells)
     this.#cellScopes = new Map(this.#cellScopes)
-    this.#cellRevisions = new Map(this.#cellRevisions)
     this.#owned = true
-  }
-
-  cellRevision(cellKey: string) {
-    return this.#cellRevisions.get(cellKey) ?? 0
   }
 
   startCell(
@@ -79,6 +79,7 @@ export class GridEffectCoordinator<RowKey extends GridRowKey> {
       ...guard,
       cellScope,
     })
+    this.#pending.add(effect)
     this.#cells.set(ownerKey, effect)
     this.#cellScopes.set(cellScope, ownerKey)
     return effect
@@ -94,6 +95,7 @@ export class GridEffectCoordinator<RowKey extends GridRowKey> {
 
   finishCell(ownerKey: string, effect: GridActiveEffect<RowKey>) {
     this.#write()
+    this.#pending.delete(effect)
     if (this.#cells.get(ownerKey) !== effect) return false
     this.#cells.delete(ownerKey)
     if (this.#cellScopes.get(effect.cellScope!) === ownerKey) {
@@ -114,13 +116,6 @@ export class GridEffectCoordinator<RowKey extends GridRowKey> {
     return true
   }
 
-  invalidateCell(cellKey: string) {
-    this.#write()
-    this.#cellRevisions.set(cellKey, this.cellRevision(cellKey) + 1)
-    const ownerKey = this.#cellScopes.get(cellKey)
-    if (ownerKey !== undefined) this.cancelCell(ownerKey)
-  }
-
   startExternal(
     id: string,
     guard: GridActiveEffect<RowKey>,
@@ -131,6 +126,7 @@ export class GridEffectCoordinator<RowKey extends GridRowKey> {
     this.#write()
     if (previous) this.#cancel(previous)
     const effect = Object.freeze({ ...guard })
+    this.#pending.add(effect)
     this.#external.set(id, effect)
     return effect
   }
@@ -144,6 +140,7 @@ export class GridEffectCoordinator<RowKey extends GridRowKey> {
 
   finishExternal(id: string, effect: GridActiveEffect<RowKey>) {
     this.#write()
+    this.#pending.delete(effect)
     if (this.#external.get(id) !== effect) return false
     this.#external.delete(id)
     return true
@@ -158,16 +155,12 @@ export class GridEffectCoordinator<RowKey extends GridRowKey> {
     return true
   }
 
-  abortSourceOwned() {
-    this.#write()
-    for (const effect of this.#cells.values()) this.#cancel(effect)
-    this.#cells.clear()
-    this.#cellScopes.clear()
-    for (const [id, effect] of this.#external) {
-      if (effect.source === undefined) continue
-      this.#cancel(effect)
-      this.#external.delete(id)
-    }
+  /** Revoke on the first published loss of ownership, including a change
+   * before the task runner's first microtask. A later value match cannot revive it. */
+  revokeStale() {
+    for (const [id, active] of this.#cells)
+      if (!this.#isCurrent(active)) this.cancelCell(id)
+    for (const [id, active] of this.#external)
+      if (!this.#isCurrent(active)) this.cancelExternal(id)
   }
-
 }

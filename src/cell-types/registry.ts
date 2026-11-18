@@ -431,6 +431,7 @@ function eraseBehavior<Row>(
     }),
     ...(behavior.edit === undefined ? {} : {
       edit: Object.freeze({
+        ...(behavior.edit.inputCodec === undefined ? {} : { inputCodec: behavior.edit.inputCodec }),
         ...(behavior.edit.exit === undefined ? {} : { exit: behavior.edit.exit }),
         begin: (value: unknown, context: GridRuntimeValueContext<Row>) => behavior.edit!.begin(value, context),
         commit: (draft: unknown, context: GridRuntimeValueContext<Row>) => behavior.edit!.commit(draft, context),
@@ -484,6 +485,7 @@ function eraseBehavior<Row>(
     }),
     ...(behavior.bulk === undefined ? {} : {
       bulk: Object.freeze({
+        ...(behavior.bulk.inputCodec === undefined ? {} : { inputCodec: behavior.bulk.inputCodec }),
         begin: (
           values: readonly unknown[],
           contexts: readonly GridRuntimeValueContext<Row>[],

@@ -1,18 +1,19 @@
 import type { GridCellTypeSchema, GridColumnForCellTypes } from '../cell-types/contracts.js'
 import type { GridRowCapabilities } from '../data/data-source.js'
-import type { GridCellMutation } from '../data/draft-transactions.js'
+import type { GridCellMutation } from '../data/command-planner.js'
 import { sameGridRowKeyOrder } from '../data/row-order.js'
 import { cloneGridRow, invokeGridCallback } from '../data/safe-callback.js'
 import { encodeCellIdentity } from '../model/cell-identity.js'
 import { gridRowKeysEqual } from '../model/row-key.js'
 import type { GridControllerSnapshot, GridPoint, GridRowKey } from '../model/grid-model.js'
+import type { GridIssueCode } from '../model/grid-result.js'
 import type { GridTransactionBuilder, GridTransactionIssue, GridTransactionRowPosition } from './controller-contracts.js'
 
 export type GridLocalTransactionPlan<Row, RowKey extends GridRowKey> = Readonly<{
   createdRows: readonly Row[]
   removedRowKeys: readonly RowKey[]
   movedRowKeys: readonly RowKey[]
-  rowOrder: readonly RowKey[]
+  rowOrder?: readonly RowKey[]
   mutations: readonly GridCellMutation<RowKey>[]
 }>
 
@@ -22,9 +23,11 @@ type GridTransactionPlanResult<Row, RowKey extends GridRowKey> =
 
 /** Runs the synchronous public builder once, without publishing state or history. */
 export function buildGridTransaction<Row, RowKey extends GridRowKey, Schema extends GridCellTypeSchema>({
-  base, build, getRowKey, cloneRow, rows, configuredColumns, maxMutations,
+  base, commandRows, build, getRowKey, cloneRow, rows, configuredColumns, maxMutations,
 }: Readonly<{
   base: GridControllerSnapshot<Row, RowKey>
+  /** Logical command membership/order from the kernel, excluding review-only deletions. */
+  commandRows: Readonly<{ keys: readonly RowKey[]; read: (key: RowKey) => Row }>
   build: GridTransactionBuilder<Row, RowKey, Schema>
   getRowKey: (row: Row) => RowKey
   cloneRow?: (row: Row) => Row
@@ -43,16 +46,10 @@ export function buildGridTransaction<Row, RowKey extends GridRowKey, Schema exte
     ...base.draft.baselineRows.map(getRowKey),
     ...base.draft.rows.map(getRowKey),
   ])
-  const targetKeys = new Set<RowKey>(
-    base.draft.rows.map(getRowKey),
-  )
-  const stagedRowKeys = base.draft.rows.map(getRowKey)
-  const rowByKey = new Map(
-    base.draft.rows.map(
-      (row) => [getRowKey(row), row] as const,
-    ),
-  )
-  const createdInTransaction = new Set<RowKey>()
+  const initialRowKeys = commandRows.keys
+  const targetKeys = new Set(initialRowKeys)
+  const stagedRowKeys = [...initialRowKeys]
+  const createdInTransaction = new Map<RowKey, Row>()
   const abortToken = Object.freeze({})
   let transactionOpen = true,
     operationCost = 0
@@ -124,9 +121,8 @@ export function buildGridTransaction<Row, RowKey extends GridRowKey, Schema exte
     }
     reservedKeys.add(keyed.value.key)
     targetKeys.add(keyed.value.key)
-    createdInTransaction.add(keyed.value.key)
+    createdInTransaction.set(keyed.value.key, keyed.value.row)
     createdRows.push(keyed.value.row)
-    rowByKey.set(keyed.value.key, keyed.value.row)
     const insertion = beforeRowKey === null
       ? stagedRowKeys.length
       : stagedRowKeys.findIndex((rowKey) =>
@@ -193,7 +189,7 @@ export function buildGridTransaction<Row, RowKey extends GridRowKey, Schema exte
           'Duplicate a row before staging cell changes to that source row.',
         ))
       }
-      const row = rowByKey.get(sourceRowKey)!
+      const row = createdInTransaction.has(sourceRowKey) ? createdInTransaction.get(sourceRowKey)! : commandRows.read(sourceRowKey)
       const cloned = cloneGridRow(row, cloneRow)
       if (!cloned.ok) {
         return abort(createGridTransactionIssue('row-clone-failed', cloned.message))
@@ -259,7 +255,7 @@ export function buildGridTransaction<Row, RowKey extends GridRowKey, Schema exte
           ))
         }
         const cloned = cloneGridRow(
-          rowByKey.get(rowKey)!,
+          commandRows.read(rowKey),
           cloneRow,
         )
         if (!cloned.ok) {
@@ -348,13 +344,18 @@ export function buildGridTransaction<Row, RowKey extends GridRowKey, Schema exte
         'Grid transactions must be built synchronously.',
       ))
     }
+    // Creation appends and deletion removes members by themselves. A complete
+    // order command is needed only when the builder explicitly changes that
+    // natural order; content-only transactions must not acquire order dependencies.
+    const naturalOrder = [...initialRowKeys, ...createdRows.map(getRowKey)]
+      .filter(key => !removedRowKeys.has(key))
     return Object.freeze({
       ok: true,
       plan: Object.freeze({
         createdRows: Object.freeze(createdRows),
         removedRowKeys: Object.freeze([...removedRowKeys]),
         movedRowKeys: Object.freeze([...movedRowKeys]),
-        rowOrder: Object.freeze(stagedRowKeys),
+        ...(sameGridRowKeyOrder(naturalOrder, stagedRowKeys) ? {} : { rowOrder: Object.freeze(stagedRowKeys) }),
         mutations: Object.freeze(mutations),
       }),
     })
@@ -363,22 +364,32 @@ export function buildGridTransaction<Row, RowKey extends GridRowKey, Schema exte
   }
 }
 
+const transactionIssueCategories: Readonly<Record<string, GridIssueCode>> = Object.freeze({
+  'aborted': 'invalid-input', 'transaction-closed': 'stale-target', 'mutation-limit': 'limit-exceeded',
+  'row-order-unavailable': 'permission-denied', 'unknown-row': 'stale-target', 'invalid-row-key': 'adapter-error',
+  'duplicate-row-key': 'invalid-input', 'duplicate-row-target': 'invalid-input',
+  'row-create-unavailable': 'permission-denied', 'row-duplicate-unavailable': 'permission-denied',
+  'row-delete-unavailable': 'permission-denied', 'row-delete-blocked': 'permission-denied',
+  'row-create-failed': 'adapter-error', 'row-duplicate-failed': 'adapter-error',
+  'row-clone-failed': 'adapter-error', 'row-delete-check-failed': 'adapter-error',
+  'duplicate-after-set': 'invalid-input', 'delete-after-set': 'invalid-input',
+  'unknown-column': 'invalid-input', 'duplicate-cell': 'invalid-input', 'builder-exception': 'adapter-error',
+  'async-builder': 'invalid-input', 'session-active': 'session-open', 'destroyed': 'closed',
+  'stale-base': 'stale-target', 'transaction-active': 'busy', 'transaction-exception': 'adapter-error',
+})
+
 export function createGridTransactionIssue<RowKey extends GridRowKey>(
-  code: string,
+  domainCode: string,
   message: string,
   cell?: GridPoint<RowKey>,
 ): GridTransactionIssue<RowKey> {
-  return Object.freeze({
-    code,
-    message,
-    ...(cell ? { cell: Object.freeze({ ...cell }) } : {}),
+  return freezeTransactionIssue({ code: transactionIssueCategories[domainCode] ?? 'invalid-input', message, domainCode,
+    ...(cell ? { cell } : {}),
   })
 }
 
-function freezeTransactionIssue<RowKey extends GridRowKey>(
-  issue: GridTransactionIssue<RowKey>,
-) {
-  return createGridTransactionIssue(issue.code, issue.message, issue.cell)
+function freezeTransactionIssue<RowKey extends GridRowKey>(issue: GridTransactionIssue<RowKey>) {
+  return Object.freeze({ ...issue, ...(issue.cell ? { cell: Object.freeze({ ...issue.cell }) } : {}) })
 }
 
 function isThenable(value: unknown): value is PromiseLike<unknown> {

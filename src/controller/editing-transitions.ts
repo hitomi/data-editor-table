@@ -1,3 +1,4 @@
+import { copyGridInput } from '../cell-types/input-codec.js'
 import { areGridValuesEqual, invokeGridResult } from '../data/safe-callback.js'
 import type { GridCompiledColumn, GridEditSession, GridPoint, GridRowKey, GridValueResult } from '../model/grid-model.js'
 
@@ -12,18 +13,26 @@ export function beginGridEditSession<Row, RowKey extends GridRowKey>(
   target: GridPoint<RowKey>,
   sourceRevision: number,
   revision: number,
+  identity: Pick<GridEditSession<RowKey>, 'id' | 'entityId'>,
 ): GridValueResult<GridEditSession<RowKey>> {
   const edit = resolved.column.behavior.edit
   if (!edit || !resolved.column.isEditable(resolved.row)) return {
     ok: false, issue: { code: 'edit-unavailable', message: 'This cell does not support editing.' },
   }
-  const begun = invokeGridResult(() => ({ ok: true, value: edit.begin(resolved.value, editContext(resolved)) }))
+  const begun = invokeGridResult(() => ({ ok: true, value: copyGridInput(edit.begin(resolved.value, editContext(resolved)), edit.inputCodec) }))
   if (!begun.ok) return begun
   return { ok: true, value: Object.freeze({
-    revision, startedRevision: revision, sourceRevision,
+    ...identity, revision, startedRevision: revision, sourceRevision,
     cell: Object.freeze({ ...target }), originalValue: resolved.value, draftValue: begun.value,
     status: 'editing', composing: false, error: null,
   }) }
+}
+
+export function gridEditSourceIssue<Row, RowKey extends GridRowKey>(
+  session: GridEditSession<RowKey>, resolved: ResolvedEditCell<Row>, sourceRevision: number,
+) {
+  if (session.sourceRevision === sourceRevision || areGridValuesEqual(resolved.column, resolved.value, session.originalValue)) return null
+  return { code: 'edit-source-changed', message: 'This cell changed remotely while it was being edited. Cancel or restart the edit.' }
 }
 
 /** Produces a value proposal, never a draft transaction or a closed editor. */
@@ -32,16 +41,11 @@ export function prepareGridEditValue<Row, RowKey extends GridRowKey>(
   resolved: ResolvedEditCell<Row>,
   sourceRevision: number,
 ): GridValueResult<unknown> {
-  if (session.sourceRevision !== sourceRevision
-    && !areGridValuesEqual(resolved.column, resolved.value, session.originalValue)) return {
-    ok: false, issue: {
-      code: 'edit-source-changed',
-      message: 'This cell changed remotely while it was being edited. Cancel or restart the edit.',
-    },
-  }
+  const changed = gridEditSourceIssue(session, resolved, sourceRevision)
+  if (changed) return { ok: false, issue: changed }
   const edit = resolved.column.behavior.edit
   if (!edit) return { ok: false, issue: { code: 'edit-unavailable', message: 'The edit target is unavailable.' } }
-  return invokeGridResult(() => edit.commit(session.draftValue, editContext(resolved)))
+  return invokeGridResult(() => edit.commit(copyGridInput(session.draftValue, edit.inputCodec), editContext(resolved)))
 }
 
 export function invalidateGridEditSession<RowKey extends GridRowKey>(

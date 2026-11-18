@@ -1,8 +1,7 @@
+import { createDemoGridSource } from './demo-data-source'
 import {
   DataGrid,
   createGridColumnHelper,
-  createRemoteGridDataSource,
-  type GridCommitRequest,
 } from 'data-editor-table'
 
 type Product = {
@@ -21,7 +20,8 @@ const initialProducts: readonly Product[] = [
 
 const column = createGridColumnHelper<Product>()
 
-const dataSource = createRemoteGridDataSource({
+const createSource = () => createDemoGridSource<Product, import('data-editor-table').StandardGridCellTypeSchema>({
+  name: 'quick-start', initialRows: initialProducts,
   columns: [
     column.field('name', { label: 'Name', type: 'string', sortable: true }),
     column.field('quantity', {
@@ -39,63 +39,29 @@ const dataSource = createRemoteGridDataSource({
     }),
     column.field('active', { label: 'Active', type: 'boolean' }),
   ],
-  getRowKey: (product) => product.id,
-  initialSnapshot: {
-    rows: initialProducts,
-    status: 'ready',
-    version: 1,
-    scope: { kind: 'complete' },
-  },
-  persistence: {
-    mode: 'auto-save',
-    debounceMs: 250,
-    mutate: saveToDemoApi,
-  },
+  persistence: { mode: 'auto-save', debounceMs: 250 },
 })
 
-let demoAuthority = { rows: initialProducts, version: 1 }
+const sourceOwner: ReturnType<typeof createSource> = import.meta.hot?.data.sourceOwner ?? createSource()
+const { dataSource } = sourceOwner
+if (import.meta.hot) import.meta.hot.dispose(data => { data.sourceOwner = sourceOwner })
 
-async function saveToDemoApi(
-  request: GridCommitRequest<Product, string>,
-) {
-  demoAuthority = {
-    rows: Object.freeze([...request.rows]),
-    version: demoAuthority.version + 1,
-  }
-  return { kind: 'applied' as const, authority: demoAuthority }
-}
-
-const shortestIntegration = `import {
-  DataGrid,
-  createGridColumnHelper,
-  createRemoteGridDataSource,
-} from 'data-editor-table'
-import 'data-editor-table/styles.css'
-
-type Product = {
-  id: string
-  name: string
-  active: boolean
-}
-
-const column = createGridColumnHelper<Product>()
+const shortestIntegration = `const column = createGridColumnHelper<Product>()
+const columns = [
+  column.field('name', { label: 'Name', type: 'string' }),
+  column.field('active', { label: 'Active', type: 'boolean' }),
+]
 
 const dataSource = createRemoteGridDataSource({
-  columns: [
-    column.field('name', { label: 'Name', type: 'string' }),
-    column.field('active', { label: 'Active', type: 'boolean' }),
-  ],
-  getRowKey: (row) => row.id,
-  initialSnapshot: bootstrapProducts,
-  persistence: {
-    mode: 'auto-save',
-    mutate: (request) => productsApi.applyGridChanges(request),
-  },
+  columns,
+  getRowKey: row => row.id,
+  model: createFieldGridDocumentModel(columns),
+  scope: productsApi.scope,
+  source: productsApi.persistenceSource,
+  persistence: { mode: 'auto-save' },
 })
 
-export function ProductEditor() {
-  return <DataGrid ariaLabel="Products" dataSource={dataSource} />
-}`
+<DataGrid ariaLabel="Products" dataSource={dataSource} />`
 
 export function QuickStartPage() {
   return (

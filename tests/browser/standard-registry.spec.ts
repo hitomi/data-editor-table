@@ -189,3 +189,39 @@ function observeBrowserErrors(page: Page) {
   page.on('pageerror', (error) => { errors.push(error.message) })
   return errors
 }
+
+test('dropping an image during the initial read imports it once the rows load', async ({ page }) => {
+  const errors = observeBrowserErrors(page)
+  await page.goto('/')
+  // Hold a pending database deletion ahead of the demo's open request. This
+  // delays real IndexedDB I/O until the test releases the existing connection.
+  const connection = await page.evaluateHandle(async () => {
+    const name = 'data-editor-original-ui:multi-image:authority'
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const open = indexedDB.open(name)
+      open.onsuccess = () => resolve(open.result)
+      open.onerror = () => reject(open.error)
+    })
+    await new Promise<void>((resolve, reject) => {
+      const deletion = indexedDB.deleteDatabase(name)
+      deletion.onblocked = () => resolve()
+      deletion.onerror = () => reject(deletion.error)
+    })
+    return db
+  })
+  await page.getByRole('link', { name: 'Multi-image import' }).click()
+  await expect(page.getByLabel('Choose images to import')).toBeAttached()
+  await page.evaluate(() => {
+    const transfer = new DataTransfer()
+    transfer.items.add(new File(['<svg xmlns="http://www.w3.org/2000/svg"/>'], 'early.svg', { type: 'image/svg+xml' }))
+    window.dispatchEvent(new DragEvent('drop', { dataTransfer: transfer, bubbles: true, cancelable: true }))
+  })
+  await expect(page.getByRole('status').filter({ hasText: 'Waiting for rows' })).toBeVisible()
+  await connection.evaluate(db => db.close())
+  await expect(page.getByRole('status').filter({ hasText: 'Imported 1 image' })).toBeVisible()
+  await expect(page.getByRole('grid', { name: 'Image import rows' }).getByRole('img', { name: 'early' })).toBeVisible()
+  await expect(page.getByText('1 saved', { exact: true })).toBeVisible()
+  await page.reload()
+  await expect(page.getByRole('img', { name: 'early' })).toHaveCount(1)
+  expect(errors).toEqual([])
+})

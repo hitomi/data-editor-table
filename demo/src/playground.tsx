@@ -1,7 +1,7 @@
+import { createDemoGridSource } from './demo-data-source'
 import { useRef, useSyncExternalStore } from 'react'
 import {
   DataGrid,
-  GridCommitError,
   createBooleanCellType,
   createDataGridBinding,
   createGridColumnHelper,
@@ -10,10 +10,7 @@ import {
   useGridSelector,
   type GridCellTypeSchemaOf,
   type GridController,
-  type GridDataSource,
-  type GridDataSourceSnapshot,
   type GridPersistenceMode,
-  type GridReadyDataSourceSnapshot,
 } from 'data-editor-table'
 
 type DemoRow = {
@@ -83,32 +80,8 @@ const registry = createStandardCellTypeRegistry<DemoRow>()
 type DemoSchema = GridCellTypeSchemaOf<typeof registry>
 const column = createGridColumnHelper<DemoRow, DemoSchema>()
 
-class DemoStore {
-  readonly listeners = new Set<() => void>()
-  snapshot: GridDataSourceSnapshot<DemoRow> = {
-    rows: initialRows,
-    status: 'ready',
-    version: 0,
-    scope: { kind: 'complete' },
-  }
-  nextId = 37
-  failNextSave = false
-  saveCount = 0
-
-  subscribe = (listener: () => void) => {
-    this.listeners.add(listener)
-    return () => { this.listeners.delete(listener) }
-  }
-
-  publish(next: GridDataSourceSnapshot<DemoRow>) {
-    this.snapshot = next
-    this.listeners.forEach((listener) => { listener() })
-  }
-}
-
-const store = new DemoStore()
-
-const dataSource: GridDataSource<DemoRow, string, DemoSchema> = {
+const createSource = () => createDemoGridSource<DemoRow, DemoSchema>({
+  name: 'playground', initialRows, delay: 280,
   columns: [
     column.field('image', {
       label: 'Image',
@@ -177,39 +150,10 @@ const dataSource: GridDataSource<DemoRow, string, DemoSchema> = {
       bulkEditable: true,
     }),
   ],
-  getRowKey: (row) => row.id,
-  getSnapshot: () => store.snapshot,
-  subscribe: store.subscribe,
-  refresh: () => { store.publish(store.snapshot) },
-  persistence: {
-    mode: 'auto-save',
-    debounceMs: 700,
-    commit: async (request) => {
-      await wait(280)
-      if (store.failNextSave) {
-        store.failNextSave = false
-        throw new Error('The simulated save failed. Retry when ready.')
-      }
-      if (!Object.is(request.sourceVersion, store.snapshot.version)) {
-        throw new GridCommitError(
-          'source-version-conflict',
-          'Remote data changed before this save completed.',
-        )
-      }
-      store.saveCount += 1
-      const next = {
-        rows: request.rows,
-        status: 'ready',
-        version: Number(request.sourceVersion) + 1,
-        scope: { kind: 'complete' },
-      } satisfies GridReadyDataSourceSnapshot<DemoRow>
-      store.publish(next)
-      return { operationId: request.operationId, applied: next }
-    },
-  },
+  persistence: { mode: 'auto-save', debounceMs: 700 },
   rows: {
     create: () => ({
-      id: `row-${store.nextId++}`,
+      id: `row-${crypto.randomUUID()}`,
       image: null,
       name: 'Untitled item',
       quantity: 0,
@@ -220,16 +164,18 @@ const dataSource: GridDataSource<DemoRow, string, DemoSchema> = {
     }),
     duplicate: (row) => ({
       ...row,
-      id: `row-${store.nextId++}`,
+      id: `row-${crypto.randomUUID()}`,
       name: `${row.name} copy`,
       tags: [...row.tags],
     }),
     canDelete: () => true,
   },
-}
+})
 
-const binding = createDataGridBinding({ dataSource, registry })
-if (import.meta.hot) import.meta.hot.dispose(() => { binding.destroy() })
+const sourceOwner: ReturnType<typeof createSource> = import.meta.hot?.data.sourceOwner ?? createSource()
+const { dataSource, store, changeRow } = sourceOwner
+const binding: ReturnType<typeof createDataGridBinding<DemoRow, string, DemoSchema>> = import.meta.hot?.data.binding ?? createDataGridBinding({ dataSource, initial: { registry } })
+if (import.meta.hot) import.meta.hot.dispose(data => { data.sourceOwner = sourceOwner; data.binding = binding })
 
 export function PlaygroundPage() {
   const controller = binding.controller
@@ -330,19 +276,9 @@ function JsonPanel({ title, value }: { title: string; value: unknown }) {
 }
 
 function simulateRemoteChange() {
-  store.publish({
-    rows: store.snapshot.rows.map((row) => row.id === 'row-1'
-      ? { ...row, name: `Remote amber ${Number(store.snapshot.version) + 1}` }
-      : row),
-    status: 'ready',
-    version: Number(store.snapshot.version) + 1,
-    scope: { kind: 'complete' },
-  })
+  void changeRow('row-1', row => ({ ...row, name: `Remote amber ${Number(store.snapshot.version) + 1}` }))
 }
 
-function wait(ms: number) {
-  return new Promise<void>((resolve) => { window.setTimeout(resolve, ms) })
-}
 
 function fileToDataUrl(file: File, signal: AbortSignal) {
   return new Promise<string>((resolve, reject) => {

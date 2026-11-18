@@ -5,7 +5,6 @@ import type {
   GridRange,
   GridRowKey,
 } from '../model/grid-model.js'
-import { selectedCells } from '../model/range-geometry.js'
 
 export function rangeForHitTarget<RowKey extends GridRowKey>(
   target: GridHitTarget<RowKey>,
@@ -106,7 +105,14 @@ export function selectedRowKeys<RowKey extends GridRowKey>(
   visibleRowKeys: readonly RowKey[],
   columnKeys: readonly string[],
 ): readonly RowKey[] {
-  const selected = new Set(selectedCells(ranges, visibleRowKeys, columnKeys).map((cell) => cell.rowKey))
+  const positions = new Map(visibleRowKeys.map((key, index) => [key, index]))
+  const selected = new Set<RowKey>()
+  for (const range of ranges) {
+    if (!columnKeys.includes(range.anchor.columnKey) || !columnKeys.includes(range.focus.columnKey)) continue
+    const anchor = positions.get(range.anchor.rowKey), focus = positions.get(range.focus.rowKey)
+    if (anchor === undefined || focus === undefined) continue
+    for (let index = Math.min(anchor, focus); index <= Math.max(anchor, focus); index++) selected.add(visibleRowKeys[index]!)
+  }
   return Object.freeze(visibleRowKeys.filter((rowKey) => selected.has(rowKey)))
 }
 

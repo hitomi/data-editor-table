@@ -153,6 +153,21 @@
     flex: 1;
   }
 
+  .business-grid__pending-results {
+    display: block;
+    max-height: 160px;
+    overflow: auto;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .business-grid__pending-result {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+
   .business-grid__button,
   .business-grid__icon-button {
     display: inline-grid;

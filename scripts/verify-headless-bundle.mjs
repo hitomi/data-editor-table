@@ -215,6 +215,8 @@ const assertInsideDist = (file) => {
 
 const runtimeModules = verifyGraph('engine.js', 'runtime')
 const declarationModules = verifyGraph('engine.d.ts', 'declaration')
+const protocolRuntimeModules = verifyGraph('protocol.js', 'runtime')
+const protocolDeclarationModules = verifyGraph('protocol.d.ts', 'declaration')
 process.stdout.write(
-  `Verified isolated headless graphs: ${runtimeModules} runtime modules, ${declarationModules} declaration modules.\n`,
+  `Verified isolated headless graphs: engine ${runtimeModules} runtime / ${declarationModules} declarations; protocol ${protocolRuntimeModules} runtime / ${protocolDeclarationModules} declarations.\n`,
 )

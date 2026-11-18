@@ -4,6 +4,8 @@ import type {
   GridRuntimeValueContext,
   GridValueResult,
 } from '../model/grid-model.js'
+import type { GridInputCodec } from './input-codec.js'
+export type { GridInputCodec } from './input-codec.js'
 
 export type { GridValueResult } from '../model/grid-model.js'
 export type {
@@ -176,6 +178,7 @@ export type GridCellBulkContext<Row, Value, ColumnOptions = undefined> = Readonl
 }>
 
 export type GridCellBulkBehavior<Row, Value, BulkDraft, ColumnOptions = undefined> = Readonly<{
+  inputCodec?: GridInputCodec<BulkDraft>
   begin: (context: GridCellBulkContext<Row, Value, ColumnOptions>) => BulkDraft
   apply: (
     current: Value,
@@ -282,6 +285,7 @@ export type GridCellBehavior<
     ) => GridValueResult<Value>
   }>
   edit?: Readonly<{
+    inputCodec?: GridInputCodec<EditDraft>
     /** Whether unrelated grid interactions may commit this draft implicitly. */
     exit?: 'auto-commit' | 'explicit'
     begin: (value: Value, context: GridCellValueContext<Row, ColumnOptions>) => EditDraft

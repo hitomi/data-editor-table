@@ -1,3 +1,7 @@
+import type { GridIssue } from './grid-result.js'
+import type { EntityId, Document } from '../kernel/model.js'
+import type { GridInputCodec } from '../cell-types/input-codec.js'
+
 export type GridRowKey = string | number
 export type GridSourceVersion = string | number
 
@@ -32,6 +36,7 @@ export type GridInteractionState<RowKey extends GridRowKey> = Readonly<{
   gesture: GridSelectionGesture | GridFillGesture | null
   fillPreview: GridRange<RowKey> | null
   actionSession: Readonly<{
+    entityIds: readonly EntityId[]
     target: GridPoint<RowKey>
     menuPosition: Readonly<{ x: number; y: number }> | null
   }> | null
@@ -52,6 +57,8 @@ export type GridPointerModifiers = Readonly<{
 export type GridEditStatus = 'editing' | 'validating' | 'committing' | 'invalid'
 
 export type GridEditSession<RowKey extends GridRowKey> = Readonly<{
+  id: string
+  entityId: EntityId
   revision: number
   startedRevision: number
   sourceRevision: number
@@ -100,27 +107,9 @@ export type GridConflict<RowKey extends GridRowKey> = Readonly<{
   remoteValue?: unknown
 }>
 
-export type GridHistoryEntry<Row, RowKey extends GridRowKey> = Readonly<{
-  id: string
-  label: string
-  revision: number
-  beforeRows: readonly Row[]
-  afterRows: readonly Row[]
-  beforeDirtyCells: readonly GridDirtyCell<RowKey>[]
-  afterDirtyCells: readonly GridDirtyCell<RowKey>[]
-  beforeInsertedRowKeys: readonly RowKey[]
-  afterInsertedRowKeys: readonly RowKey[]
-  beforeDeletedRowKeys: readonly RowKey[]
-  afterDeletedRowKeys: readonly RowKey[]
-  beforeOrderDirty: boolean
-  afterOrderDirty: boolean
-  beforeConflicts: readonly GridConflict<RowKey>[]
-  afterConflicts: readonly GridConflict<RowKey>[]
-  beforeValidationIssues: readonly GridValidationIssue<RowKey>[]
-  afterValidationIssues: readonly GridValidationIssue<RowKey>[]
-}>
-
-export type GridDraftState<Row, RowKey extends GridRowKey> = Readonly<{
+/** Derived display state. It is not an input to a draft reducer. */
+export type GridReadModel<Row, RowKey extends GridRowKey> = Readonly<{
+  entityAt(rowKey: RowKey): EntityId | undefined
   revision: number
   baselineVersion: GridSourceVersion
   baselineRows: readonly Row[]
@@ -131,8 +120,20 @@ export type GridDraftState<Row, RowKey extends GridRowKey> = Readonly<{
   insertedRowKeys: readonly RowKey[]
   deletedRowKeys: readonly RowKey[]
   orderDirty: boolean
-  undoStack: readonly GridHistoryEntry<Row, RowKey>[]
-  redoStack: readonly GridHistoryEntry<Row, RowKey>[]
+  orderConflict: string | null
+  undoStack: readonly Readonly<{ id: string; label: string; revision: number }>[]
+  redoStack: readonly Readonly<{ id: string; label: string; revision: number }>[]
+  savePlan: Readonly<{
+    excluded: readonly GridIssue[]
+    proposedRows: readonly Row[]
+    saveableRowKeys: readonly RowKey[]
+    saveableDeletedRowKeys: readonly RowKey[]
+    blockedChangedRowKeys: readonly RowKey[]
+    saveableRowCount: number
+    blockedRowCount: number
+    orderChanged: boolean
+    canSave: boolean
+  }>
 }>
 
 export type GridSort = Readonly<{
@@ -158,14 +159,29 @@ export type GridViewState<RowKey extends GridRowKey> = Readonly<{
 export type GridPersistenceMode = 'immediate' | 'manual-save' | 'auto-save'
 export type GridPersistenceStatus = 'idle' | 'scheduled' | 'saving' | 'failed'
 
+/** A delayed producer supplies the target it originally presented to the user. */
+export type GridCommandTarget<RowKey extends GridRowKey> =
+  | Readonly<{ kind: 'row'; rowKey: RowKey; entityId: EntityId }>
+  | Readonly<{ kind: 'edit' | 'bulk' | 'filter'; id: string }>
+
+export type GridSaveTarget<Key extends GridRowKey = GridRowKey> = Readonly<{
+  kind: 'save'; workspaceId: string; generation: number; editId: string | null; origin?: GridCommandTarget<Key>
+}>
+export type GridSaveRecovery = Readonly<{ operationId: string; action: 'confirm' | 'refresh' | 'review' }>
+
 export type GridPersistenceState = Readonly<{
   revision: number
   mode: GridPersistenceMode
   status: GridPersistenceStatus
+  workspaceId: string
+  generation: number
   inFlightOperationId: string | null
   pendingDraftRevision: number | null
   error: string | null
-  retryOperationId: string | null
+  dispute: Readonly<{ id: string; operationId: string; message: string }> | null
+  canStartSave: boolean
+  canRetrySave: boolean
+  recovery: GridSaveRecovery | null
 }>
 
 export type GridFeedbackItem = Readonly<{
@@ -180,19 +196,23 @@ export type GridFeedbackState = Readonly<{
   items: readonly GridFeedbackItem[]
 }>
 
+export type GridTargetDependency<RowKey extends GridRowKey> = Readonly<{
+  entityId: EntityId
+  rowKey: RowKey
+  document: Document
+}>
+
 export type GridBulkSession<RowKey extends GridRowKey> = Readonly<{
+  id: string
+  targets: readonly GridTargetDependency<RowKey>[]
   revision: number
-  sourceRevision: number
-  draftRevision: number
-  viewRevision: number
-  selectionSignature: string
   columnKey: string
-  targetCells: readonly GridPoint<RowKey>[]
   draft: unknown
   error: string | null
 }> | null
 
 export type GridFilterSession = Readonly<{
+  id: string
   revision: number
   columnKey: string
   conditions: readonly Readonly<{ operator: string; value: unknown }>[]
@@ -201,6 +221,8 @@ export type GridFilterSession = Readonly<{
 }> | null
 
 export type GridControllerSnapshot<Row, RowKey extends GridRowKey> = Readonly<{
+  activeEffectCount: number
+  pendingEffects: readonly Readonly<{ id: string; cell: GridPoint<RowKey> | null; message: string }>[]
   revision: number
   columns: readonly GridCompiledColumn<Row>[]
   getRowKey: (row: Row) => RowKey
@@ -214,7 +236,7 @@ export type GridControllerSnapshot<Row, RowKey extends GridRowKey> = Readonly<{
     canRefresh: boolean
   }>
   source: GridSourceState<Row>
-  draft: GridDraftState<Row, RowKey>
+  draft: GridReadModel<Row, RowKey>
   view: GridViewState<RowKey>
   layout: GridLayoutState
   interaction: GridInteractionState<RowKey>
@@ -267,10 +289,14 @@ export type GridColumn<
   label: string
   type: Type
   layout?: GridColumnLayout
+  /** Explicit path emitted by field helpers; custom setters declare a model. */
+  storagePath?: readonly [string, ...string[]]
   getValue: (row: Row) => Value
   setValue?: (row: Row, value: Value) => Row
   isEditable?: (row: Row) => boolean
-  validate?: (value: Value, row: Row) => GridValueResult<Value>
+  validate?: (value: Value) => GridValueResult<Value>
+  /** Runs after value validation and declares a complete-row dependency. */
+  validateWithRow?: (value: Value, row: Row) => GridValueResult<Value>
   sortable?: boolean
   filterable?: boolean
   bulkEditable?: boolean
@@ -323,6 +349,7 @@ export type GridRuntimeCellBehavior<Row> = Readonly<{
     ) => GridValueResult<unknown>
   }>
   edit?: Readonly<{
+    inputCodec?: GridInputCodec<unknown>
     exit?: 'auto-commit' | 'explicit'
     begin: (value: unknown, context: GridRuntimeValueContext<Row>) => unknown
     commit: (
@@ -371,6 +398,7 @@ export type GridRuntimeCellBehavior<Row> = Readonly<{
     }>[]
   }>
   bulk?: Readonly<{
+    inputCodec?: GridInputCodec<unknown>
     begin: (
       values: readonly unknown[],
       contexts: readonly GridRuntimeValueContext<Row>[],

@@ -29,6 +29,10 @@
       "types": "./dist/engine.d.ts",
       "import": "./dist/engine.js"
     },
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "import": "./dist/protocol.js"
+    },
     "./locales/zh-CN": {
       "types": "./dist/locales/zh-cn.d.ts",
       "import": "./dist/locales/zh-CN.js"
@@ -63,6 +67,7 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@noble/hashes": "2.0.1",
     "@playwright/test": "^1.62.1",
     "@tanstack/react-router": "^1.170.32",
     "@types/react": "^19.2.0",

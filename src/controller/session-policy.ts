@@ -1,5 +1,6 @@
 import type { GridBulkSession, GridEditSession, GridFilterSession, GridPoint, GridRowKey } from '../model/grid-model.js'
 import { gridRowKeysEqual } from '../model/row-key.js'
+import type { GridIssue } from '../model/grid-result.js'
 
 export type GridDraftCommandOwner<RowKey extends GridRowKey> =
   | Readonly<{ kind: 'external' }>
@@ -37,22 +38,22 @@ export function gridDraftSessionIssue<RowKey extends GridRowKey>(
   editRevision: number,
   owner: GridDraftCommandOwner<RowKey>,
   action: string,
-): string | null {
+): GridIssue | null {
   if (sessions.bulk) {
     if (owner.kind === 'bulk-apply' && owner.bulkRevision === sessions.bulk.revision) return null
-    return `Apply or cancel the bulk edit before ${action}.`
+    return { code: 'session-open', message: `Apply or cancel the bulk edit before ${action}.` }
   }
-  if (owner.kind === 'bulk-apply') return 'The bulk edit session is no longer current.'
-  if (sessions.filterSession) return `Apply or cancel the filter edit before ${action}.`
+  if (owner.kind === 'bulk-apply') return { code: 'stale-target', message: 'The bulk edit session is no longer current.' }
+  if (sessions.filterSession) return { code: 'session-open', message: `Apply or cancel the filter edit before ${action}.` }
   if (sessions.edit) {
     const ownsEdit = (owner.kind === 'edit-commit' || owner.kind === 'cell-effect')
       && owner.editRevision === editRevision
       && gridRowKeysEqual(owner.cell.rowKey, sessions.edit.cell.rowKey)
       && owner.cell.columnKey === sessions.edit.cell.columnKey
-    return ownsEdit ? null : `Commit or cancel the cell edit before ${action}.`
+    return ownsEdit ? null : { code: 'session-open', message: `Commit or cancel the cell edit before ${action}.` }
   }
-  if (owner.kind === 'edit-commit') return 'The cell edit session is no longer current.'
+  if (owner.kind === 'edit-commit') return { code: 'stale-target', message: 'The cell edit session is no longer current.' }
   if (owner.kind === 'cell-effect' && owner.editRevision !== null)
-    return 'The cell effect no longer belongs to the current edit session.'
+    return { code: 'stale-target', message: 'The cell effect no longer belongs to the current edit session.' }
   return null
 }

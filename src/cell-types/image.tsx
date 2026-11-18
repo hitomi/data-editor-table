@@ -33,7 +33,6 @@ export type GridImageCellTypeOptions<Row, Value> = Readonly<{
   alt: (row: Row, value: Value | null) => string
   label: (row: Row) => string
   resolveSrc: (value: Value | null, row: Row) => string | null
-  validate: (value: unknown, row: Row) => GridValueResult<Value>
   upload: (input: Readonly<{
     file: File
     row: Row
@@ -43,7 +42,10 @@ export type GridImageCellTypeOptions<Row, Value> = Readonly<{
   equals?: (left: Value | null, right: Value | null) => boolean
   uploadErrorMessage?: (error: unknown, row: Row) => string
   messages?: Partial<GridImageCellTypeMessages>
-}>
+}> & (
+  | Readonly<{ validate: (value: unknown) => GridValueResult<Value>; validateWithRow?: never }>
+  | Readonly<{ validateWithRow: (value: unknown, row: Row) => GridValueResult<Value>; validate?: never }>
+)
 
 export type GridImageCellTypeMessages = Readonly<{
   hasImage: string
@@ -103,9 +105,10 @@ export function createImageCellType<Row, Value>(
     GridImageCellEffects
   > = {
     value: {
-      validate: (value, context) => value === null
-        ? success(null)
-        : options.validate(value, context.row),
+      validate: (value, context) => {
+        if (value === null) return success(null)
+        return options.validateWithRow ? options.validateWithRow(value, context.row) : options.validate(value)
+      },
     },
     text: {
       display: (value, context) => options.resolveSrc(value, context.row) ?? '',
@@ -153,7 +156,6 @@ export function createImageCellType<Row, Value>(
           if (!preflight.ok) return preflight
           try {
             const value = await options.upload({ file, row: context.row, signal })
-            if (signal.aborted) return failure('image-upload-cancelled', messages.uploadCancelled)
             return success(value)
           } catch (error) {
             if (signal.aborted) return failure('image-upload-cancelled', messages.uploadCancelled)

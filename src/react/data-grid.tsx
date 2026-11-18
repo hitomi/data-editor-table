@@ -1,20 +1,14 @@
-import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { getGridInteractionPort } from '../controller/controller-interaction.js'
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react'
 
 import type { GridCellTypeSchema } from '../cell-types/contracts.js'
 import type { GridCellTypeRegistry } from '../cell-types/registry.js'
-import {
-  createStandardCellTypeRegistry,
-  type StandardGridCellTypeSchema,
-} from '../cell-types/standard-registry.js'
-import {
-  createGridController,
-  type GridController,
-  type GridDispatchResult,
-  type GridEffectPort,
-} from '../controller/grid-controller.js'
+import type { StandardGridCellTypeSchema } from '../cell-types/standard-registry.js'
+import type { GridController, GridCommandResult, GridSaveResult, GridRefreshResult } from '../controller/grid-controller.js'
 import { selectedCells } from '../model/range-geometry.js'
-import type { GridDataSource } from '../data/data-source.js'
-import type { DataEditorTableLocale } from '../locales/contracts.js'
+import type { GridKernelDataSource as GridDataSource } from '../data/kernel-data-source.js'
+import { DEFAULT_BINDING_MESSAGES, useGridBindingLifecycle, type GridAttachment } from './data-grid-lifecycle.js'
+import type { CreateDataGridBindingOptions, DataGridBinding, DataGridViewOptions } from './data-grid-binding.js'
 import { resolveGridCellValue } from '../data/runtime-cell-resolver.js'
 import { invokeGridCallback } from '../data/safe-callback.js'
 import type {
@@ -22,12 +16,13 @@ import type {
   GridFeedbackItem,
   GridPoint,
   GridRowKey,
+  GridSaveTarget,
 } from '../model/grid-model.js'
 import { gridRowKeysEqual } from '../model/row-key.js'
 import {
   selectGridRowDeletePlan,
   selectGridRowDuplicatePlan,
-  selectGridSavePlan,
+  selectGridActions,
   selectGridSelectionSummary,
 } from '../controller/grid-selectors.js'
 import {
@@ -61,6 +56,9 @@ import {
 } from './grid-viewport.js'
 import type { DataGridRowHeaderActions } from './grid-cells.js'
 
+export { createDataGridBinding, type DataGridBinding, type CreateDataGridBindingOptions, type DataGridInitialOptions, type DataGridViewOptions } from './data-grid-binding.js'
+export { useDataGridBinding, type GridAttachment, type GridAttachmentTarget } from './data-grid-lifecycle.js'
+
 export type {
   DataGridRowHeaderActionContext,
   DataGridRowHeaderActions,
@@ -70,193 +68,6 @@ export type {
   DataGridRowDropZone,
 } from './grid-viewport.js'
 
-export type DataGridBinding<
-  Row,
-  RowKey extends GridRowKey,
-  Schema extends GridCellTypeSchema = StandardGridCellTypeSchema,
-  Effect = never,
-> = Readonly<{
-  dataSource: GridDataSource<Row, RowKey, Schema>
-  registry: GridCellTypeRegistry<Row, Schema>
-  locale?: DataEditorTableLocale
-  controller: GridController<Row, RowKey, Schema, Effect>
-  destroy: () => void
-}>
-
-export type CreateDataGridBindingOptions<
-  Row,
-  RowKey extends GridRowKey,
-  Schema extends GridCellTypeSchema = StandardGridCellTypeSchema,
-  Effect = never,
-> = Readonly<{
-  dataSource: GridDataSource<Row, RowKey, Schema>
-  locale?: DataEditorTableLocale
-  effects?: GridEffectPort<Row, RowKey, Effect>
-  maxMutations?: number
-  maxClipboardBytes?: number
-  rowHeight?: number
-  headerHeight?: number
-  rowIndicatorWidth?: number
-}> & RegistryOption<Row, Schema>
-
-type RegistryOption<Row, Schema extends GridCellTypeSchema> = Readonly<{
-  /** Defaults to createStandardCellTypeRegistry(). Required for custom cell type names. */
-  registry?: GridCellTypeRegistry<Row, Schema>
-}>
-
-export function createDataGridBinding<
-  Row,
-  RowKey extends GridRowKey,
-  Schema extends GridCellTypeSchema,
-  Effect = never,
->({
-  dataSource,
-  effects,
-  headerHeight,
-  locale,
-  maxClipboardBytes,
-  maxMutations,
-  registry,
-  rowHeight,
-  rowIndicatorWidth,
-}: CreateDataGridBindingOptions<Row, RowKey, Schema, Effect>): DataGridBinding<Row, RowKey, Schema, Effect> {
-  const baseRegistry = registry ?? createStandardCellTypeRegistry<Row>()
-  const resolvedLocale = locale ?? baseRegistry.locale
-  const resolvedRegistry = baseRegistry.withLocale(resolvedLocale) as unknown as GridCellTypeRegistry<Row, Schema>
-  const controller = createGridController<Row, RowKey, Schema, Effect>({
-    dataSource,
-    cellBehaviors: resolvedRegistry.behaviors,
-    ...(effects === undefined ? {} : { effects }),
-    ...(maxMutations === undefined ? {} : { maxMutations }),
-    ...(maxClipboardBytes === undefined ? {} : { maxClipboardBytes }),
-    ...(rowHeight === undefined ? {} : { rowHeight }),
-    ...(headerHeight === undefined ? {} : { headerHeight }),
-    ...(rowIndicatorWidth === undefined ? {} : { rowIndicatorWidth }),
-  })
-  return Object.freeze({
-    dataSource,
-    registry: resolvedRegistry,
-    ...(resolvedLocale === undefined ? {} : { locale: resolvedLocale }),
-    controller,
-    destroy: () => controller.destroy(),
-  })
-}
-
-type DataGridBindingHookEntry<
-  Row,
-  RowKey extends GridRowKey,
-  Schema extends GridCellTypeSchema,
-  Effect,
-> = Readonly<{
-  dataSource: GridDataSource<Row, RowKey, Schema>
-  registry: GridCellTypeRegistry<Row, Schema>
-  locale: DataEditorTableLocale | undefined
-  maxMutations: number | undefined
-  maxClipboardBytes: number | undefined
-  rowHeight: number | undefined
-  headerHeight: number | undefined
-  rowIndicatorWidth: number | undefined
-  binding: DataGridBinding<Row, RowKey, Schema, Effect>
-}>
-
-/**
- * Owns a controller for integrations that need direct controller access.
- * Creation and destruction happen after commit, so development StrictMode
- * cannot leak a subscription from a discarded render. The first render (and
- * the render where a static option changes) returns null.
- */
-export function useDataGridBinding<
-  Row,
-  RowKey extends GridRowKey,
-  Schema extends GridCellTypeSchema,
-  Effect = never,
->(
-  options: CreateDataGridBindingOptions<Row, RowKey, Schema, Effect>,
-): DataGridBinding<Row, RowKey, Schema, Effect> | null {
-  const {
-    dataSource,
-    registry,
-    locale,
-    effects,
-    maxMutations,
-    maxClipboardBytes,
-    rowHeight,
-    headerHeight,
-    rowIndicatorWidth,
-  } = options
-  const defaultRegistry = useMemo(
-    () => createStandardCellTypeRegistry<Row>() as unknown as GridCellTypeRegistry<Row, Schema>,
-    [],
-  )
-  const resolvedRegistry = registry ?? defaultRegistry
-  const effectsRef = useRef(effects)
-  effectsRef.current = effects
-  const [entry, setEntry] = useState<DataGridBindingHookEntry<
-    Row,
-    RowKey,
-    Schema,
-    Effect
-  > | null>(null)
-
-  useLayoutEffect(() => {
-    const effectPort: GridEffectPort<Row, RowKey, Effect> = {
-      run(effect, context) {
-        const current = effectsRef.current
-        if (!current) {
-          throw new Error('No effect port is configured for this data source.')
-        }
-        return current.run(effect, context)
-      },
-    }
-    const binding = createDataGridBinding({
-      dataSource,
-      registry: resolvedRegistry,
-      ...(locale === undefined ? {} : { locale }),
-      effects: effectPort,
-      ...(maxMutations === undefined ? {} : { maxMutations }),
-      ...(maxClipboardBytes === undefined ? {} : { maxClipboardBytes }),
-      ...(rowHeight === undefined ? {} : { rowHeight }),
-      ...(headerHeight === undefined ? {} : { headerHeight }),
-      ...(rowIndicatorWidth === undefined ? {} : { rowIndicatorWidth }),
-    })
-    setEntry(Object.freeze({
-      dataSource,
-      registry: resolvedRegistry,
-      locale,
-      maxMutations,
-      maxClipboardBytes,
-      rowHeight,
-      headerHeight,
-      rowIndicatorWidth,
-      binding,
-    }))
-    return () => {
-      binding.destroy()
-    }
-  }, [
-    dataSource,
-    headerHeight,
-    maxClipboardBytes,
-    maxMutations,
-    locale,
-    resolvedRegistry,
-    rowHeight,
-    rowIndicatorWidth,
-  ])
-
-  return entry
-    && entry.dataSource === dataSource
-    && entry.registry === resolvedRegistry
-    && entry.locale === locale
-    && entry.maxMutations === maxMutations
-    && entry.maxClipboardBytes === maxClipboardBytes
-    && entry.rowHeight === rowHeight
-    && entry.headerHeight === headerHeight
-    && entry.rowIndicatorWidth === rowIndicatorWidth
-    ? entry.binding
-    : null
-}
-
 type DataGridCommonProps<Row, RowKey extends GridRowKey, Schema extends GridCellTypeSchema, Effect> = Readonly<{
   ariaLabel: string
   className?: string
@@ -265,6 +76,8 @@ type DataGridCommonProps<Row, RowKey extends GridRowKey, Schema extends GridCell
   toolbarActions?: (controller: GridController<Row, RowKey, Schema, Effect>) => ReactNode
   rowHeaderActions?: DataGridRowHeaderActions<Row, RowKey, Schema, Effect>
   rowDropZone?: DataGridRowDropZone<RowKey>
+  view?: DataGridViewOptions
+  onAttachmentChange?: (attachment: GridAttachment<DataGridBinding<Row, RowKey, Schema, Effect>, GridDataSource<Row, RowKey, Schema>>) => void
 }>
 
 export type DataGridMessages = GridToolbarMessages & GridFooterMessages & GridFilterDialogProps['messages'] & GridViewportMessages & Readonly<{
@@ -273,9 +86,17 @@ export type DataGridMessages = GridToolbarMessages & GridFooterMessages & GridFi
   detachedSourceWork: string
   rowsRefreshFailed: string
   retryRefresh: string
+  retryAttachment: string
   changesSaveFailed: string
   refreshData: string
   retrySave: string
+  confirmSave: string
+  reviewSave: string
+  applyPendingResult: string
+  discardPendingResult: string
+  pendingResults: (count: number) => string
+  useRemoteOrder: string
+  keepLocalOrder: string
   editCells: (count: number) => string
   dismissMessage: string
   editCell: string
@@ -316,13 +137,20 @@ export type DataGridSurfaceRenderers = Readonly<{
 
 const DEFAULT_MESSAGES: DataGridMessages = Object.freeze({
   loadingData: 'Loading data…',
-  sourceConfigurationChanged: 'This table’s columns, sizing, or editing limits changed. Reopen it to apply the update. Your current edits remain available with the previous setup.',
-  detachedSourceWork: 'Apply, save, or cancel the current table changes before opening another data set.',
+  ...DEFAULT_BINDING_MESSAGES,
   rowsRefreshFailed: 'Rows could not be refreshed.',
   retryRefresh: 'Retry refresh',
+  retryAttachment: 'Retry opening table',
   changesSaveFailed: 'Changes could not be saved.',
   refreshData: 'Refresh data',
   retrySave: 'Retry save',
+  confirmSave: 'Check original save',
+  reviewSave: 'Review save result',
+  applyPendingResult: 'Apply or retry retained result',
+  discardPendingResult: 'Discard retained result',
+  pendingResults: (count) => `${count} task results to review`,
+  useRemoteOrder: 'Use saved row order',
+  keepLocalOrder: 'Keep local row order',
   actionsLabel: 'Grid actions',
   filterRowsLabel: 'Filter rows',
   filterRowsPlaceholder: 'Filter rows…',
@@ -411,27 +239,16 @@ export type DataGridProps<
   Schema extends GridCellTypeSchema = StandardGridCellTypeSchema,
   Effect = never,
 > = DataGridCommonProps<Row, RowKey, Schema, Effect> & (
-  | Readonly<{ binding: DataGridBinding<Row, RowKey, Schema, Effect>; dataSource?: never; registry?: never; locale?: never; effects?: never; maxMutations?: never; maxClipboardBytes?: never; rowHeight?: never; headerHeight?: never; rowIndicatorWidth?: never }>
-  | (Readonly<{
-    binding?: never
-    dataSource: GridDataSource<Row, RowKey, Schema>
-    locale?: DataEditorTableLocale
-    effects?: GridEffectPort<Row, RowKey, Effect>
-    maxMutations?: number
-    maxClipboardBytes?: number
-    rowHeight?: number
-    headerHeight?: number
-    rowIndicatorWidth?: number
-  }> & RegistryOption<Row, Schema>)
+  | Readonly<{ binding: DataGridBinding<Row, RowKey, Schema, Effect>; dataSource?: never; initial?: never; effects?: never }>
+  | (CreateDataGridBindingOptions<Row, RowKey, Schema, Effect> & Readonly<{ binding?: never }>)
 )
 
 /**
  * Turnkey business-data editor. The controller owns all semantic state while
  * React projects its immutable snapshot into one non-virtualized scrollport.
- * A data-source identity owns one controller; its registry, locale, and layout
- * options remain fixed for that identity, while the optional effect port stays live.
- * If the data-source prop changes with pending input, the current source stays
- * visible until that work is applied, saved, or cancelled.
+ * React-owned sources and explicit bindings share one switch policy: pending
+ * work stays visible until resolved. Only React-owned bindings are automatically
+ * disposed after a clean detach; explicit bindings remain host-owned.
  */
 export function DataGrid<
   Row,
@@ -439,239 +256,47 @@ export function DataGrid<
   Schema extends GridCellTypeSchema = StandardGridCellTypeSchema,
   Effect = never,
 >(props: DataGridProps<Row, RowKey, Schema, Effect>) {
-  if (props.binding) return <BoundDataGrid
-    ariaLabel={props.ariaLabel}
-    binding={props.binding}
-    {...(props.className === undefined ? {} : { className: props.className })}
-    {...(props.messages === undefined ? {} : { messages: props.messages })}
-    {...(props.surfaceRenderers === undefined ? {} : { surfaceRenderers: props.surfaceRenderers })}
-    {...(props.toolbarActions === undefined ? {} : { toolbarActions: props.toolbarActions })}
-    {...(props.rowHeaderActions === undefined ? {} : { rowHeaderActions: props.rowHeaderActions })}
-    {...(props.rowDropZone === undefined ? {} : { rowDropZone: props.rowDropZone })}
-  />
-  return <OwnedDataGrid
-    ariaLabel={props.ariaLabel}
-    dataSource={props.dataSource}
-    {...(props.effects === undefined ? {} : { effects: props.effects })}
-    {...(props.maxMutations === undefined ? {} : { maxMutations: props.maxMutations })}
-    {...(props.maxClipboardBytes === undefined ? {} : { maxClipboardBytes: props.maxClipboardBytes })}
-    {...(props.registry === undefined ? {} : { registry: props.registry })}
-    {...(props.locale === undefined ? {} : { locale: props.locale })}
-    {...(props.className === undefined ? {} : { className: props.className })}
-    {...(props.headerHeight === undefined ? {} : { headerHeight: props.headerHeight })}
-    {...(props.rowHeight === undefined ? {} : { rowHeight: props.rowHeight })}
-    {...(props.rowIndicatorWidth === undefined ? {} : { rowIndicatorWidth: props.rowIndicatorWidth })}
-    {...(props.messages === undefined ? {} : { messages: props.messages })}
-    {...(props.surfaceRenderers === undefined ? {} : { surfaceRenderers: props.surfaceRenderers })}
-    {...(props.toolbarActions === undefined ? {} : { toolbarActions: props.toolbarActions })}
-    {...(props.rowHeaderActions === undefined ? {} : { rowHeaderActions: props.rowHeaderActions })}
-    {...(props.rowDropZone === undefined ? {} : { rowDropZone: props.rowDropZone })}
-  />
-}
-
-function OwnedDataGrid<
-  Row,
-  RowKey extends GridRowKey,
-  Schema extends GridCellTypeSchema,
-  Effect,
->({
-  ariaLabel,
-  className,
-  dataSource,
-  effects,
-  headerHeight,
-  locale,
-  maxClipboardBytes,
-  maxMutations,
-  messages: messageOverrides,
-  registry,
-  rowHeight,
-  rowIndicatorWidth,
-  rowHeaderActions,
-  rowDropZone,
-  surfaceRenderers,
-  toolbarActions,
-}: DataGridCommonProps<Row, RowKey, Schema, Effect> & Readonly<{
-  dataSource: GridDataSource<Row, RowKey, Schema>
-  locale?: DataEditorTableLocale
-  effects?: GridEffectPort<Row, RowKey, Effect>
-  maxMutations?: number
-  maxClipboardBytes?: number
-  rowHeight?: number
-  headerHeight?: number
-  rowIndicatorWidth?: number
-}> & RegistryOption<Row, Schema>) {
-  const defaultRegistry = useMemo(
-    () => createStandardCellTypeRegistry<Row>() as unknown as GridCellTypeRegistry<Row, Schema>,
-    [],
-  )
-  const resolvedRegistry = registry ?? defaultRegistry
-  const resolvedLocale = locale ?? resolvedRegistry.locale
-  const ownerMessages = { ...DEFAULT_MESSAGES, ...resolvedLocale?.dataGrid, ...messageOverrides }
-  type OwnedEntry = {
-    readonly dataSource: GridDataSource<Row, RowKey, Schema>
-    readonly registry: GridCellTypeRegistry<Row, Schema>
-    readonly locale: DataEditorTableLocale | undefined
-    readonly effectsRef: { current: GridEffectPort<Row, RowKey, Effect> | undefined }
-    readonly maxMutations: number | undefined
-    readonly maxClipboardBytes: number | undefined
-    readonly rowHeight: number | undefined
-    readonly headerHeight: number | undefined
-    readonly rowIndicatorWidth: number | undefined
-    readonly binding: DataGridBinding<Row, RowKey, Schema, Effect>
-    releaseWhenClean: (() => void) | null
-  }
-  const [owned, setOwned] = useState<OwnedEntry | null>(null)
-  const [ownershipRevision, retryOwnership] = useState(0)
-  const active = useRef<OwnedEntry | null>(null)
-  const destroyEntry = useCallback((entry: OwnedEntry) => {
-    entry.releaseWhenClean?.()
-    entry.releaseWhenClean = null
-    if (active.current === entry) active.current = null
-    entry.binding.destroy()
-  }, [])
-  const retrySourceSwitchWhenClean = useCallback((entry: OwnedEntry) => {
-    if (entry.releaseWhenClean) return
-    entry.releaseWhenClean = entry.binding.controller.subscribe(() => {
-      if (active.current !== entry
-        || hasPendingWork(entry.binding.controller.getSnapshot())) return
-      entry.releaseWhenClean?.()
-      entry.releaseWhenClean = null
-      retryOwnership((revision) => revision + 1)
-    })
-  }, [])
+  const attachment = useGridBindingLifecycle(props.binding
+    ? { binding: props.binding }
+    : { options: props }, props.messages)
+  const binding = attachment.binding
+  const rowHeight = props.view?.rowHeight ?? 36
+  const headerHeight = props.view?.headerHeight ?? 36
+  const rowIndicatorWidth = props.view?.rowIndicatorWidth ?? 48
   useLayoutEffect(() => {
-    const previous = active.current
-    if (
-      previous &&
-      previous.dataSource !== dataSource &&
-      hasPendingWork(previous.binding.controller.getSnapshot())
-    ) {
-      retrySourceSwitchWhenClean(previous)
-      const existing = previous.binding.controller.getSnapshot().feedback.items.find(
-        (item) => item.id === 'grid:detached-source-work',
-      )
-      if (existing?.message !== ownerMessages.detachedSourceWork) {
-        previous.binding.controller.dispatch({
-          type: 'feedback/push',
-          item: {
-            id: 'grid:detached-source-work',
-            kind: 'warning',
-            message: ownerMessages.detachedSourceWork,
-            persistent: true,
-          },
-        })
-      }
-      setOwned((current) => current === previous ? current : previous)
-      return
-    }
-    let next = previous?.dataSource === dataSource ? previous : null
-    if (!next) {
-      const effectsRef = { current: effects }
-      const effectPort: GridEffectPort<Row, RowKey, Effect> = {
-        run: (effect, context) => {
-          const current = effectsRef.current
-          if (!current) throw new Error('No effect port is configured for this data source.')
-          return current.run(effect, context)
-        },
-      }
-      const binding = createDataGridBinding<Row, RowKey, Schema, Effect>({
-        dataSource,
-        registry: resolvedRegistry,
-        ...(locale === undefined ? {} : { locale }),
-        effects: effectPort,
-        ...(maxMutations === undefined ? {} : { maxMutations }),
-        ...(maxClipboardBytes === undefined ? {} : { maxClipboardBytes }),
-        ...(rowHeight === undefined ? {} : { rowHeight }),
-        ...(headerHeight === undefined ? {} : { headerHeight }),
-        ...(rowIndicatorWidth === undefined ? {} : { rowIndicatorWidth }),
-      })
-      next = { dataSource, registry: resolvedRegistry, locale: resolvedLocale, effectsRef, maxMutations, maxClipboardBytes, rowHeight, headerHeight, rowIndicatorWidth, binding, releaseWhenClean: null }
-    } else {
-      next.releaseWhenClean?.()
-      next.releaseWhenClean = null
-      next.effectsRef.current = effects
-    }
-    if (next.registry !== resolvedRegistry
-      || next.locale !== resolvedLocale
-      || next.maxMutations !== maxMutations
-      || next.maxClipboardBytes !== maxClipboardBytes
-      || next.rowHeight !== rowHeight
-      || next.headerHeight !== headerHeight
-      || next.rowIndicatorWidth !== rowIndicatorWidth) {
-      next.binding.controller.dispatch({
-        type: 'feedback/push',
-        item: {
-          id: 'grid:source-configuration-change',
-          kind: 'warning',
-          message: ownerMessages.sourceConfigurationChanged,
-          persistent: true,
-        },
-      })
-    }
-    if (previous && previous !== next) {
-      destroyEntry(previous)
-    }
-    if (next.binding.controller.getSnapshot().feedback.items.some(
-      (item) => item.id === 'grid:detached-source-work',
-    )) {
-      next.binding.controller.dispatch({
-        type: 'feedback/dismiss',
-        id: 'grid:detached-source-work',
-      })
-    }
-    active.current = next
-    setOwned(next)
-  }, [
-    dataSource,
-    destroyEntry,
-    effects,
-    headerHeight,
-    maxClipboardBytes,
-    maxMutations,
-    ownerMessages.detachedSourceWork,
-    ownerMessages.sourceConfigurationChanged,
-    ownershipRevision,
-    locale,
-    resolvedLocale,
-    resolvedRegistry,
-    retrySourceSwitchWhenClean,
-    rowHeight,
-    rowIndicatorWidth,
-  ])
-  useLayoutEffect(() => () => {
-    const entry = active.current
-    if (entry) destroyEntry(entry)
-  }, [])
-  const current = owned?.binding ?? null
-  if (!current) return <div
-    aria-busy="true"
-    aria-label={ariaLabel}
-    className={['business-grid', className].filter(Boolean).join(' ')}
+    if (!binding) return
+    const result = getGridInteractionPort(binding.controller).send({ type: 'viewport/configure', rowHeight, headerHeight, rowIndicatorWidth })
+    if (!result.accepted) reportGridRejectedAction(binding.controller, result, reason => reason)
+  }, [binding, rowHeight, headerHeight, rowIndicatorWidth])
+  const notified = useRef<typeof attachment | null>(null)
+  useEffect(() => {
+    if (notified.current === attachment) return
+    notified.current = attachment
+    props.onAttachmentChange?.(attachment)
+  }, [attachment, props.onAttachmentChange])
+  if (!binding) return <div
+    aria-busy={attachment.status === 'initializing'}
+    aria-label={props.ariaLabel}
+    className={['business-grid', props.className].filter(Boolean).join(' ')}
     role="grid"
-  ><div className="business-grid__initializing" role="status">{ownerMessages.loadingData}</div></div>
+  ><div className="business-grid__initializing" role={attachment.status === 'error' ? 'alert' : 'status'}>{attachment.status === 'error' ? <>
+    {attachment.issue.message}
+    {attachment.retry && <button type="button" onClick={attachment.retry}>{props.messages?.retryAttachment ?? props.initial?.locale?.dataGrid.retryAttachment ?? props.initial?.registry?.locale?.dataGrid.retryAttachment ?? DEFAULT_MESSAGES.retryAttachment}</button>}
+  </> :
+    props.messages?.loadingData ?? props.binding?.locale?.dataGrid.loadingData
+      ?? props.initial?.locale?.dataGrid.loadingData ?? props.initial?.registry?.locale?.dataGrid.loadingData ?? DEFAULT_MESSAGES.loadingData
+  }</div></div>
   return <BoundDataGrid
-    ariaLabel={ariaLabel}
-    binding={current}
-    {...(className === undefined ? {} : { className })}
-    {...(messageOverrides === undefined ? {} : { messages: messageOverrides })}
-    {...(surfaceRenderers === undefined ? {} : { surfaceRenderers })}
-    {...(toolbarActions === undefined ? {} : { toolbarActions })}
-    {...(rowHeaderActions === undefined ? {} : { rowHeaderActions })}
-    {...(rowDropZone === undefined ? {} : { rowDropZone })}
+    ariaLabel={props.ariaLabel}
+    binding={binding}
+    {...(attachment.status === 'error' && attachment.retry ? { attachmentRetry: attachment.retry } : {})}
+    {...(props.className === undefined ? {} : { className: props.className })}
+    {...(props.messages === undefined ? {} : { messages: props.messages })}
+    {...(props.surfaceRenderers === undefined ? {} : { surfaceRenderers: props.surfaceRenderers })}
+    {...(props.toolbarActions === undefined ? {} : { toolbarActions: props.toolbarActions })}
+    {...(props.rowHeaderActions === undefined ? {} : { rowHeaderActions: props.rowHeaderActions })}
+    {...(props.rowDropZone === undefined ? {} : { rowDropZone: props.rowDropZone })}
   />
-}
-
-function hasPendingWork<Row, RowKey extends GridRowKey>(snapshot: import('../model/grid-model.js').GridControllerSnapshot<Row, RowKey>) {
-  return snapshot.draft.dirtyCells.length > 0
-    || snapshot.draft.insertedRowKeys.length > 0
-    || snapshot.draft.deletedRowKeys.length > 0
-    || snapshot.draft.orderDirty
-    || snapshot.draft.conflicts.length > 0
-    || snapshot.edit !== null
-    || snapshot.bulk !== null
-    || snapshot.filterSession !== null
-    || snapshot.persistence.status === 'saving'
 }
 
 function BoundDataGridImpl<
@@ -681,6 +306,7 @@ function BoundDataGridImpl<
   Effect,
 >({
   ariaLabel,
+  attachmentRetry,
   binding,
   className,
   messages: messageOverrides,
@@ -690,6 +316,7 @@ function BoundDataGridImpl<
   rowDropZone,
 }: DataGridCommonProps<Row, RowKey, Schema, Effect> & Readonly<{
   binding: DataGridBinding<Row, RowKey, Schema, Effect>
+  attachmentRetry?: () => void
 }>) {
   const { controller, dataSource, registry } = binding
   const messages = useMemo(
@@ -754,7 +381,7 @@ function BoundDataGridImpl<
       {...(rowDropZone === undefined ? {} : { rowDropZone })}
       views={registry.views}
     />
-    <GridFooterBoundary controller={controller} messages={messages} renderer={surfaceRenderers?.footer} />
+    <GridFooterBoundary controller={controller} messages={messages} renderer={surfaceRenderers?.footer} {...(attachmentRetry ? { attachmentRetry } : {})} />
     <GridFeedbackBoundary controller={controller} messages={messages} renderer={surfaceRenderers?.feedback} />
     <GridContextMenuBoundary controller={controller} dataSource={dataSource} dom={dom} messages={messages} registry={registry} renderer={surfaceRenderers?.contextMenu} />
     <GridBulkDialogBoundary controller={controller} messages={messages} registry={registry} renderer={surfaceRenderers?.bulkDialog} />
@@ -793,9 +420,9 @@ function GridToolbarBoundary<
     onDeleteRows: () => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'rows/delete' })),
     onDuplicateRows: () => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'rows/duplicate' })),
     onGlobalFilterChange: (value) => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'view/set-global-filter', value })),
-    onRedo: () => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'history/redo' })),
-    onSave: () => saveGridChanges(controller, messages.rejectedAction),
-    onUndo: () => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'history/undo' })),
+    onRedo: () => reportRejected(controller, messages.rejectedAction, controller.redo()),
+    onSave: () => saveGridChanges(controller, messages.rejectedAction, state.saveTarget),
+    onUndo: () => reportRejected(controller, messages.rejectedAction, controller.undo()),
     state,
   }
   return renderer ? renderer(props) : <GridToolbar {...props} />
@@ -807,23 +434,29 @@ function GridFooterBoundary<
   Schema extends GridCellTypeSchema,
   Effect,
 >({
+  attachmentRetry,
   controller,
   messages,
   renderer,
 }: {
+  attachmentRetry?: () => void
   controller: GridController<Row, RowKey, Schema, Effect>
   messages: DataGridMessages
   renderer: DataGridSurfaceRenderers['footer'] | undefined
 }) {
   const state = useGridSelector(controller, (snapshot) => {
     const selection = selectGridSelectionSummary(snapshot)
+    const { retrySave, recoverSave } = selectGridActions(snapshot)
     return {
-      conflictCount: snapshot.draft.conflicts.length,
+      conflictCount: snapshot.draft.conflicts.length + (snapshot.draft.orderConflict ? 1 : 0),
       dirtyCount: dirtyCount(snapshot),
       invalidCount: snapshot.draft.validationIssues.length,
       persistenceError: snapshot.persistence.error,
-      persistenceRetryOperationId: snapshot.persistence.retryOperationId,
+      persistenceRecoveryAction: recoverSave.enabled ? recoverSave.target?.action ?? null : retrySave.enabled ? 'save' as const : null,
+      saveTarget: retrySave.enabled ? retrySave.target : null,
+      persistenceRecovery: recoverSave.enabled ? recoverSave.target : null,
       persistenceStatus: snapshot.persistence.status,
+      pendingResultCount: snapshot.pendingEffects.length,
       selectedCellCount: selection.cellCount,
       selectedColumnCount: selection.columnCount,
       selectedRowCount: selection.rowCount,
@@ -834,27 +467,34 @@ function GridFooterBoundary<
       visibleRowCount: snapshot.view.visibleRowKeys.length,
     } as const
   }, shallowEqual)
-  const feedback = state.sourceStatus === 'refreshing' && state.visibleRowCount > 0
+  const sourceFeedback = state.sourceStatus === 'refreshing' && state.visibleRowCount > 0
     ? <span>{messages.refreshingRows}</span>
     : state.sourceStatus === 'error'
       ? <><span>{state.sourceError ?? messages.rowsRefreshFailed}</span> {state.sourceCanRefresh ? <button
         className="business-grid__link-button"
         type="button"
-        onClick={() => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'source/refresh' }))}
+        onClick={() => { void controller.refresh().then(result => reportPersistence(controller, messages.rejectedAction, result)) }}
       >{messages.retryRefresh}</button> : null}</>
-      : state.persistenceStatus === 'failed'
-        ? <><span>{state.persistenceError ?? messages.changesSaveFailed}</span> {state.persistenceRetryOperationId !== null || state.sourceCanRefresh ? <button
-          className="business-grid__link-button"
-          type="button"
-          onClick={() => reportRejected(controller, messages.rejectedAction, controller.dispatch(state.persistenceRetryOperationId === null
-            ? { type: 'source/refresh' }
-            : { type: 'persistence/retry' }))}
-        >{state.persistenceRetryOperationId === null ? messages.refreshData : messages.retrySave}</button> : null}</>
-        : null
+      : null
+  const saveFeedback = state.persistenceStatus === 'failed'
+    ? <><span>{state.persistenceError ?? messages.changesSaveFailed}</span> {state.persistenceRecoveryAction !== null ? <button
+      className="business-grid__link-button"
+      type="button"
+      onClick={() => {
+        if (!state.persistenceRecovery && !state.saveTarget) return
+        const operation = state.persistenceRecovery ? controller.recoverSave(state.persistenceRecovery) : controller.save(state.saveTarget!)
+        void operation.then(result => reportPersistence(controller, messages.rejectedAction, result))
+      }}
+    >{state.persistenceRecoveryAction === 'refresh' ? messages.refreshData
+      : state.persistenceRecoveryAction === 'review' ? messages.reviewSave
+      : state.persistenceRecoveryAction === 'confirm' ? messages.confirmSave : messages.retrySave}</button> : null}</>
+    : null
   const props: GridFooterProps = {
     conflictCount: state.conflictCount,
     dirtyCount: state.dirtyCount,
-    feedback,
+    feedback: sourceFeedback || saveFeedback || state.pendingResultCount > 0 || attachmentRetry
+      ? <>{sourceFeedback}{saveFeedback}{attachmentRetry ? <button type="button" className="business-grid__link-button" onClick={attachmentRetry}>{messages.retryAttachment}</button> : null}<GridPendingResultsBoundary controller={controller} messages={messages} /></>
+      : null,
     invalidCount: state.invalidCount,
     messages,
     persistenceStatus: state.persistenceStatus,
@@ -865,6 +505,28 @@ function GridFooterBoundary<
     visibleRowCount: state.visibleRowCount,
   }
   return renderer ? renderer(props) : <GridFooter {...props} />
+}
+
+function GridPendingResultsBoundary<Row, RowKey extends GridRowKey, Schema extends GridCellTypeSchema, Effect>({
+  controller,
+  messages,
+}: {
+  controller: GridController<Row, RowKey, Schema, Effect>
+  messages: DataGridMessages
+}) {
+  const results = useGridSelector(controller, (snapshot) => snapshot.pendingEffects)
+  if (!results.length) return null
+  return <span className="business-grid__pending-results" role="group" aria-label={messages.pendingResults(results.length)}>
+    {results.map((result) => <span className="business-grid__pending-result" key={result.id}>
+      <span>{result.cell ? `${String(result.cell.rowKey)} · ${result.cell.columnKey}: ` : ''}{result.message}</span>
+      {result.cell ? <button className="business-grid__link-button" type="button" onClick={() => reportRejected(
+        controller, messages.rejectedAction, controller.dispatch({ type: 'effect/reapply-cell-result', effectId: result.id }),
+      )}>{messages.applyPendingResult}</button> : null}
+      <button className="business-grid__link-button" type="button" onClick={() => reportRejected(
+        controller, messages.rejectedAction, controller.dispatch({ type: 'effect/discard-result', effectId: result.id }),
+      )}>{messages.discardPendingResult}</button>
+    </span>)}
+  </span>
 }
 
 function GridFeedbackBoundary<
@@ -923,26 +585,23 @@ function GridContextMenuBoundary<
   renderer: DataGridSurfaceRenderers['contextMenu'] | undefined
 }) {
   const slice = useGridSelector(controller, selectContextMenuSlice, equalContextMenuSlice)
-  const actionSessionRef = useRef<
-    GridControllerSnapshot<Row, RowKey>['interaction']['actionSession']
-  >(null)
-  actionSessionRef.current = slice?.interaction.actionSession ?? null
+  const actionSession = slice?.interaction.actionSession
   const closeContextMenu = useCallback<GridContextMenuProps['onClose']>((
     reason = 'programmatic',
     action,
   ) => {
-    const actionSession = actionSessionRef.current
     if (!actionSession) return
+    const { actionSession: current, activeCell } = controller.getSnapshot().interaction
+    if (current && current !== actionSession) return
     const target = actionSession.target
-    const activeCell = controller.getSnapshot().interaction.activeCell
-    controller.dispatch({ type: 'interaction/close-action' })
+    if (current) controller.dispatch({ type: 'interaction/close-action' })
     if (reason === 'outside' || action?.focusAfterRun === 'preserve') return
     queueMicrotask(() => {
       if (dom.focusCell(target, false)) return
       if (activeCell && dom.focusCell(activeCell, false)) return
       dom.focusGrid()
     })
-  }, [controller, dom])
+  }, [controller, dom, actionSession])
   if (!slice) return null
   const columnKeys = slice.columns.map((column) => column.key)
   const chosenCells = selectedCells(slice.interaction.ranges, slice.view.visibleRowKeys, columnKeys)
@@ -959,16 +618,25 @@ function GridContextMenuBoundary<
     ...slice.draft.dirtyCells.map((entry) => entry.rowKey),
     ...slice.draft.insertedRowKeys,
   ])
-  const actionSession = slice.interaction.actionSession
   if (!actionSession?.menuPosition) return null
   const context = resolveCell(actionSession.target, slice.draft.rows, slice.columns, dataSource.getRowKey)
   if (!context) return null
   const commandState = selectGridCommandState(slice, dataSource, registry, messages)
   const run = (intent: Parameters<typeof controller.dispatch>[0]) => reportRejected(controller, messages.rejectedAction, controller.dispatch(intent))
-  const actions: GridMenuAction[] = [
+  const actions: GridMenuAction[] = slice.pendingEffects.flatMap(result => [
+    { id: `apply-effect:${result.id}`, group: 'task-results', label: messages.applyPendingResult,
+      disabled: result.cell === null, run: () => run({ type: 'effect/reapply-cell-result', effectId: result.id, target: actionSession.target }) },
+    { id: `discard-effect:${result.id}`, group: 'task-results', label: messages.discardPendingResult,
+      run: () => run({ type: 'effect/discard-result', effectId: result.id }) },
+  ])
+  actions.push(
     { id: 'undo', group: 'history', label: messages.undo, disabled: !commandState.canUndo, run: () => run({ type: 'history/undo' }) },
     { id: 'redo', group: 'history', label: messages.redo, disabled: !commandState.canRedo, run: () => run({ type: 'history/redo' }) },
-  ]
+  )
+  if (slice.draft.orderConflict) actions.push(
+    { id: 'order-remote', group: 'conflict-resolution', label: messages.useRemoteOrder, run: () => run({ type: 'order/resolve', resolution: 'accept-remote' }) },
+    { id: 'order-local', group: 'conflict-resolution', label: messages.keepLocalOrder, run: () => run({ type: 'order/resolve', resolution: 'keep-local' }) },
+  )
   if (commandState.showBulkEdit) actions.push({
     id: 'edit-selection', group: 'bulk-editing', label: messages.editSelection, focusAfterRun: 'preserve',
     disabled: !commandState.canBulkEdit, run: () => run({ type: 'bulk/start' }),
@@ -989,8 +657,8 @@ function GridContextMenuBoundary<
   if (commandState.persistenceMode === 'manual-save') actions.push({
     id: 'save-changes', group: 'persistence',
     label: commandState.persistenceStatus === 'saving' ? messages.saving : messages.saveChanges,
-    disabled: !commandState.canSave || commandState.persistenceStatus === 'saving',
-    run: () => saveGridChanges(controller, messages.rejectedAction),
+    disabled: !commandState.canSave,
+    run: () => saveGridChanges(controller, messages.rejectedAction, commandState.saveTarget),
   })
   actions.push(...buildContextActions({
     context,
@@ -1004,7 +672,10 @@ function GridContextMenuBoundary<
     reportRejected: (result) => reportRejected(controller, messages.rejectedAction, result),
   }))
   const props = {
-    actions,
+    actions: actions.map(action => ({ ...action, run: () => {
+      // Custom renderers may retain a callback beyond this menu's lifetime.
+      if (controller.getSnapshot().interaction.actionSession === actionSession) action.run()
+    } })),
     onClose: closeContextMenu,
     position: actionSession.menuPosition,
   } satisfies GridContextMenuProps
@@ -1019,17 +690,9 @@ function saveGridChanges<
 >(
   controller: GridController<Row, RowKey, Schema, Effect>,
   presentRejection: GridRejectedActionPresenter,
+  target: GridSaveTarget<RowKey>,
 ) {
-  if (controller.getSnapshot().edit) {
-    const committed = controller.dispatch({ type: 'edit/commit' })
-    reportRejected(controller, presentRejection, committed)
-    if (!committed.accepted) return
-  }
-  reportRejected(
-    controller,
-    presentRejection,
-    controller.dispatch({ type: 'persistence/save' }),
-  )
+  void controller.save(target).then(result => reportPersistence(controller, presentRejection, result))
 }
 
 function GridBulkDialogBoundary<
@@ -1055,24 +718,25 @@ function GridBulkDialogBoundary<
   const view = registry.views.resolve(slice.column.type, slice.column.typeOptions)
   if (!view?.BulkEditor) return null
   const Editor = view.BulkEditor
+  const target = { kind: 'bulk' as const, id: slice.bulk.id }
   const cancel = () => reportRejected(
     controller,
     messages.rejectedAction,
-    controller.dispatch({ type: 'bulk/cancel' }),
+    controller.dispatch({ type: 'bulk/cancel' }, target),
   )
   const editor = <Editor
-    apply={() => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'bulk/apply' }))}
+    apply={() => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'bulk/apply' }, target))}
     cancel={cancel}
-    cellCount={slice.bulk.targetCells.length}
+    cellCount={slice.bulk.targets.length}
     columnKey={slice.column.key}
     draft={slice.bulk.draft}
     error={slice.bulk.error}
-    setDraft={(draft) => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'bulk/change', value: draft }))}
+    setDraft={(draft) => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'bulk/change', value: draft }, target))}
     typeOptions={slice.column.typeOptions}
   />
   const props = {
-    ariaLabel: messages.editCells(slice.bulk.targetCells.length),
-    title: <strong>{messages.editCells(slice.bulk.targetCells.length)}</strong>,
+    ariaLabel: messages.editCells(slice.bulk.targets.length),
+    title: <strong>{messages.editCells(slice.bulk.targets.length)}</strong>,
     editor,
     onCancel: cancel,
   } satisfies DataGridBulkDialogProps
@@ -1108,6 +772,9 @@ function GridFilterDialogBoundary<
   const filter = slice?.column?.behavior.filter
   if (!slice?.column || !filter) return null
   const column = slice.column
+  const target = { kind: 'filter' as const, id: slice.session.id }
+  const run = (intent: Parameters<typeof controller.dispatch>[0]) =>
+    reportRejected(controller, messages.rejectedAction, controller.dispatch(intent, target))
   const props = {
     draft: {
       columnLabel: column.label,
@@ -1120,14 +787,14 @@ function GridFilterDialogBoundary<
       error: slice.session.error,
     },
     messages,
-    onAddCondition: () => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'filter/add-condition' })),
-    onApply: () => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'filter/apply' })),
-    onCancel: () => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'filter/cancel' })),
-    onCombineChange: (combine: 'all' | 'any') => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'filter/change', combine })),
-    onClear: () => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'filter/clear' })),
-    onOperatorChange: (index: number, operator: string) => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'filter/change', index, operator })),
-    onRemoveCondition: (index: number) => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'filter/remove-condition', index })),
-    onValueChange: (index: number, value: string) => reportRejected(controller, messages.rejectedAction, controller.dispatch({ type: 'filter/change', index, value })),
+    onAddCondition: () => run({ type: 'filter/add-condition' }),
+    onApply: () => run({ type: 'filter/apply' }),
+    onCancel: () => run({ type: 'filter/cancel' }),
+    onCombineChange: (combine: 'all' | 'any') => run({ type: 'filter/change', combine }),
+    onClear: () => run({ type: 'filter/clear' }),
+    onOperatorChange: (index: number, operator: string) => run({ type: 'filter/change', index, operator }),
+    onRemoveCondition: (index: number) => run({ type: 'filter/remove-condition', index }),
+    onValueChange: (index: number, value: string) => run({ type: 'filter/change', index, value }),
   } satisfies GridFilterDialogProps
   return renderer ? renderer(props) : <GridFilterDialog {...props} />
 }
@@ -1163,7 +830,7 @@ function selectGridCommandState<
   const selectionSummary = selectGridSelectionSummary(snapshot)
   const duplicatePlan = selectGridRowDuplicatePlan(snapshot)
   const deletePlan = selectGridRowDeletePlan(snapshot)
-  const savePlan = selectGridSavePlan(snapshot)
+  const { save } = selectGridActions(snapshot)
   const bulkColumn = selectedColumnKeys.length === 1
     ? snapshot.columns.find((column) => column.key === selectedColumnKeys[0])
     : undefined
@@ -1191,7 +858,7 @@ function selectGridCommandState<
     canUndo: snapshot.draft.undoStack.length > 0,
     canRedo: snapshot.draft.redoStack.length > 0,
     canBulkEdit: Boolean(hasBulkTarget && bulkColumn?.bulkEditable && bulkView?.BulkEditor),
-    canSave: savePlan.canSave || snapshot.edit !== null,
+    canSave: save.enabled, saveTarget: save.target,
     showBulkEdit: snapshot.columns.some((column) => Boolean(column.bulkEditable && registry.views.resolve(column.type, column.typeOptions)?.BulkEditor)),
     persistenceMode: snapshot.persistence.mode,
     persistenceStatus: snapshot.persistence.status,
@@ -1210,10 +877,19 @@ function shallowEqual<Selected extends Readonly<Record<string, unknown>>>(left: 
   return keys.length === Object.keys(right).length && keys.every((key) => Object.is(left[key], right[key]))
 }
 
+function reportPersistence<Row, RowKey extends GridRowKey, Schema extends GridCellTypeSchema, Effect>(
+  controller: GridController<Row, RowKey, Schema, Effect>,
+  presenter: GridRejectedActionPresenter,
+  result: GridSaveResult | GridRefreshResult,
+) {
+  if ('issue' in result) reportRejected(controller, presenter, { accepted: false,
+    revision: controller.getSnapshot().revision, issue: result.issue })
+}
+
 function reportRejected<Row, RowKey extends GridRowKey, Schema extends GridCellTypeSchema, Effect>(
   controller: GridController<Row, RowKey, Schema, Effect>,
   presenter: GridRejectedActionPresenter,
-  result: GridDispatchResult,
+  result: GridCommandResult,
 ) {
   reportGridRejectedAction(controller, result, presenter)
 }
@@ -1256,7 +932,7 @@ function buildContextActions<Row, RowKey extends GridRowKey, Schema extends Grid
   dirtyCells: readonly import('../model/grid-model.js').GridDirtyCell<RowKey>[]
   messages: DataGridMessages
   revertibleRowKeys: ReadonlySet<RowKey>
-  reportRejected: (result: GridDispatchResult) => void
+  reportRejected: (result: GridCommandResult) => void
 }): readonly GridMenuAction[] {
   const runtimeContext = context.resolved.valid
     ? {

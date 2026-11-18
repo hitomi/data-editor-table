@@ -1,4 +1,7 @@
-import type { GridControllerSnapshot, GridPoint, GridRange, GridRowKey } from '../model/grid-model.js'
+import type { GridControllerSnapshot, GridPoint, GridRange, GridRowKey, GridSaveTarget } from '../model/grid-model.js'
+import type { GridCommandTarget } from './controller-contracts.js'
+import type { GridIssue } from '../model/grid-result.js'
+import { decideGridSessionExit } from './session-policy.js'
 import { isGridCellSelected, selectedRowKeys } from './selection-model.js'
 import { selectedCells } from '../model/range-geometry.js'
 import { invokeGridCallback } from '../data/safe-callback.js'
@@ -9,14 +12,14 @@ import {
   resolveGridCellValue,
 } from '../data/runtime-cell-resolver.js'
 import { gridRowKeysEqual } from '../model/row-key.js'
-import { isGridRowOrderDirty } from '../data/row-order.js'
 import { gridSelectorIndex } from './grid-selector-index.js'
 
 export function selectGridCell<Row, RowKey extends GridRowKey>(snapshot: GridControllerSnapshot<Row, RowKey>, point: GridPoint<RowKey>) {
   const index = gridSelectorIndex(snapshot)
   const identity = encodeCellIdentity(point)
   const column = index.columns.get(point.columnKey)
-  if (!index.rows.has(point.rowKey) || !column) return null
+  const entityId = snapshot.draft.entityAt(point.rowKey)
+  if (!entityId || !index.rows.has(point.rowKey) || !column) return null
   const row = index.rows.get(point.rowKey) as Row
   const dirty = index.dirtyCells.get(identity) ?? null
   const resolved = resolveGridCellValue(row, column)
@@ -24,7 +27,7 @@ export function selectGridCell<Row, RowKey extends GridRowKey>(snapshot: GridCon
   const accessible = accessibleGridCellValue(resolved)
   const selected = isGridCellSelected(snapshot, point.rowKey, point.columnKey)
   return Object.freeze({
-    row,
+    entityId, row,
     column,
     resolved,
     valid: resolved.valid,
@@ -137,17 +140,59 @@ export function selectGridSelectionLayer<Row, RowKey extends GridRowKey>(snapsho
   })
 }
 
+export type GridActionAvailability<Target> = Readonly<{ target: Target; enabled: boolean; issue: GridIssue | null }>
+
+function availability<Target>(target: Target, issue: GridIssue | null): GridActionAvailability<Target> {
+  return Object.freeze({ target, enabled: !issue, issue: issue && Object.freeze(issue) })
+}
+
+export function gridTargetIssue<Row, RowKey extends GridRowKey>(snapshot: GridControllerSnapshot<Row, RowKey>,
+  target?: GridCommandTarget<RowKey> | GridSaveTarget<RowKey>): GridIssue | null {
+  if (!target) return null
+  const current = target.kind === 'row' ? snapshot.draft.entityAt(target.rowKey) === target.entityId
+    : target.kind === 'save' ? snapshot.persistence.workspaceId === target.workspaceId && snapshot.persistence.generation === target.generation
+      && (snapshot.edit?.id ?? null) === target.editId && !gridTargetIssue(snapshot, target.origin)
+    : target.kind === 'filter' ? snapshot.filterSession?.id === target.id : snapshot[target.kind]?.id === target.id
+  return current ? null : { code: 'stale-target', message: 'The original operation target is no longer current.' }
+}
+
+/** Commands recheck these public decisions against the publication on which they execute. */
+export function selectGridActions<Row, RowKey extends GridRowKey>(snapshot: GridControllerSnapshot<Row, RowKey>,
+  target?: GridCommandTarget<RowKey> | GridSaveTarget<RowKey>) {
+  const p = snapshot.persistence, plan = snapshot.draft.savePlan
+  const scopeIssue = p.dispute ? { code: 'save-unresolved' as const, message: p.dispute.message } : null
+  const startIssue: GridIssue | null = scopeIssue ?? (p.canStartSave ? null : p.status === 'saving'
+    ? { code: 'save-in-progress', message: 'The original save is still being processed.' }
+    : { code: 'save-unresolved', message: p.error ?? 'A previous save is still awaiting confirmation.' })
+  const explicit = snapshot.edit && snapshot.columns.find(c => c.key === snapshot.edit!.cell.columnKey)?.behavior.edit?.exit === 'explicit'
+  const session = decideGridSessionExit(snapshot, 'saving changes', !!explicit)
+  const stale = gridTargetIssue(snapshot, target)
+  const saveIssue: GridIssue | null = stale ?? startIssue ?? (session.kind === 'blocked' ? { code: 'session-open', message: session.reason }
+    : plan.canSave || snapshot.edit ? null : plan.excluded[0] ?? { code: 'no-changes', message: 'There are no changes to save.' })
+  const origin = target?.kind === 'save' ? target.origin : target
+  const saveTarget: GridSaveTarget<RowKey> = Object.freeze({
+    ...(target?.kind === 'save' ? target : { kind: 'save' as const, workspaceId: p.workspaceId, generation: p.generation, editId: snapshot.edit?.id ?? null }),
+    ...(origin ? { origin: Object.freeze({ ...origin }) } : {}),
+  })
+  const noRecovery: GridIssue = { code: 'no-recovery', message: 'There is no save to recover.' }
+  return Object.freeze({
+    target: availability(target ?? null, stale),
+    save: availability(saveTarget, saveIssue),
+    retrySave: availability(saveTarget, saveIssue ?? (p.canRetrySave ? null : noRecovery)),
+    recoverSave: availability(stale ? null : p.recovery, stale ?? (p.recovery ? null : startIssue ?? noRecovery)),
+  })
+}
+
 export function selectGridToolbar<Row, RowKey extends GridRowKey>(snapshot: GridControllerSnapshot<Row, RowKey>) {
   const deletePlan = selectGridRowDeletePlan(snapshot)
   const duplicatePlan = selectGridRowDuplicatePlan(snapshot)
-  const savePlan = selectGridSavePlan(snapshot)
   return Object.freeze({
     canUndo: snapshot.draft.undoStack.length > 0,
     canRedo: snapshot.draft.redoStack.length > 0,
     canAdd: snapshot.rowOperations.canAdd,
     canDuplicate: duplicatePlan.canDuplicate,
     canDelete: deletePlan.canDelete,
-    canSave: savePlan.canSave || snapshot.edit !== null,
+    canSave: selectGridActions(snapshot).save.enabled,
     saving: snapshot.persistence.status === 'saving',
   })
 }
@@ -155,63 +200,7 @@ export function selectGridToolbar<Row, RowKey extends GridRowKey>(snapshot: Grid
 export function selectGridSavePlan<Row, RowKey extends GridRowKey>(
   snapshot: GridControllerSnapshot<Row, RowKey>,
 ) {
-  const blocked = new Set<RowKey>([
-    ...snapshot.draft.conflicts.map((item) => item.rowKey),
-    ...snapshot.draft.validationIssues.map((item) => item.rowKey),
-  ])
-  const changed = new Set<RowKey>([
-    ...snapshot.draft.dirtyCells.map((item) => item.rowKey),
-    ...snapshot.draft.insertedRowKeys,
-  ])
-  const saveableRowKeys = snapshot.draft.rows
-    .map(snapshot.getRowKey)
-    .filter((rowKey) => changed.has(rowKey) && !blocked.has(rowKey))
-  const saveableDeletedRowKeys = snapshot.draft.deletedRowKeys.filter(
-    (rowKey) => !blocked.has(rowKey),
-  )
-  const blockedChangedRowKeys = Object.freeze(
-    [...new Set([...changed, ...snapshot.draft.deletedRowKeys])].filter(
-      (rowKey) => blocked.has(rowKey),
-    ),
-  )
-  const canonical = new Map(
-    snapshot.source.rows.map(
-      (row) => [snapshot.getRowKey(row), row] as const,
-    ),
-  )
-  const accepted = new Set(saveableRowKeys)
-  const deleted = new Set(saveableDeletedRowKeys)
-  const proposedRows = snapshot.draft.rows.flatMap((row) => {
-    const rowKey = snapshot.getRowKey(row)
-    if (accepted.has(rowKey) || !blocked.has(rowKey)) return [row]
-    const sourceRow = canonical.get(rowKey)
-    return sourceRow === undefined ? [] : [sourceRow]
-  })
-  const proposedKeys = new Set(proposedRows.map(snapshot.getRowKey))
-  snapshot.source.rows.forEach((row, sourceIndex) => {
-    const rowKey = snapshot.getRowKey(row)
-    if (proposedKeys.has(rowKey) || deleted.has(rowKey)) return
-    proposedRows.splice(Math.min(sourceIndex, proposedRows.length), 0, row)
-    proposedKeys.add(rowKey)
-  })
-  const orderChanged = snapshot.draft.orderDirty && isGridRowOrderDirty(
-    snapshot.source.rows,
-    proposedRows,
-    snapshot.getRowKey,
-  )
-  return Object.freeze({
-    proposedRows: Object.freeze(proposedRows),
-    saveableRowKeys: Object.freeze(saveableRowKeys),
-    saveableDeletedRowKeys: Object.freeze(saveableDeletedRowKeys),
-    blockedChangedRowKeys,
-    saveableRowCount: saveableRowKeys.length + saveableDeletedRowKeys.length,
-    blockedRowCount: blockedChangedRowKeys.length,
-    orderChanged,
-    canSave:
-      orderChanged ||
-      saveableRowKeys.length > 0 ||
-      saveableDeletedRowKeys.length > 0,
-  })
+  return snapshot.draft.savePlan
 }
 
 export function selectGridRowDuplicatePlan<Row, RowKey extends GridRowKey>(
@@ -225,7 +214,8 @@ export function selectGridRowDuplicatePlan<Row, RowKey extends GridRowKey>(
   return Object.freeze({
     rowKeys,
     rowCount: rowKeys.length,
-    canDuplicate: snapshot.rowOperations.canDuplicate && rowKeys.length > 0,
+    canDuplicate: snapshot.rowOperations.canDuplicate && rowKeys.length > 0
+      && !rowKeys.some(key => snapshot.draft.deletedRowKeys.includes(key)),
   })
 }
 
@@ -266,13 +256,14 @@ function gridRowDeleteAvailabilityIndex<Row, RowKey extends GridRowKey>(
   if (cached) return cached
 
   const availability = new Map<GridRowKey, GridSupportedRowDeleteAvailability>()
+  const deleted = new Set(snapshot.draft.deletedRowKeys)
   for (const row of snapshot.draft.rows) {
     const resolvedKey = invokeGridCallback(() => snapshot.getRowKey(row))
     if (!resolvedKey.ok || availability.has(resolvedKey.value)) continue
     const resolvedAvailability = invokeGridCallback(() => canDelete(row))
     availability.set(
       resolvedKey.value,
-      resolvedAvailability.ok && resolvedAvailability.value ? 'allowed' : 'blocked',
+      !deleted.has(resolvedKey.value) && resolvedAvailability.ok && resolvedAvailability.value ? 'allowed' : 'blocked',
     )
   }
   gridRowDeleteAvailabilityCache.set(snapshot, availability)

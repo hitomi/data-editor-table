@@ -1,4 +1,5 @@
 import { invokeGridResult } from '../data/safe-callback.js'
+import { gridValueIssue, type GridIssue } from '../model/grid-result.js'
 import type { GridColumnFilter, GridCompiledColumn, GridFilterSession, GridValueResult } from '../model/grid-model.js'
 
 type Session = NonNullable<GridFilterSession>
@@ -10,13 +11,13 @@ export type GridFilterSessionChange =
 export function beginGridFilterSession<Row>(
   column: GridCompiledColumn<Row> | undefined,
   filters: readonly GridColumnFilter[],
-  revision: number,
+  id: string,
 ): GridValueResult<Session> {
   const filter = column?.behavior.filter
   if (!column || !filter || !column.filterable) return unavailable('This column does not support filtering.')
   const current = filters.filter((candidate) => candidate.columnKey === column.key)
   return { ok: true, value: Object.freeze({
-    revision, columnKey: column.key,
+    id, revision: 1, columnKey: column.key,
     conditions: Object.freeze(current.length > 0
       ? current.map(({ operator, value }) => Object.freeze({ operator, value }))
       : [Object.freeze({ operator: filter.defaultOperator, value: '' })]),
@@ -48,16 +49,16 @@ export function prepareGridFilterApply<Row>(
   column: GridCompiledColumn<Row> | undefined,
   current: readonly GridColumnFilter[],
 ) {
-  const reject = (reason: string, next = session) => ({ ok: false as const, reason, session: next })
-  if (!session) return reject('There is no active filter session.')
+  const reject = (issue: GridIssue, next = session) => ({ ok: false as const, issue, session: next })
+  if (!session) return reject({ code: 'stale-target', message: 'There is no active filter session.' })
   const filter = column?.behavior.filter
-  if (!filter) return reject('The filter is unavailable.')
+  if (!filter) return reject({ code: 'stale-target', message: 'The filter is unavailable.' })
   const next: GridColumnFilter[] = []
   for (const condition of session.conditions) {
     const operator = filter.operators.find((candidate) => candidate.id === condition.operator)
-    if (!operator) return reject('The filter operator is unavailable.')
+    if (!operator) return reject({ code: 'invalid-input', message: 'The filter operator is unavailable.' })
     const value = operator.validate ? invokeGridResult(() => operator.validate!(condition.value)) : undefined
-    if (value && !value.ok) return reject(value.issue.message, Object.freeze({
+    if (value && !value.ok) return reject(gridValueIssue(value.issue), Object.freeze({
       ...session, revision: session.revision + 1, error: value.issue.message,
     }))
     next.push({ columnKey: session.columnKey, operator: condition.operator, value: value?.ok ? value.value : condition.value, combine: session.combine })

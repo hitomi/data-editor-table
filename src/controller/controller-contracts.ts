@@ -1,20 +1,26 @@
+import type { EntityId } from '../kernel/model.js'
 import type {
   GridCellTypeColumnOptions,
   GridCellTypeSchema,
   GridCellTypeValue,
 } from '../cell-types/contracts.js'
-import type { GridDataSource } from '../data/data-source.js'
+import type { GridKernelDataSource as GridDataSource } from '../data/kernel-data-source.js'
+import type { GridCloseResult, GridCloseState } from './controller-lifecycle.js'
+import type { GridSaveResult, GridSaveRecovery, GridRefreshResult } from './controller-persistence.js'
+import type { GridCommandResult, GridIssueCode } from '../model/grid-result.js'
+export type { GridCommandResult, GridIssue, GridIssueCode } from '../model/grid-result.js'
+export type { GridCloseResult, GridCloseState, GridCloseBlocker } from './controller-lifecycle.js'
+export type { GridSaveResult, GridSaveRecovery, GridRefreshResult } from './controller-persistence.js'
 import type {
   GridCellBehaviorPort,
   GridColumn,
   GridColumnFilter,
+  GridCommandTarget,
+  GridSaveTarget,
   GridControllerSnapshot,
-  GridEditStatus,
   GridFeedbackItem,
-  GridHitTarget,
   GridPersistenceMode,
   GridPoint,
-  GridPointerModifiers,
   GridRange,
   GridRowKey,
   GridSort,
@@ -22,20 +28,7 @@ import type {
 
 declare const gridControllerSchema: unique symbol
 
-export type GridKeyboardCommand =
-  | 'move-up'
-  | 'move-down'
-  | 'move-left'
-  | 'move-right'
-  | 'edit'
-  | 'commit-edit'
-  | 'cancel'
-  | 'clear'
-  | 'select-all'
-  | 'select-row'
-  | 'select-column'
-  | 'undo'
-  | 'redo'
+export type { GridCommandTarget } from '../model/grid-model.js'
 
 export type GridEffectOwner<RowKey extends GridRowKey> =
   | { kind: 'controller' }
@@ -43,6 +36,7 @@ export type GridEffectOwner<RowKey extends GridRowKey> =
   | { kind: 'edit' }
   | { kind: 'persistence' }
   | { kind: 'cell'; cell: GridPoint<RowKey> }
+  | { kind: 'cells'; write: readonly GridPoint<RowKey>[]; read?: readonly GridPoint<RowKey>[] }
 
 export type GridEffectRequest<RowKey extends GridRowKey, Effect> = Readonly<{
   id?: string
@@ -52,19 +46,9 @@ export type GridEffectRequest<RowKey extends GridRowKey, Effect> = Readonly<{
 }>
 
 export type GridIntent<RowKey extends GridRowKey, Effect = never> =
-  | { type: 'source/refresh' }
-  | { type: 'viewport/resized'; width: number; height: number }
-  | { type: 'viewport/scrolled'; scrollLeft: number; scrollTop: number }
-  | {
-      type: 'pointer/start'
-      pointerId: number
-      target: GridHitTarget<RowKey>
-      modifiers: GridPointerModifiers
-    }
-  | { type: 'pointer/move'; pointerId: number; target: GridHitTarget<RowKey> }
-  | { type: 'pointer/end'; pointerId: number; target?: GridHitTarget<RowKey> }
-  | { type: 'pointer/cancel'; pointerId: number }
-  | { type: 'keyboard/command'; command: GridKeyboardCommand; extend?: boolean }
+  | { type: 'effect/inspect-result'; effectId: string }
+  | { type: 'effect/apply-host-result'; effectId: string }
+  | { type: 'order/resolve'; resolution: 'accept-remote' | 'keep-local' }
   | {
       type: 'interaction/activate'
       cell: GridPoint<RowKey>
@@ -84,8 +68,6 @@ export type GridIntent<RowKey extends GridRowKey, Effect = never> =
   | { type: 'interaction/clear' }
   | { type: 'edit/start'; cell?: GridPoint<RowKey> }
   | { type: 'edit/change'; value: unknown }
-  | { type: 'edit/set-composing'; composing: boolean; finalValue?: unknown }
-  | { type: 'edit/set-status'; status: GridEditStatus; error?: string | null }
   | { type: 'edit/commit' }
   | { type: 'edit/cancel' }
   | { type: 'edit/commit-and-move'; direction: 'next' | 'previous' | 'down' }
@@ -135,6 +117,9 @@ export type GridIntent<RowKey extends GridRowKey, Effect = never> =
   | { type: 'filter/cancel' }
   | { type: 'history/undo' }
   | { type: 'history/redo' }
+  | { type: 'history/compensate-insertion'; applicationId: string }
+  | { type: 'effect/reapply-cell-result'; effectId: string; target?: GridPoint<RowKey> }
+  | { type: 'effect/discard-result'; effectId: string }
   | { type: 'rows/add' }
   | { type: 'rows/duplicate' }
   | { type: 'rows/delete' }
@@ -142,8 +127,6 @@ export type GridIntent<RowKey extends GridRowKey, Effect = never> =
   | { type: 'view/set-column-filters'; filters: readonly GridColumnFilter[] }
   | { type: 'view/set-sort'; sort: readonly GridSort[] }
   | { type: 'persistence/set-mode'; mode: GridPersistenceMode }
-  | { type: 'persistence/save' }
-  | { type: 'persistence/retry' }
   | { type: 'feedback/push'; item: GridFeedbackItem }
   | { type: 'feedback/dismiss'; id: string }
   | { type: 'feedback/clear' }
@@ -153,20 +136,37 @@ export type GridIntent<RowKey extends GridRowKey, Effect = never> =
     }
   | { type: 'controller/cancel-effect'; id: string }
 
-export type GridDispatchResult = Readonly<{
-  accepted: boolean
-  revision: number
-  reason?: string
-  payload?: unknown
-}>
+export type GridMutationValue = Readonly<{ changedCells: number; applicationId: string | null }>
+export type GridEffectStarted = Readonly<{ effectId: string }>
+
+export type GridRetainedResult<RowKey extends GridRowKey, Effect> =
+  | Readonly<{ kind: 'cell'; input: unknown; target: GridPoint<RowKey>; entityId: EntityId; result: import('../model/grid-model.js').GridValueResult<unknown> }>
+  | Readonly<{ kind: 'external'; state: 'completed'; request: GridEffectRequest<RowKey, Effect>; targets: readonly GridEffectTarget<RowKey>[]; result: GridEffectResult }>
+  | Readonly<{ kind: 'external'; state: 'failed'; request: GridEffectRequest<RowKey, Effect>; targets: readonly GridEffectTarget<RowKey>[]; issue: import('../model/grid-result.js').GridIssue }>
+
+/** Correlates a command with its locally accepted value, not a server receipt. */
+export type GridIntentValue<RowKey extends GridRowKey, Effect, Intent extends GridIntent<RowKey, Effect>> =
+  Intent extends { type: 'selection/copy' } ? Readonly<{ text: string }>
+  : Intent extends { type: 'selection/paste' } ? Readonly<{ changedCells: number; createdRows: number }>
+  : Intent extends { type: 'selection/clear-values' } ? Readonly<{ changedCells: number; skippedCells: number }>
+  : Intent extends { type: 'cell/run-effect' | 'controller/run-effect' } ? GridEffectStarted
+  : Intent extends { type: 'effect/inspect-result' } ? GridRetainedResult<RowKey, Effect>
+  : Intent extends { type: 'edit/commit-and-move' } ? Readonly<{ committed: true; moved: boolean }>
+  : Intent extends { type: 'cell/run-action' } ? GridMutationValue | GridEffectStarted | void
+  : Intent extends { type: 'effect/reapply-cell-result' } ? GridMutationValue | GridEffectStarted
+  : Intent extends { type: 'cell/set-value' | 'edit/commit' | 'selection/fill' | 'cell/revert' | 'selection/revert'
+      | 'history/compensate-insertion' | 'rows/add' | 'rows/duplicate' | 'rows/delete' | 'bulk/apply' } ? GridMutationValue
+  : void
 
 export type GridTransactionIssue<RowKey extends GridRowKey> = Readonly<{
-  code: string
+  code: GridIssueCode
   message: string
   cell?: GridPoint<RowKey>
+  domainCode?: string
 }>
 
 export type GridTransactionCommit<RowKey extends GridRowKey> = Readonly<{
+  applicationId: string | null
   createdRowKeys: readonly RowKey[]
   deletedRowKeys: readonly RowKey[]
   movedRowKeys: readonly RowKey[]
@@ -244,21 +244,27 @@ export type GridTransactionBuilder<
   Schema extends GridCellTypeSchema,
 > = (transaction: GridTransactionContext<Row, RowKey, Schema>) => void
 
-export type GridEffectResult<RowKey extends GridRowKey, Effect> =
-  | GridIntent<RowKey, Effect>
-  | readonly GridIntent<RowKey, Effect>[]
+/** Results supply data only. Addresses and the allowed write operation are
+ * fixed when the controller accepts the request. */
+export type GridEffectResult =
+  | Readonly<{ kind: 'value'; value: unknown }>
+  | Readonly<{ kind: 'values'; values: readonly unknown[] }>
   | void
 
+export type GridEffectTarget<RowKey extends GridRowKey> = Readonly<{
+  cell: GridPoint<RowKey>
+  entityId: EntityId
+  access: 'read' | 'write'
+}>
+
+export type GridEffectInput<Row, RowKey extends GridRowKey> = GridEffectTarget<RowKey> & Readonly<{ row: Row; value: unknown }>
+
 export type GridEffectPort<Row, RowKey extends GridRowKey, Effect> = Readonly<{
-  run(
-    effect: Effect,
-    context: Readonly<{
-      signal: AbortSignal
-      getSnapshot(): GridControllerSnapshot<Row, RowKey>
-    }>,
-  ):
-    | GridEffectResult<RowKey, Effect>
-    | Promise<GridEffectResult<RowKey, Effect>>
+  run(effect: Effect, context: Readonly<{
+    signal: AbortSignal
+    owner: GridEffectOwner<RowKey>
+    cells: readonly GridEffectInput<Row, RowKey>[]
+  }>): GridEffectResult | Promise<GridEffectResult>
 }>
 
 export type GridControllerOptions<
@@ -295,6 +301,17 @@ export type GridController<
     build: GridTransactionBuilder<Row, RowKey, Schema>,
     options?: GridApplyTransactionOptions,
   ): GridTransactionResult<RowKey>
-  dispatch(intent: GridIntent<RowKey, Effect>): GridDispatchResult
-  destroy(): void
+  dispatch<Intent extends GridIntent<RowKey, Effect>>(intent: Intent, target?: GridCommandTarget<RowKey>): GridCommandResult<GridIntentValue<RowKey, Effect, Intent>>
+  undo(): GridCommandResult<void>
+  redo(): GridCommandResult<void>
+  /** Covers the actual frozen request; later work remains separately owned. */
+  save(target?: GridSaveTarget<RowKey>): Promise<GridSaveResult>
+  recoverSave(recovery: GridSaveRecovery): Promise<GridSaveResult>
+  refresh(): Promise<GridRefreshResult>
+  /** New tasks capture this port; updating it never transfers running tasks. */
+  updateEffects(port: GridEffectPort<Row, RowKey, Effect> | undefined): GridCommandResult<void>
+  /** Current close/switch blockers. Destruction rechecks this state atomically. */
+  getCloseState(): GridCloseState
+  /** Refuses to destroy unresolved operations, raw input or retained task results. */
+  destroy(): GridCloseResult
 }>

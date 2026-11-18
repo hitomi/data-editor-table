@@ -1,3 +1,4 @@
+import { createDemoGridSource } from '../demo-data-source'
 import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 
@@ -23,30 +24,15 @@ function fixtureDataSource(
   name: SourceName,
 ): GridDataSource<Row, string, StandardGridCellTypeSchema> {
   const row = { id: `row-${name}`, name: `Source ${name.toUpperCase()} row` }
+  const { dataSource } = createDemoGridSource<Row, StandardGridCellTypeSchema>({
+    name: `owned-source-${name}`, columns, initialRows: [row], persistence: { mode: 'manual-save' },
+  })
   return {
-    columns,
-    getRowKey: (candidate) => candidate.id,
-    getSnapshot: () => ({
-      rows: [row],
-      status: 'ready',
-      version: `version-${name}`,
-      scope: { kind: 'complete' },
-    }),
-    subscribe: () => {
-      subscriptions[name] += 1
-      return () => { subscriptions[name] -= 1 }
-    },
-    persistence: {
-      mode: 'manual-save',
-      commit: async (request) => ({
-        operationId: request.operationId,
-        applied: {
-          rows: request.rows,
-          status: 'ready',
-          version: `${name}-saved`,
-          scope: { kind: 'complete' },
-        },
-      }),
+    ...dataSource,
+    subscribe(listener) {
+      const unsubscribe = dataSource.subscribe(listener)
+      subscriptions[name]++
+      return () => { unsubscribe(); subscriptions[name]-- }
     },
   }
 }

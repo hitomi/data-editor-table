@@ -1,16 +1,14 @@
 import { useCallback, useRef, useSyncExternalStore } from 'react'
 
-import type { GridController, GridDispatchResult } from '../controller/grid-controller.js'
+import type { GridController, GridCommandResult } from '../controller/grid-controller.js'
 import type { GridCellTypeSchema } from '../cell-types/contracts.js'
 import type { GridControllerSnapshot, GridRowKey } from '../model/grid-model.js'
 
 export type GridRejectedActionPresenter = (reason: string) => string
 
 /**
- * Projects an opaque controller rejection reason into host-owned UI feedback.
- * The presenter is intentionally a message boundary, not a core error-code
- * translator: domain, data-source and cell behavior messages remain owned by
- * the adapters that produced them.
+ * Presents a classified issue without inferring its code from message text.
+ * Domain and adapter messages remain owned by the source which produced them.
  */
 export function reportGridRejectedAction<
   Row,
@@ -19,16 +17,16 @@ export function reportGridRejectedAction<
   Effect,
 >(
   controller: GridController<Row, RowKey, Schema, Effect>,
-  result: GridDispatchResult,
+  result: GridCommandResult,
   present: GridRejectedActionPresenter,
 ) {
-  if (result.accepted || !result.reason) return
+  if (result.accepted) return
   controller.dispatch({
     type: 'feedback/push',
     item: {
       id: 'grid:last-rejected-action',
       kind: 'error',
-      message: present(result.reason),
+      message: present(result.issue.message),
       persistent: false,
     },
   })

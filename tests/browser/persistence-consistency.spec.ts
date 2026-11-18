@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 
-for (const scenario of ['intermediate', 'later', 'reload-failure'] as const) {
+for (const scenario of ['intermediate', 'later', 'reload-failure', 'malformed-receipt'] as const) {
   test(`saved authority survives ${scenario}, delayed cache reads and reopening`, async ({ page }) => {
     const errors: string[] = []
     page.on('pageerror', (error) => { errors.push(error.message) })
@@ -23,8 +23,17 @@ for (const scenario of ['intermediate', 'later', 'reload-failure'] as const) {
     await expect.poll(() => diagnostics(page).then((value) => value.writes)).toBe(1)
     await page.getByRole('button', { name: 'Deliver save response' }).click()
 
+    if (scenario === 'malformed-receipt') {
+      await page.getByRole('button', { name: 'Review save result', exact: true }).click()
+      const confirm = page.getByRole('button', { name: 'Check original save', exact: true })
+      await expect(confirm).toBeVisible()
+      expect((await diagnostics(page)).lookups).toBe(0)
+      await confirm.click()
+      await expect(confirm).toHaveCount(0)
+      expect((await diagnostics(page)).lookups).toBe(1)
+    }
     if (scenario === 'reload-failure') {
-      await expect(page.getByText('Authority read unavailable', { exact: true })).toBeVisible()
+      await expect(page.getByRole('status').getByText('Authority read unavailable', { exact: true })).toBeVisible()
       await expect(grid.getByRole('gridcell', { name: /^Submitted/ })).toBeVisible()
       await expect(page.getByRole('button', { name: 'Retry save', exact: true })).toHaveCount(0)
       await page.getByRole('button', { name: 'Restore reads' }).click()
@@ -53,3 +62,21 @@ async function diagnostics(page: import('@playwright/test').Page) {
     return fixture.persistenceConsistencyDiagnostics()
   })
 }
+
+test('closes the open action menu when a push replaces the row at the same key', async ({ page }) => {
+  await page.goto('/')
+  await page.evaluate(async () => {
+    const fixture = await import('/src/test-fixtures/persistence-consistency.tsx')
+    const container = document.createElement('div')
+    document.body.replaceChildren(container)
+    fixture.mountPersistenceConsistencyFixture(container, 'intermediate')
+  })
+  const grid = page.getByRole('grid', { name: 'Persistence consistency' })
+  await grid.getByRole('gridcell', { name: 'Initial', exact: true }).click({ button: 'right' })
+  await expect(page.getByRole('menu')).toBeVisible()
+  // A background update must dismiss the stale menu without a pointer click outside it.
+  await page.getByRole('button', { name: 'Replace row' }).evaluate(button => button.click())
+  await expect(page.getByRole('menu')).toHaveCount(0)
+  await expect(grid.getByRole('gridcell', { name: 'Replacement', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Save changes', exact: true })).toBeDisabled()
+})

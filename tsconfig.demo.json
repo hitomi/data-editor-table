@@ -3,6 +3,8 @@
   "compilerOptions": {
     "paths": {
       "data-editor-table": ["./src/index.ts"],
+      "data-editor-table/engine": ["./src/engine.ts"],
+      "data-editor-table/protocol": ["./src/protocol.ts"],
       "data-editor-table/styles.css": ["./src/styles-entry.ts"]
     },
     "types": ["vite/client"]

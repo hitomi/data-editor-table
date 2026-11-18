@@ -1,15 +1,15 @@
-import type { GridDispatchResult } from '../controller/grid-controller.js'
+import type { GridCommandResult } from '../controller/grid-controller.js'
 
 export type GridClipboardFailureMessages = Readonly<{
   unavailable: string
   writeFailed: string
 }>
 
-type ReportRejected = (result: GridDispatchResult) => void
+type ReportRejected = (result: GridCommandResult) => void
 
 /** Extracts a controller-owned copy payload and reports every rejected path. */
 export function gridClipboardText(
-  result: GridDispatchResult,
+  result: GridCommandResult<Readonly<{ text: string }>>,
   reportRejected: ReportRejected,
   malformedPayloadMessage: string,
 ) {
@@ -18,11 +18,11 @@ export function gridClipboardText(
     return null
   }
   if (
-    typeof result.payload === 'object' &&
-    result.payload !== null &&
-    'text' in result.payload &&
-    typeof (result.payload as { text?: unknown }).text === 'string'
-  ) return (result.payload as { text: string }).text
+    typeof result.value === 'object' &&
+    result.value !== null &&
+    'text' in result.value &&
+    typeof result.value.text === 'string'
+  ) return result.value.text
   reportRejected(rejection(result.revision, malformedPayloadMessage))
   return null
 }
@@ -32,7 +32,7 @@ export function gridClipboardText(
  * Keyboard copy intentionally uses the native `copy` event instead.
  */
 export function writeGridClipboard(
-  result: GridDispatchResult,
+  result: GridCommandResult<Readonly<{ text: string }>>,
   reportRejected: ReportRejected,
   messages: GridClipboardFailureMessages,
 ) {
@@ -58,6 +58,6 @@ export function writeGridClipboard(
   }
 }
 
-function rejection(revision: number, reason: string): GridDispatchResult {
-  return { accepted: false, revision, reason }
+function rejection(revision: number, reason: string): GridCommandResult {
+  return { accepted: false, revision, issue: { code: 'adapter-error', domainCode: 'clipboard', message: reason } }
 }

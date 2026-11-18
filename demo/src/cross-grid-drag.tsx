@@ -1,3 +1,4 @@
+import { createDemoGridSource } from './demo-data-source'
 import {
   useCallback,
   useEffect,
@@ -9,7 +10,6 @@ import {
 } from 'react'
 import {
   DataGrid,
-  GridCommitError,
   createDataGridBinding,
   createImageCellType,
   createStandardCellTypeRegistry,
@@ -23,12 +23,9 @@ import {
   type GridCellTypeSchemaOf,
   type GridColumn,
   type GridControllerSnapshot,
-  type GridDataSource,
-  type GridDataSourceSnapshot,
   type GridImageColumnOptions,
   type GridIsoDateColumnOptions,
   type GridNumberColumnOptions,
-  type GridReadyDataSourceSnapshot,
   type GridStringColumnOptions,
 } from 'data-editor-table'
 
@@ -95,89 +92,51 @@ const leftRegistry = createRegistry()
 type CrossGridSchema = GridCellTypeSchemaOf<typeof leftRegistry>
 const rightRegistry = createRegistry()
 
-class CrossGridStore {
-  readonly listeners = new Set<() => void>()
-  snapshot: GridDataSourceSnapshot<CrossGridRow>
-  nextId: number
-  saveCount = 0
-
-  constructor(readonly prefix: GridSide, rows: readonly CrossGridRow[]) {
-    this.snapshot = { rows, status: 'ready', version: 0, scope: { kind: 'complete' } }
-    this.nextId = rows.length + 1
-  }
-  subscribe = (listener: () => void) => {
-    this.listeners.add(listener)
-    return () => { this.listeners.delete(listener) }
-  }
-  publish(next: GridDataSourceSnapshot<CrossGridRow>) {
-    this.snapshot = next
-    this.listeners.forEach((listener) => { listener() })
-  }
-}
-
 function createFixture(
   id: GridSide,
   label: string,
   rows: readonly CrossGridRow[],
   registry: typeof leftRegistry,
 ) {
-  const store = new CrossGridStore(id, rows)
   const imageColumn = {
-    key: 'image', label: 'Image', type: 'image', layout: { basis: 112, min: 96 },
+    storagePath: ['image'], key: 'image', label: 'Image', type: 'image', layout: { basis: 112, min: 96 },
     getValue: (row) => row.image, setValue: (row, image) => ({ ...row, image }),
   } satisfies GridColumn<CrossGridRow, string | null, 'image', GridImageColumnOptions<CrossGridRow, string> | undefined>
   const nameColumn = {
-    key: 'name', label: 'Name', type: 'string', layout: { basis: 220, min: 150, flex: 2 }, sortable: true, filterable: true, bulkEditable: true,
+    storagePath: ['name'], key: 'name', label: 'Name', type: 'string', layout: { basis: 220, min: 150, flex: 2 }, sortable: true, filterable: true, bulkEditable: true,
     getValue: (row) => row.name, setValue: (row, name) => ({ ...row, name }),
   } satisfies GridColumn<CrossGridRow, string, 'string', GridStringColumnOptions | undefined>
   const quantityColumn = {
-    key: 'quantity', label: 'Quantity', type: 'number', typeOptions: { minimum: 0 }, layout: { basis: 118, min: 104, flex: 1 }, sortable: true, bulkEditable: true,
+    storagePath: ['quantity'], key: 'quantity', label: 'Quantity', type: 'number', typeOptions: { minimum: 0 }, layout: { basis: 118, min: 104, flex: 1 }, sortable: true, bulkEditable: true,
     getValue: (row) => row.quantity, setValue: (row, quantity) => ({ ...row, quantity }),
   } satisfies GridColumn<CrossGridRow, number, 'number', GridNumberColumnOptions | undefined>
   const deliveryDateColumn = {
-    key: 'deliveryDate', label: 'Delivery', type: 'date', layout: { basis: 154, min: 138, flex: 1 }, sortable: true, bulkEditable: true,
+    storagePath: ['deliveryDate'], key: 'deliveryDate', label: 'Delivery', type: 'date', layout: { basis: 154, min: 138, flex: 1 }, sortable: true, bulkEditable: true,
     getValue: (row) => row.deliveryDate, setValue: (row, deliveryDate) => ({ ...row, deliveryDate }),
   } satisfies GridColumn<CrossGridRow, string, 'date', GridIsoDateColumnOptions | undefined>
   const columns = { image: imageColumn, name: nameColumn, quantity: quantityColumn, deliveryDate: deliveryDateColumn }
-  const dataSource: GridDataSource<CrossGridRow, string, CrossGridSchema> = {
+  const { dataSource, store } = createDemoGridSource<CrossGridRow, CrossGridSchema>({
+    name: `cross-grid-${id}`, initialRows: rows, delay: 160,
     columns: [imageColumn, nameColumn, quantityColumn, deliveryDateColumn],
-    getRowKey: (row) => row.id,
-    getSnapshot: () => store.snapshot,
-    subscribe: store.subscribe,
-    refresh: () => { store.publish(store.snapshot) },
-    persistence: {
-      mode: 'auto-save', debounceMs: 350,
-      commit: async (request) => {
-        await wait(160)
-        if (!Object.is(request.sourceVersion, store.snapshot.version)) {
-          throw new GridCommitError('source-version-conflict', `${label} changed before the draft could be saved.`)
-        }
-        store.saveCount += 1
-        const next = {
-          rows: request.rows, status: 'ready', version: Number(request.sourceVersion) + 1, scope: { kind: 'complete' },
-        } satisfies GridReadyDataSourceSnapshot<CrossGridRow>
-        store.publish(next)
-        return { operationId: request.operationId, applied: next }
-      },
-    },
+    persistence: { mode: 'auto-save', debounceMs: 350 },
     rows: {
-      create: () => ({ id: `${store.prefix}-row-${store.nextId++}`, image: null, name: '', quantity: 0, deliveryDate: '', deleteProtected: false }),
-      duplicate: (row) => ({ ...row, id: `${store.prefix}-row-${store.nextId++}`, deleteProtected: false }),
+      create: () => ({ id: `${id}-row-${crypto.randomUUID()}`, image: null, name: '', quantity: 0, deliveryDate: '', deleteProtected: false }),
+      duplicate: (row) => ({ ...row, id: `${id}-row-${crypto.randomUUID()}`, deleteProtected: false }),
       canDelete: (row) => !row.deleteProtected,
       ordering: 'mutable',
     },
-  }
-  const binding = createDataGridBinding({ dataSource, registry, rowIndicatorWidth: 72 })
+  })
+  const binding = createDataGridBinding({ dataSource, initial: { registry } })
   return Object.freeze({ id, label, store, dataSource, binding, columns })
 }
 
-const left = createFixture('left', 'Left workspace', [
+const left: ReturnType<typeof createFixture> = import.meta.hot?.data.left ?? createFixture('left', 'Left workspace', [
   { id: 'left-row-1', image: null, name: 'Amber poster', quantity: 12, deliveryDate: '2026-09-02', deleteProtected: false },
   { id: 'left-row-2', image: null, name: 'Blue card', quantity: 4, deliveryDate: '2026-09-05', deleteProtected: false },
   { id: 'left-row-3', image: null, name: 'Cedar label', quantity: 28, deliveryDate: '2026-09-08', deleteProtected: true },
   { id: 'left-row-4', image: null, name: 'Dune notebook', quantity: 8, deliveryDate: '2026-09-11', deleteProtected: false },
 ], leftRegistry)
-const right = createFixture('right', 'Right workspace', [
+const right: ReturnType<typeof createFixture> = import.meta.hot?.data.right ?? createFixture('right', 'Right workspace', [
   { id: 'right-row-1', image: null, name: 'Fern calendar', quantity: 6, deliveryDate: '2026-09-12', deleteProtected: false },
   { id: 'right-row-2', image: null, name: 'Granite folio', quantity: 14, deliveryDate: '2026-09-15', deleteProtected: false },
   { id: 'right-row-3', image: null, name: 'Harbor postcard', quantity: 20, deliveryDate: '2026-09-18', deleteProtected: false },
@@ -186,7 +145,7 @@ const right = createFixture('right', 'Right workspace', [
 type CrossGridFixture = typeof left
 type RowActionContext = DataGridRowHeaderActionContext<CrossGridRow, string, CrossGridSchema, never>
 
-if (import.meta.hot) import.meta.hot.dispose(() => { left.binding.destroy(); right.binding.destroy() })
+if (import.meta.hot) import.meta.hot.dispose(data => { data.left = left; data.right = right })
 
 export function CrossGridDragPage() {
   const [status, setStatus] = useState<CrossGridStatus>({
@@ -270,7 +229,9 @@ export function CrossGridDragPage() {
         transaction.deleteRows(accepted.sourceRowKeys)
       }, { label: `Cut ${accepted.rows.length} rows to ${sideLabel(target.id)}` })
       if (!deleted.accepted) {
-        const compensated = target.binding.controller.dispatch({ type: 'history/undo' })
+        const compensated = inserted.result.applicationId
+          ? target.binding.controller.dispatch({ type: 'history/compensate-insertion', applicationId: inserted.result.applicationId })
+          : { accepted: false }
         if (compensated.accepted) {
           setStatus({
             kind: 'error',
@@ -364,7 +325,7 @@ export function CrossGridDragPage() {
       const selected = context.selectRow()
       if (!selected.accepted) {
         event.preventDefault()
-        setStatus({ kind: 'error', message: `${selected.reason ?? 'This row could not be selected.'} Dragging did not start.` })
+        setStatus({ kind: 'error', message: `${selected.issue.message} Dragging did not start.` })
         return
       }
     }
@@ -652,6 +613,7 @@ function CrossGridPanel({
         <DataGrid
           ariaLabel={`${fixture.label} rows`}
           binding={fixture.binding}
+          view={{ rowIndicatorWidth: 72 }}
           rowDropZone={rowDropZone}
           rowHeaderActions={rowHeaderActions}
           toolbarActions={toolbarActions}
@@ -939,7 +901,7 @@ function saveState(status: 'idle' | 'scheduled' | 'saving' | 'failed', error: st
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null }
 function byteLength(value: string) { return new TextEncoder().encode(value).byteLength }
 function formatBytes(bytes: number) { return `${Math.round(bytes / (1024 * 1024))} MB` }
-function wait(ms: number) { return new Promise<void>((resolve) => { window.setTimeout(resolve, ms) }) }
+
 function readFileAsDataUrl(file: File, signal: AbortSignal) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader()

@@ -1,3 +1,4 @@
+import { getGridInteractionPort } from '../controller/controller-interaction.js'
 import {
   useCallback,
   useLayoutEffect,
@@ -15,7 +16,7 @@ import {
 
 import type { GridCellTypeSchema } from '../cell-types/contracts.js'
 import type { GridCellViewPort } from '../cell-types/react-view-contracts.js'
-import type { GridController, GridDispatchResult } from '../controller/grid-controller.js'
+import type { GridController, GridCommandResult } from '../controller/grid-controller.js'
 import { selectedCells } from '../model/range-geometry.js'
 import {
   fallbackGridCellText,
@@ -138,8 +139,9 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
     '--grid-template-columns': geometry.templateColumns,
   } as CSSProperties
 
-  const dispatch = useCallback((intent: Parameters<typeof controller.dispatch>[0]) => controller.dispatch(intent), [controller])
-  const reportRejected = useCallback((result: GridDispatchResult) => {
+  const dispatch = useCallback(controller.dispatch, [controller])
+  const sendInteraction = useMemo(() => getGridInteractionPort(controller).send, [controller])
+  const reportRejected = useCallback((result: GridCommandResult) => {
     reportGridRejectedAction(controller, result, messages.rejectedAction)
   }, [controller, messages.rejectedAction])
 
@@ -206,12 +208,12 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
       const before = node.scrollTop
       node.scrollBy({ top: velocity, behavior: 'auto' })
       if (node.scrollTop === before) return
-      dispatch({ type: 'viewport/scrolled', scrollLeft: node.scrollLeft, scrollTop: node.scrollTop })
+      sendInteraction({ type: 'viewport/scrolled', scrollLeft: node.scrollLeft, scrollTop: node.scrollTop })
       publishDropTarget(dropTargetAt(pointer.clientX, pointer.clientY))
       dropAutoScroll.current = requestAnimationFrame(tick)
     }
     dropAutoScroll.current = requestAnimationFrame(tick)
-  }, [dispatch, dropTargetAt, publishDropTarget])
+  }, [sendInteraction, dropTargetAt, publishDropTarget])
 
   const onDragOver = (event: DragEvent<HTMLDivElement>) => {
     dropPointer.current = { clientX: event.clientX, clientY: event.clientY }
@@ -259,7 +261,7 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
       const beforeTop = node.scrollTop
       node.scrollBy({ left, top, behavior: 'auto' })
       if (node.scrollLeft !== beforeLeft || node.scrollTop !== beforeTop) {
-        dispatch({ type: 'viewport/scrolled', scrollLeft: node.scrollLeft, scrollTop: node.scrollTop })
+        sendInteraction({ type: 'viewport/scrolled', scrollLeft: node.scrollLeft, scrollTop: node.scrollTop })
         const current = controller.getSnapshot()
         const target = hitTargetAt(
           snapshotGeometry(current),
@@ -267,12 +269,12 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
           autoScroll.current.clientX - rect.left,
           autoScroll.current.clientY - rect.top,
         )
-        if (target) dispatch({ type: 'pointer/move', pointerId: autoScroll.current.pointerId, target })
+        if (target) sendInteraction({ type: 'pointer/move', pointerId: autoScroll.current.pointerId, target })
       }
       autoScroll.current.frame = requestAnimationFrame(tick)
     }
     autoScroll.current.frame = requestAnimationFrame(tick)
-  }, [controller, dispatch])
+  }, [controller, sendInteraction])
 
   const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return
@@ -305,7 +307,7 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
       ? { pointerId: event.pointerId, point, startX: event.clientX, startY: event.clientY, moved: false }
       : null
     event.preventDefault()
-    const result = dispatch({
+    const result = sendInteraction({
       type: 'pointer/start',
       pointerId: event.pointerId,
       target,
@@ -336,7 +338,7 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
     autoScroll.current.clientY = event.clientY
     continueAutoScroll()
     const target = targetAt(event)
-    if (target) dispatch({ type: 'pointer/move', pointerId: event.pointerId, target })
+    if (target) sendInteraction({ type: 'pointer/move', pointerId: event.pointerId, target })
   }
   const onPointerEnd = (event: PointerEvent<HTMLDivElement>) => {
     const gesture = controller.getSnapshot().interaction.gesture
@@ -344,7 +346,7 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
     const target = targetAt(event)
     const candidate = activeCellClick.current
     activeCellClick.current = null
-    const result = dispatch(target
+    const result = sendInteraction(target
       ? { type: 'pointer/end', pointerId: event.pointerId, target }
       : { type: 'pointer/end', pointerId: event.pointerId })
     dom.releasePointer(event.pointerId)
@@ -362,7 +364,7 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
     activeCellClick.current = null
     const gesture = controller.getSnapshot().interaction.gesture
     if (!gesture || gesture.pointerId !== event.pointerId) return
-    dispatch({ type: 'pointer/cancel', pointerId: event.pointerId })
+    sendInteraction({ type: 'pointer/cancel', pointerId: event.pointerId })
     dom.releasePointer(event.pointerId)
     stopAutoScroll()
   }
@@ -380,7 +382,7 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
           : null
     if (selectionCommand) {
       event.preventDefault()
-      const result = dispatch({
+      const result = sendInteraction({
         type: 'keyboard/command',
         command: selectionCommand,
       })
@@ -393,18 +395,18 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
     }
     if (shortcut && event.key.toLowerCase() === 'z') {
       event.preventDefault()
-      dispatch({ type: 'keyboard/command', command: event.shiftKey ? 'redo' : 'undo' })
+      sendInteraction({ type: 'keyboard/command', command: event.shiftKey ? 'redo' : 'undo' })
       return
     }
     if (shortcut && event.key.toLowerCase() === 'y') {
       event.preventDefault()
-      dispatch({ type: 'keyboard/command', command: 'redo' })
+      sendInteraction({ type: 'keyboard/command', command: 'redo' })
       return
     }
     const command = keyboardCommand(event.key)
     if (command) {
       event.preventDefault()
-      const result = dispatch({ type: 'keyboard/command', command, extend: event.shiftKey })
+      const result = sendInteraction({ type: 'keyboard/command', command, extend: event.shiftKey })
       reportRejected(result)
       const next = controller.getSnapshot().interaction.activeCell
       if (next && command.startsWith('move-')) queueMicrotask(() => { dom.focusCell(next) })
@@ -446,7 +448,7 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
     if (!node) return
     dom.setScrollport(node)
     dom.setPointerRoot(shell.current)
-    const publishSize = () => dispatch({ type: 'viewport/resized', width: node.clientWidth, height: node.clientHeight })
+    const publishSize = () => sendInteraction({ type: 'viewport/resized', width: node.clientWidth, height: node.clientHeight })
     publishSize()
     const observer = new ResizeObserver(publishSize)
     observer.observe(node)
@@ -456,7 +458,7 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
       dom.setScrollport(null)
       dom.setPointerRoot(null)
     }
-  }, [dispatch, dom, stopAutoScroll])
+  }, [sendInteraction, dom, stopAutoScroll])
 
   useLayoutEffect(() => {
     if (!rowDropZone?.active) clearDropTarget()
@@ -526,7 +528,7 @@ export function GridViewport<Row, RowKey extends GridRowKey, Schema extends Grid
       onPaste={onPaste}
       onScroll={(event) => {
         const node = event.currentTarget
-        dispatch({ type: 'viewport/scrolled', scrollLeft: node.scrollLeft, scrollTop: node.scrollTop })
+        sendInteraction({ type: 'viewport/scrolled', scrollLeft: node.scrollLeft, scrollTop: node.scrollTop })
         const pointer = dropPointer.current
         if (pointer && dropZoneRef.current?.active) {
           publishDropTarget(dropTargetAt(pointer.clientX, pointer.clientY))
@@ -651,10 +653,11 @@ function GridEditorBoundary<
     [editor?.session.startedRevision],
   )
   if (!editor) return null
-  const reportRejected = (result: GridDispatchResult) => {
+  const target = { kind: 'edit' as const, id: editor.session.id }
+  const reportRejected = (result: GridCommandResult) => {
     reportGridRejectedAction(controller, result, messages.rejectedAction)
   }
-  const reportCommitResult = (result: GridDispatchResult) => {
+  const reportCommitResult = (result: GridCommandResult) => {
     const current = controller.getSnapshot().edit
     const presentedByEditor = !result.accepted
       && current?.status === 'invalid'
@@ -662,17 +665,17 @@ function GridEditorBoundary<
     if (!presentedByEditor) reportRejected(result)
   }
   const cancel = () => {
-    controller.dispatch({ type: 'edit/cancel' })
+    if (!controller.dispatch({ type: 'edit/cancel' }, target).accepted) return
     queueMicrotask(() => {
       if (!dom.focusCell(editor.session.cell, false)) dom.focusGrid()
     })
   }
   const commit = () => {
-    const result = controller.dispatch({ type: 'edit/commit' })
+    const result = controller.dispatch({ type: 'edit/commit' }, target)
     reportCommitResult(result)
     queueMicrotask(() => {
       if (!result.accepted) {
-        dom.focusEditor()
+        if (controller.getSnapshot().edit?.id === target.id) dom.focusEditor()
         return
       }
       const active = controller.getSnapshot().interaction.activeCell
@@ -680,12 +683,12 @@ function GridEditorBoundary<
     })
   }
   const onDraftChange = (draft: unknown) => {
-    controller.dispatch({ type: 'edit/change', value: draft })
+    controller.dispatch({ type: 'edit/change', value: draft }, target)
   }
   const onEffect = (name: string, input: unknown) => {
-    const result = controller.dispatch({ type: 'cell/run-effect', cell: editor.session.cell, effect: name, input })
+    const result = controller.dispatch({ type: 'cell/run-effect', cell: editor.session.cell, effect: name, input }, target)
     reportRejected(result)
-    const id = effectId(result)
+    const id = result.accepted ? result.value.effectId : ''
     let cancelled = false
     return { id, cancel: () => {
       if (cancelled || !id) return
@@ -694,9 +697,9 @@ function GridEditorBoundary<
     } }
   }
   const onSetComposing = (composing: boolean, finalValue?: unknown) => {
-    controller.dispatch(finalValue === undefined
+    getGridInteractionPort(controller).send(finalValue === undefined
       ? { type: 'edit/set-composing', composing }
-      : { type: 'edit/set-composing', composing, finalValue })
+      : { type: 'edit/set-composing', composing, finalValue }, target)
   }
   const draftLabel = messages.unsavedEditValue(
     fallbackGridCellText(editor.session.draftValue),
@@ -792,14 +795,16 @@ function GridEditorBoundary<
     onCancel={cancel}
     onCommit={commit}
     onCommitAndMove={(direction) => {
-      const result = controller.dispatch({ type: 'edit/commit-and-move', direction })
+      const result = controller.dispatch({ type: 'edit/commit-and-move', direction }, target)
       reportCommitResult(result)
       if (result.accepted) {
         const active = controller.getSnapshot().interaction.activeCell
         queueMicrotask(() => {
           if (!active || !dom.focusCell(active, false)) dom.focusGrid()
         })
-      } else queueMicrotask(() => dom.focusEditor())
+      } else queueMicrotask(() => {
+        if (controller.getSnapshot().edit?.id === target.id) dom.focusEditor()
+      })
     }}
     onDraftChange={onDraftChange}
     onEffect={onEffect}
@@ -866,9 +871,8 @@ function selectEditor<Row, RowKey extends GridRowKey>(snapshot: GridControllerSn
   const visibleRowIndex = snapshot.view.visibleRowKeys.findIndex((rowKey) =>
     gridRowKeysEqual(rowKey, session.cell.rowKey),
   )
-  const row = snapshot.draft.rows.find((candidate) =>
-    gridRowKeysEqual(snapshot.getRowKey(candidate), session.cell.rowKey),
-  ) ?? null
+  const row = snapshot.draft.entityAt(session.cell.rowKey) === session.entityId
+    ? snapshot.draft.rows.find(candidate => gridRowKeysEqual(snapshot.getRowKey(candidate), session.cell.rowKey)) ?? null : null
   const column = snapshot.columns.find(
     (candidate) => candidate.key === session.cell.columnKey,
   ) ?? null
@@ -1144,11 +1148,7 @@ function keyboardCommand(key: string) {
   }
 }
 
-function effectId(result: GridDispatchResult) {
-  if (!result.accepted || typeof result.payload !== 'object' || result.payload === null || !('effectId' in result.payload)) return ''
-  const value = (result.payload as { effectId?: unknown }).effectId
-  return typeof value === 'string' ? value : ''
-}
+
 
 function nextSort(current: readonly GridSort[], columnKey: string, additive: boolean): readonly GridSort[] {
   const existing = current.find((entry) => entry.columnKey === columnKey)

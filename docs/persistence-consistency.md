@@ -1,98 +1,109 @@
-# 保存一致性：链路审计与回归约束
+# 保存一致性与数据协议迁移
 
-2026-09-07。范围是写入、权威快照发布、保存回执、草稿重放、恢复、React 显示的完整链路。
+本文件描述当前持久化与同步实现。宿主提供版本、完整快照和操作回执；库负责协调读取、发布和本地草稿结算。
 
-## 为什么修过仍会出现
+## 三个决定各由谁负责
 
-`2c5e766` 为防止保存回执覆盖更晚的外部更新，增加了 `authorityRevision` 判断。
-它保护了一个合法时序，但把“请求期间收到一个新版本”当成“该版本包含本次写入”。
-旧测试直接把外部数据命名为 `Externally newer`，没有让适配器获得这个因果事实。
-`1f016c5` 修正了无效 publication 对 refresh 的干扰，没有改变这个假设。
-`2811ca1` 拆分运行时、领域转移和 effect，也保留了原协议。
+1. **操作影响谁**。每张表从当前投影取实体身份。选择、编辑会话、菜单和异步任务保存发起时的目标。执行时按实体身份解析，编辑器回调还要核对会话。远端重排行只改变目标的位置，同键替换行有新的身份。
+2. **哪些服务器事实可以同时成立**。物理作用域的 `ScopeVersionEvidence` 接纳版本证据。种子、推送、读取响应和精确回执使用同一份因果关系。每次接纳先验证再提交，`ScopeAuthority` 将可展示的完整快照发给所有订阅表。
+3. **现在能否保存、恢复或关闭**。每张表的内核记录待保存工作、冻结请求和结算事实，共享网关持有实际写入许可。各入口从 `selectGridActions(snapshot, target?)` 取得当前目标、拒绝原因、保存、重试及恢复动作。退出时 Controller 另用 `getCloseState()` 核对剩余工作。
 
-Controller 的结算规则同时把第三个 opaque token 视为已写入结果的后继。
-因此适配器与 controller 各自符合当时的局部假设，组合后仍可能出现：
+现在由一个 Runtime 持有 authority、实体身份、不可变 journal、提交覆盖和贡献式历史。旧 React、选择、编辑、批量和行事务入口继续使用；data backend 不持有第二份可写 rows，也没有第二个 Workspace。
 
-```text
-权威 base → 本地编辑 Submitted → 发起 mutation
-    → 旧查询返回 intermediate（尚未包含 mutation）
-    → mutation 成功，返回 applied（值 Submitted）
-    → adapter 不发布 applied
-    → controller 先确认 applied，再把 intermediate 当成 latest rebase
-    → 页面回到旧值，dirtyCells=[]，persistence=idle
-```
-
-若简单改成“保存回执总是覆盖外部 publication”，又会破坏真正的后续服务器更新。
-仅凭两个不透明版本 token、数据内容或客户端到达时间，不可能区分这两个世界。
-必须给协议增加因果依据，或进行包含本次写入的新读取。
-
-历史计划还记录过一次性反例脚本，但这些脚本被删除，没有形成永久回归。
-本次将跨层场景和浏览器流程保留在仓库，后续重构必须保持这些约束。
-
-## 各层的职责
-
-| 层 | 文件 | 约束 |
+| 边界 | 实现 | 责任 |
 | --- | --- | --- |
-| 服务器/宿主 | `mutate`、`load`、外部查询 | 原子应用 changes，幂等 operation ID；读取必须包含指定写入 |
-| Remote adapter | `src/data/remote-data-source.ts` | 串行 mutation；管理 refresh/read 生命周期；确认后读取失败不得转成未知写入 |
-| Effect runner | `src/controller/persistence-effects.ts` | 传递 receipt 或未知/明确失败；资源取消不能伪造提交结论 |
-| 保存协调器 | `src/controller/persistence-coordinator.ts` | 验证回执和因果关系；冻结未知结果的 proposal；恢复时重新确认原 proposal |
-| 状态机 | `src/controller/persistence-machine.ts` | applied-unreconciled 只能通过成功 acknowledgment 解锁 |
-| 草稿协调 | `source-reconciliation.ts`、`replay-after-commit.ts` | 先确认已提交部分，再重放后续编辑、主键映射和历史，最后接受已证明的后继 |
-| React | `src/react/controller-react.ts`、`data-grid.tsx` | 订阅一次完整状态；确认写入但读取失败时提供 Refresh，而非 Retry save |
+| 写入准备 | `src/data/kernel-authoring.ts` | 编码原始输入，隔离执行 setter，固定目标和完整读写集合，原子接纳 |
+| 内核调用 | `src/controller/data-backend.ts` | 同步 prepare/apply/authority/receipt/history/resolution，不执行 I/O |
+| 数据事实 | `src/kernel/*` | 权威顺序、实体生命周期、精确覆盖、冲突和历史控制 |
+| 状态发布 | `src/controller/controller-runtime.ts` | 同批发布内部事实、只读展示、会话和能力，再执行 effects |
+| 版本证明与分发 | `src/kernel/version-evidence.ts`、`src/kernel/scope-authority.ts` | 按物理源、scope、epoch 校验版本与实体生命周期，向订阅者有序分发完整快照 |
+| 宿主接入 | `src/data/grid-authority-sync.ts` | 提供行解码与主键校验，连接推送，持有重开所用的快照 |
+| 保存执行 | `src/controller/kernel-persistence-effects.ts`、`src/kernel/gateway.ts` | 共享作用域写入许可、摘要、请求、查询和读取；未知操作保留许可 |
+| 目标解析 | `src/data/operation-targets.ts` | 在当前投影中核对实体身份及操作依赖，供会话、选择与异步任务使用 |
+| 保存动作 | `src/controller/controller-persistence.ts` | 从内核提交、调度和所属操作的反馈推导错误、恢复动作与重试能力 |
+| 展示 | `kernel-projection.ts`、`kernel-read-model.ts` | 派生行、dirty、冲突、原值、保存能力和贡献式历史；不反向生成意图 |
 
-## 当前协议
+保存 A 后继续编辑 B，A 的回执只结算 A 的 `coverage`。B 仍是独立操作。撤销作用于具体 application，未发送贡献可被抑制，已提交贡献通过补偿撤销；未知提交仍保留原请求，直到证据明确。刷新和晚到回执不能将已接受的新 authority 回退。
 
-1. **版本仍然是不透明 token。** 不排序，不使用数值大小，不根据单元格值猜测服务器顺序。
-2. **`afterOperationId` 是宿主的因果承诺。** 快照包含该操作或其后继；不是收到响应时随手添加的标签。
-   自定义 data source 在 receipt 结算时提供第三个版本，必须携带匹配的 operation ID。
-3. **顺序不明先读。** Remote adapter 收到无证明的不同版本时，在 mutation 确认后调用 `load`。
-   有证明的后继保留；不能读取时保持失败/待恢复，不清空可恢复输入，不假称成功。
-4. **外部读取在开始时登记。** `beginRead()` 捕获读取代次及 `afterOperationId`。
-   跨过 mutation、被更新读取替代或被其他 publication 取代的结果返回 `false`，宿主应重新读取。
-   写入后直接发布不同版本必须提供因果承诺，否则抛错且不改变 store。
-5. **确认写入与确认读取分开。** mutation 成功后的 reload/校验错误返回 `reconciliationError`。
-   有合法 applied snapshot 时保留；没有时返回 `applied: null`。这不是未知写入结果。
-6. **恢复保留原始证据。** 重新读取 ready authority 后，再验证原 operation ID、keyRemap，
-   重放原 proposal 与后续编辑，然后解锁。status-only publication 不得释放保护。
-   原回执的错误 operation ID/非法 keyRemap 不能被刷新绕过。
-7. **兼容回执先到。** Store 尚在 request base 时可以使用合法 applied；在 store 追上之前，
-   忽略旧 base 的状态通知，不把它重新解释成新的权威内容。
-8. **未知结果才重试写入。** Promise reject 的未知/transient outcome 仍复用原 proposal 和 operation ID。
-   两次尝试之间的外部更新同样需要协调，不能用幂等 API 返回的旧回执覆盖后继。
+共享 gateway 的最新 frontier 是下一次读取/取得写入许可的要求，不能成为已结算操作不断变化的释放条件。其他工作区读取可能在当前 read 验证与 Runtime 发布之间推进共享版本；当前操作只需以已接受工作区证据、原 baseAuthority 和确切 committedVersion 验证自己的屏障与覆盖，再释放许可。后续写入仍必须读取覆盖共享 frontier 的完整 authority。Controller 的关闭检查同时读取实际 gateway reservation，不能仅凭内核 idle 推断没有未释放许可。
 
-`load` / 外部查询仍必须提供 read-after-write consistency。对已知 request base 可以明确拒绝，
-但库无法识别服务器返回的任意未知旧 token。若使用副本或缓存，需要宿主等待指定 operation 可见、
-绕过旧缓存，或从 operation-aware API 获取结果。`beginRead` 防止客户端请求跨写入，不能替代服务器端的一致性保证。
+## 一份快照如何到达表格
 
-## 接入迁移
+1. 每个物理源的 `(sourceId, scope.id, scope.epoch)` 对应一个 `ScopeAuthority`。初始快照、宿主推送和读取响应都由它接纳。它先检查范围、行与主键、完整顺序、版本内容摘要及当前精确回执。每个完整因果快照都要检查其前驱证明的行身份生命周期，包括尚不能展示的分支。接纳失败时，已有快照和版本证据保持在上一次成功状态，因此服务端可以在同一版本返回修正后的内容。
+2. 每张表通过 `dataSource.subscribe` 接收行。订阅同步重放当前可展示快照及仍需覆盖的版本，后续按接纳顺序通知所有表，包括发起读取的表和通过其他适配器打开的表。每个适配器在首个订阅时连接宿主推送，最后一次退订时断开。嵌套推送会排队，单个订阅者抛错不会中断其他订阅者。
+3. 读取响应用请求发出时的 frontier 校验。响应满足原请求且与途中收到的推送并发时，两者都进入作用域的待合并版本，共用下一次覆盖读取。请求票据只结算那次刷新或保存的等待者。`dataSource.readAtLeast` 在分发后返回接纳的版本。旧票据已经返回 `superseded`，其迟到响应仍可能携带更新的有效快照。每张表收到快照后，在自己的内核中绑定实体、保留草稿和未确认的创建。
+4. 同时遇到互不覆盖的版本时，表格继续展示最后可用行，作用域保留全部待覆盖版本。多张表对同一组合并要求共用一次读取。读取失败后，重新订阅或重放任一待合并分支都能重试。因果覆盖关系按传递性计算。若 O 含有某个 incarnation，B 覆盖 O 且已删除该行，覆盖 B 的合并快照只能以新 incarnation 恢复该行。无共同创建证据的并发分支可分别包含和缺少该行。迟到的内容或覆盖关系还须与已知后继一致。在 A → B → C 后重放 A，仍然显示 C。
+5. 适配器和活动订阅持有完整行。为校验很晚才到的快照或回执，物理作用域保留已见版本的行身份、文档 SHA-256、顺序摘要、观察标识和因果关系。证据占用随观察到的版本和行数增长，当前由进程生命周期管理。完整行被回收后，重新打开需要向宿主读取。只有原操作的精确回执和覆盖提交的完整快照都到达后，才能结算本地贡献并释放写入许可。
 
-- 已使用 adapter `load` 的接入无需自行管理读取代次，但要遵守 `operationId` 的读取约束。
-- 直接把 query/cache 回调传给 `publish` 的接入，改为在请求开始时 `beginRead()`，
-  并将同一个读取对象带到结果处理；不能在结果回调里才生成凭据。无法保留请求上下文时使用 `load`。
-- 可信推送在能够证明包含指定 operation 时使用 `afterOperationId`；不能证明则重新读取。
-- 自定义 `commit` 在第三版本上补充因果证明；已确认写入后读取失败要返回确认回执，不能抛成未知结果。
-- 消费 `GridCommitReceipt` 的代码要处理 `applied: null` / `reconciliationError`，不能把 receipt 到达等同于完整协调成功。
+运行 `pnpm test` 可核对数据源同步、保存恢复及网关回收；`pnpm run prepublishOnly` 还会运行三个浏览器和实际打包消费者。
 
-## 永久回归
+## 宿主协议
 
-`src/controller/persistence-consistency.test.ts` 通过公开 adapter/controller API 验证：
+`createRemoteGridDataSource` 接收 `source`、`scope`、`model`、`columns`、`getRowKey`、`persistence`，可选 `initialAuthority`、推送订阅和行能力。公开 `GridDataSource` 指向新契约。
 
-- 回执先到、publication 先到，以及旧 base 的 status-only 通知；
-- 原生 data source 的第三版本有证明/无证明两个分支；
-- manual / auto / immediate 三种模式下中间旧快照不得回退已确认值；
-- 真正后续服务器更新仍被保留，包括主动恢复原值的合法服务器编辑；
-- 无 loader 的歧义保存保留 draft，拒绝 Save/Retry，权威证明到达后恢复；
-- 写入前和写入期间开始的外部读取晚到时被拒绝，写入后新读取仍能推进数据；
-- 已确认写入之后读取失败、返回无效 rows 或解析响应元数据异常，不再发送 mutation；
-- 保存后刷新返回已知的写入前 base 时拒绝回退，允许再次刷新恢复；
-- 恢复时保留后续编辑、服务器主键、删除和排序、selection、undo/redo；
-- 未知写入结果重试保持同一 request 身份，并保留两次尝试之间的后续服务器更新；
-- 错误回执不能被仅改变状态的 publication 解锁。
+业务接入工厂与 GridDataSource 类型保留在主入口及 engine；PersistenceSource、ServerAuthority、FrozenSubmission、ExactReceipt、OperationLookup、身份/版本类型和 hash/编码工具从 `data-editor-table/protocol` 导入。主入口不再通配暴露内核模型。保存使用 await controller.save()，未知操作使用选择器给出的 recoverSave.target 调用 controller.recoverSave，先检查 enabled 及 target，读取使用 await controller.refresh()；旧同步 persistence/save、persistence/retry、source/refresh 不再接纳。恢复描述只保留 recovery 对象，不再重复暴露 retryOperationId/recoveryAction。
 
-`tests/browser/persistence-consistency.spec.ts` 使用可控服务器 fixture，在 Chromium、Firefox、WebKit
-验证编辑 → 保存 → 中间/后继 publication → 读取失败及 Refresh → 晚到缓存 → 重新打开编辑器。
-同时检查 mutation 次数，防止只看最终文本而漏掉重复写入。
+`PersistenceSource` 的能力必须由真实后端提供：
 
-现有 `remote-data-source.test.ts` 继续保护刷新乱序/取消、提交队列、主键映射、未知结果幂等重试。
-“外部更新更晚”的旧测试保留这个行为断言，并补充对应因果证明，而不是改成一律用保存结果覆盖它。
+- 相同物理数据源使用相同 ID；scope 和 epoch 固定权限与身份域。
+- 完整 authority 提供服务器有序版本或因果版本、唯一 observation、每行的业务 key 与 incarnation，以及完整顺序。
+- 若服务器保证 epoch 内不复用业务 key，可声明 `no-key-reuse-in-epoch`；否则每个生命周期必须有 incarnation。
+- 保存请求携带固定 operation ID、payload hash、base authority、明确 items、coverage 和 frontier。一个 scope 内的 items 原子提交。
+- 后端保存请求身份和精确结果，重复 ID/hash 返回原结果，不执行第二次写入。哈希不匹配必须拒绝。
+- `readAtLeast` 返回覆盖 frontier 的完整真实数据；不能把旧缓存补上较新版本标签。
+- operation lookup 的不存在不是天然的未执行证明。返回 `not-applied` 前必须阻止同 ID 的迟到写入随后执行。
+- `operationRetentionMs` 是后端承诺的结果保留期限；`restoreDeleted` 只在后端能验证删除证明、恢复完整文档并分配新 incarnation 时开启。
+
+`demo/src/demo-source.ts` 使用一笔 IndexedDB readwrite 事务原子保存完整行、版本和 operation outcome。它是 demo 自己的真实 authority，不能被复制为远端 HTTP 接口的保证声明。
+
+## 保存结果和恢复
+
+| 返回值 | 含义和处理 |
+| --- | --- |
+| `{ kind: 'applied', receipt }` | 精确回执。包含 scope、operationId、payloadHash、committedVersion 和逐 item 的 canonical 结果。必要时读取覆盖该版本的 authority 后结算 |
+| `{ kind: 'applied-without-receipt', commitToken }` | 已确认写入，缺精确回执。保留 token 和固定请求，通过 lookup 获取原结果 |
+| `{ kind: 'unknown', issue }` / `{ kind: 'pending' }` | 结果不明或仍在执行。保留原 operation、覆盖和写入许可；重试仍是原请求 |
+| `{ kind: 'not-applied', proof }` | 后端确认且永久封住该请求未执行。保留本地操作，允许重读后准备新提交 |
+
+精确回执中的每一份 canonical 文档按完整快照相同的 codec 和主键规则验收，失败不写入版本历史。回执推进 frontier 时，作用域立即向现有订阅者分发读取要求，也向新订阅者重放。作者补读失败时，其他表仍可从各自的连接取得覆盖快照。在 A 上提交、回执 C 只列出直接前驱 B 时，作用域可以用已接纳的 B 覆盖 A 证明 C 覆盖 A。如果证明晚到，网关保留回执并在作用域接纳新证据后重新核验原操作。有序版本同样检查迟到的完整快照。若 v1 和 v3 都含同一行实例，v2 声称该实例缺失会被拒绝，同一 v2 可携带修正后的内容再送达。
+
+Promise rejection 属于未知结果，不能默认转换为 not-applied。HTTP 200、当前值等于期望值、或者 latest rows 都不能代替精确回执。确认写入但读取失败时显示恢复入口，不能再准备一个新写入。
+
+### 处理相互矛盾的证据
+
+已发送的查询以原冻结请求为目标跟到结束，释放许可或关闭原表后仍校验迟到结果。另一笔操作已发出时，它的返回继续按自己的身份结算。发现争议后，所有表在开始新写入前被拦截；等待中的草稿和编辑原文保留。
+
+宿主监听 `remote.subscribeDisputes(listener)`，按 `remote.getDispute(id)` 取得原操作引用与证据，从权威账本核验后调用 `remote.resolveDispute(id, result)`。结果须为匹配 scope、操作 ID 和摘要的精确回执或有围栏的未执行证明。新增矛盾证据会更新争议 ID。处理一项后，其他未决争议继续封写。若核验结论推翻已接纳终局，须由宿主在新 epoch 中重建权威历史并核对本地工作。刷新和重开表会看到同一作用域的争议，本版的本地追踪随进程结束。
+
+## 列、输入与恢复操作
+
+`column.field('name', …)` 的普通写入比较实际存储路径，另一张表写 `count` 可以同时成立。显式 `planEdit` 比较所写路径，并用 `context.read(path)` 记录计算所依赖的值。列级 `validate(value)` 保留字段依赖，`validateWithRow(value, row)` 声明整行依赖。同时配置时，后者收到前者校验后的值。自定义 setter、依赖行的列准入条件以及读取行的单元格类型校验也记录整行依赖。粘贴、编辑器、直接命令与事务都在写入准备时生成这些证据，之后的刷新和保存复用它们。
+
+编辑器和剪贴板解析器产出具体输入值。若某项业务计算依赖其他存储字段，且保存时必须核对那些字段，应在 `planEdit` 中读取它们。
+
+`editable(row)` / `isEditable(row)` 是每条新编辑命令的准入条件，使用包含先前本地修改的行判断，并将该行上下文记录为依赖。因此可以先解锁、再编辑、一起保存；之后重新锁定会拒绝新的编辑，但不会追溯撤销此前合法接纳的操作。永久存储只读限制由文档模型的 `fields[].readonly` 表达，来源仍需独立校验服务器权限，不能用旧 authority 上的列编辑条件代替这些限制。
+
+整行还原记录明确贡献处置并保留可撤销记录，批量还原在同一次发布中全部接纳或全部拒绝。请求已冻结的贡献不能被还原操作悄悄删除。行顺序冲突提供使用已保存顺序或保留本地顺序的决定。创建主键碰撞与服务端删除属于身份决策，不能按行号重绑定。
+
+`canDelete(row)` 同样按当前本地行检查新删除命令；删除冲突的重新确认，以及历史操作产生的新物理删除，也要检查当前条件。它不是服务器权限证明：如果来源要求先持久化解锁，必须先保存再删除；来源拒绝时保留删除意图供恢复。
+
+事务目标和顺序来自内核的有效成员，不能从包含待删除冲突行的展示 rows 重建。普通新增、复制、删除通过事务 builder 表达明确操作；只有实际指定插入位置或移动后改变了自然顺序，才生成完整排序命令。因此删除冲突不会阻塞其他行的内容事务或追加创建；涉及全表顺序的操作仍受结构依赖约束。
+
+Editor/BulkEditor 原文、composition、session ID 和固定实体目标由原 Controller 会话持有。图片 effect 的文件保留在其执行资源中，完成事件把原输入和未应用结果交回 Runtime。取消只撤销应用权限；任务未结束前仍算 pending work。
+
+过期/失败 cell 结果可以在原菜单或页脚中应用、重试或明确丢弃；页脚在空表和筛选无匹配行时仍提供入口。页脚应用绑定原实体，原实体消失时拒绝应用并保留材料；替换目标必须通过单元格菜单明确选择。处理结果后同步移除对应任务的错误提示。宿主可以用 `effect/inspect-result` 读取保留材料；宿主单格任务交付 value，多格任务按发起时声明的 write 顺序交付 values；`effect/apply-host-result` 复核原读写集合后整体应用。失败宿主写入必须由宿主查询其实际结果，不自动重发。
+
+React detach 不销毁未处理工作。同一个 data-source 对象重新挂载时复用保留的 binding，组件自动接入和 hook 共用保留缓存；显式 binding 由宿主保持可达和最终销毁。三种 React 接入方式切换目标时都等待旧工作处理完成，期间继续显示旧实例。`getCloseState()` 返回类型化阻塞原因；`destroy()` 再次检查并返回接纳/拒绝结果，有未保存输入、运行中任务、保留结果或未结算提交时拒绝销毁。详见[生命周期与接口方案](lifecycle-api-design.md)。
+
+每个 binding 独立持有宿主 effect 回调，切换 data-source 不会改写旧 binding 的回调；同一 data-source 的回调更新在 React 提交后生效。远端订阅初始化失败会撤销本次注册，允许重新连接；取消订阅幂等，已断开或初始化失败的推送不再发布数据。每次发布固定通知接收者集合，单个订阅者异常不阻断其他接收者。
+
+跨表仍是两个独立数据域。复制和剪切分别准备两侧动作；补偿必须携带目标插入的 `applicationId`。如果那些行已经有后续修改，补偿拒绝并提示复核两侧，不能用普通 undo 撤销其他工作。本协议不声称跨 scope 的服务器原子事务。
+
+## 从旧接口迁移
+
+- 移除 `initialSnapshot/load/persistence.mutate/commit`、`beginRead`、`afterOperationId` 和 `GridCommitError` 约定，改用上述服务器证据协议。
+- 原本直接实现 data source 的宿主也需提供 `GridDocumentModel` 和 `PersistenceSource`；不能仅升级 React props。
+- 快照的 `draft.undoStack/redoStack` 现在只有 application 身份、标签和版本，不再包含 before/after rows。
+- `selectGridActions(snapshot).recoverSave` 给出此刻可执行的恢复动作及其目标。畸形回执先执行 review，再读取新的描述并由用户明确 confirm 或 refresh。已接纳的事实相互矛盾时保留操作并停止自动恢复。已证实未写入或准备失败时，使用 `retrySave.enabled` 展示重新保存。撤销并开始新工作后，旧失败信息不影响新一轮自动保存。
+- 同步 dispatch/transaction 的 accepted 仅表示本地接纳。远端结果使用 `await controller.save()` 或 `recoverSave()`，检查 confirmed/partial/recovery-required 等结果与 remaining。结果归属于实际冻结请求，不能从全局 idle 推测；普通刷新使用 `await controller.refresh()`。
+- 这次集成不启用备份 Workspace、durable ingress、checkpoint 或崩溃恢复。硬刷新/进程终止会丢失尚未保存的内存工作；demo 只持久保存确认后的 authority 和 operation outcomes。

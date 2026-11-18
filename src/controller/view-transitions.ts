@@ -1,8 +1,9 @@
 import { deriveLocalView } from '../data/local-view.js'
+import { gridValueIssue, type GridIssue } from '../model/grid-result.js'
 import { invokeGridResult } from '../data/safe-callback.js'
 import type { GridCompiledColumn, GridInteractionState, GridLayoutState, GridRowKey, GridViewState } from '../model/grid-model.js'
 import { resolveGridLayout } from './controller-state.js'
-import { reconcileInteractionAfterViewChange } from './interaction-transitions.js'
+import { reconcileGridSelection } from './interaction-transitions.js'
 
 type GridViewChanges<RowKey extends GridRowKey> = Partial<Pick<GridViewState<RowKey>, 'globalFilter' | 'columnFilters' | 'sort'>>
 
@@ -26,7 +27,7 @@ export function transitionGridView<Row, RowKey extends GridRowKey>(input: Readon
     globalFilter: query.globalFilter, columnFilters: query.columnFilters, sort: query.sort,
     revision: input.view.revision + 1,
   })
-  const interaction = reconcileInteractionAfterViewChange(input.interaction, view.visibleRowKeys, columns.map((column) => column.key))
+  const interaction = reconcileGridSelection(input.interaction, input.view.visibleRowKeys, view.visibleRowKeys)
   const layout = resolveGridLayout(columns, view.visibleRowKeys.length, input.layout, sizes, input.layout.revision + 1)
   return { ok: true as const, changes: Object.freeze({ view, interaction, layout }) }
 }
@@ -34,21 +35,21 @@ export function transitionGridView<Row, RowKey extends GridRowKey>(input: Readon
 function gridViewChangeIssue<Row, RowKey extends GridRowKey>(
   changes: GridViewChanges<RowKey>,
   columns: readonly GridCompiledColumn<Row>[],
-): string | null {
+): GridIssue | null {
   for (const sort of changes.sort ?? []) {
     const column = columns.find((candidate) => candidate.key === sort.columnKey)
     if (!column?.sortable || !column.behavior.compare)
-      return `Column "${sort.columnKey}" does not support sorting.`
+      return { code: 'permission-denied', message: `Column "${sort.columnKey}" does not support sorting.` }
   }
   for (const filter of changes.columnFilters ?? []) {
     const column = columns.find((candidate) => candidate.key === filter.columnKey)
     if (!column?.filterable || !column.behavior.filter)
-      return `Column "${filter.columnKey}" does not support filtering.`
+      return { code: 'permission-denied', message: `Column "${filter.columnKey}" does not support filtering.` }
     const operator = column.behavior.filter.operators.find((candidate) => candidate.id === filter.operator)
-    if (!operator) return `Filter operator "${filter.operator}" is unavailable for column "${filter.columnKey}".`
+    if (!operator) return { code: 'invalid-input', message: `Filter operator "${filter.operator}" is unavailable for column "${filter.columnKey}".` }
     if (operator.validate) {
       const validated = invokeGridResult(() => operator.validate!(filter.value))
-      if (!validated.ok) return validated.issue.message
+      if (!validated.ok) return gridValueIssue(validated.issue)
     }
   }
   return null

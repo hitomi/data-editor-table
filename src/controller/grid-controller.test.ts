@@ -5,7 +5,9 @@ import {
   createStandardCellTypeRegistry,
   type StandardGridCellTypeSchema,
 } from '../cell-types/index.js'
-import type { GridDataSource } from '../data/data-source.js'
+import { testAuthority, testGridSource } from '../../tests/unit/authority.js'
+import type { GridRowCapabilities } from '../data/data-source.js'
+import { kernelId } from '../kernel/model.js'
 import { createRemoteGridDataSource } from '../data/remote-data-source.js'
 import { createGridController } from './grid-controller.js'
 import { selectGridCell } from './grid-selectors.js'
@@ -26,46 +28,25 @@ const nameColumn = column.field('name', {
 })
 const quantityColumn = column.field('quantity', {
   label: 'Quantity',
-  type: 'number',
+  type: 'number', typeOptions: { minimum: 0 },
   filterable: true,
 })
 
 describe('GridController recovery and view boundaries', () => {
   it('treats falsy primitive rows as present throughout selection and editing', () => {
     const primitiveRegistry = createStandardCellTypeRegistry<number>()
-    const dataSource: GridDataSource<
-      number,
-      string,
-      StandardGridCellTypeSchema
-    > = {
-      columns: [{
-        key: 'value',
-        label: 'Value',
-        type: 'number',
-        getValue: (row) => row,
-        setValue: (_row, value) => value,
-      }],
-      getRowKey: () => 'only-row',
-      getSnapshot: () => ({
-        rows: [0],
-        status: 'ready',
-        version: 'v1',
-        scope: { kind: 'complete' },
-      }),
-      subscribe: () => () => {},
-      persistence: {
-        mode: 'manual-save',
-        commit: async (request) => ({
-          operationId: request.operationId,
-          applied: {
-            rows: request.rows,
-            status: 'ready',
-            version: 'v2',
-            scope: { kind: 'complete' },
-          },
-        }),
-      },
-    }
+    const server = testAuthority([{ id: 'only-row', value: 0 }])
+    const field = kernelId<'field'>('value')
+    const dataSource = createRemoteGridDataSource<number, string>({
+      columns: [{ key: 'value', label: 'Value', type: 'number', getValue: row => row, setValue: (_row, value) => value }],
+      source: server.source, scope: server.scope, initialAuthority: server.current(),
+      getRowKey: () => 'only-row', persistence: { mode: 'manual-save' },
+      model: { version: kernelId<'schema-version'>('1'), fields: [{ id: field, path: ['value'], readonly: false }],
+        columns: [{ columnKey: 'value', fieldIds: [field] }], codec: {
+          version: kernelId<'codec-version'>('1'), equals: Object.is, copy: row => row,
+          encode: row => ({ id: 'only-row', value: row }), decode: document => Number(document.value),
+        } },
+    })
     const controller = createGridController({
       dataSource,
       cellBehaviors: primitiveRegistry.behaviors,
@@ -108,7 +89,7 @@ describe('GridController recovery and view boundaries', () => {
     }).accepted).toBe(true)
     expect(controller.dispatch({ type: 'rows/add' })).toMatchObject({
       accepted: false,
-      reason: 'The new row key is not unique.',
+      issue: { code: 'invalid-input' },
     })
 
     controller.dispatch({
@@ -117,7 +98,7 @@ describe('GridController recovery and view boundaries', () => {
     })
     expect(controller.dispatch({ type: 'rows/duplicate' })).toMatchObject({
       accepted: false,
-      reason: 'Duplicate rows must receive unique keys.',
+      issue: { code: 'invalid-input' },
     })
     expect(controller.getSnapshot().draft.rows.map((row) => row.id)).toEqual([
       'row-b',
@@ -126,40 +107,7 @@ describe('GridController recovery and view boundaries', () => {
   })
 
   it('restores a conflicted local value before resolving keep-local', () => {
-    let failClone = false
-    const replayColumn = {
-      key: 'name',
-      label: 'Name',
-      type: 'string',
-      layout: { basis: 180 },
-      getValue: (row: Row) => row.name,
-      setValue: (row: Row, name: string) => ({ ...row, name }),
-    } as const
-    const dataSource = createRemoteGridDataSource<
-      Row,
-      string,
-      StandardGridCellTypeSchema
-    >({
-      columns: [replayColumn],
-      getRowKey: (row) => row.id,
-      cloneRow: (row) => {
-        if (failClone) throw new Error('Clone temporarily unavailable')
-        return { ...row }
-      },
-      initialSnapshot: {
-        rows: [{ id: 'row-a', name: 'Initial', quantity: 1 }],
-        status: 'ready',
-        version: 'v1',
-        scope: { kind: 'complete' },
-      },
-      persistence: {
-        mode: 'manual-save',
-        mutate: async (request) => ({
-          kind: 'applied',
-          authority: { rows: request.rows, version: 'saved' },
-        }),
-      },
-    })
+    const { dataSource, server } = testGridSource<Row>([{ id: 'row-a', name: 'Initial', quantity: 1 }], [nameColumn])
     const controller = createGridController<Row, string, StandardGridCellTypeSchema>({
       dataSource,
       cellBehaviors: registry.behaviors,
@@ -170,33 +118,20 @@ describe('GridController recovery and view boundaries', () => {
       value: 'Local',
     }).accepted).toBe(true)
 
-    failClone = true
-    dataSource.publish({
-      rows: [{ id: 'row-a', name: 'Remote', quantity: 2, locked: true }],
-      status: 'ready',
-      version: 'v2',
-      scope: { kind: 'complete' },
-    })
-    expect(controller.getSnapshot().draft.rows).toEqual([
-      { id: 'row-a', name: 'Remote', quantity: 2, locked: true },
-    ])
-    expect(controller.getSnapshot().draft.conflicts).toHaveLength(1)
-    expect(controller.getSnapshot().draft.conflicts[0]?.localValue).toBe('Local')
-
+    dataSource.publish(server.snapshot([{ id: 'row-a', name: 'Remote', quantity: 2, locked: true }], 2))
+    expect(controller.getSnapshot().source.rows[0]?.name).toBe('Remote')
+    expect(controller.getSnapshot().draft.rows[0]?.name).toBe('Local')
+    const conflicts = controller.getSnapshot().draft.conflicts
+    expect(conflicts).toContainEqual(expect.objectContaining({ rowKey: 'row-a' }))
     expect(controller.dispatch({
-      type: 'conflict/resolve',
-      rowKey: 'row-a',
-      columnKey: 'name',
-      resolution: 'keep-local',
+      type: 'conflict/resolve', rowKey: 'row-a', columnKey: 'unknown', resolution: 'keep-local',
     }).accepted).toBe(false)
-    expect(controller.getSnapshot().draft.conflicts).toHaveLength(1)
-    expect(controller.getSnapshot().draft.conflicts[0]?.localValue).toBe('Local')
-
-    failClone = false
+    expect(controller.getSnapshot().draft.rows[0]?.name).toBe('Local')
+    expect(controller.getSnapshot().draft.conflicts).toEqual(conflicts)
     expect(controller.dispatch({
       type: 'conflict/resolve',
       rowKey: 'row-a',
-      columnKey: 'name',
+      columnKey: null,
       resolution: 'keep-local',
     }).accepted).toBe(true)
     expect(controller.getSnapshot().draft.rows).toEqual([
@@ -204,8 +139,8 @@ describe('GridController recovery and view boundaries', () => {
     ])
     expect(controller.getSnapshot().draft.conflicts).toEqual([])
     expect(controller.dispatch({ type: 'history/undo' }).accepted).toBe(true)
-    expect(controller.getSnapshot().draft.rows[0]?.name).toBe('Remote')
-    expect(controller.getSnapshot().draft.conflicts).toHaveLength(1)
+    expect(controller.getSnapshot().source.rows[0]?.name).toBe('Remote')
+    expect(controller.getSnapshot().draft.conflicts).toEqual(conflicts)
     expect(controller.dispatch({ type: 'history/redo' }).accepted).toBe(true)
     expect(controller.getSnapshot().draft.rows[0]?.name).toBe('Local')
     expect(controller.getSnapshot().draft.conflicts).toEqual([])
@@ -240,7 +175,7 @@ describe('GridController recovery and view boundaries', () => {
     })
     expect(result).toMatchObject({
       accepted: true,
-      payload: { committed: true, moved: false },
+      value: { committed: true, moved: false },
     })
     expect(controller.getSnapshot().draft.rows[0]?.name).toBe('Hidden')
     expect(controller.getSnapshot().view.visibleRowKeys).toEqual([])
@@ -251,7 +186,7 @@ describe('GridController recovery and view boundaries', () => {
   it('does not treat invalid cell text as a global-search match', () => {
     const controller = createGridController<Row, string, StandardGridCellTypeSchema>({
       dataSource: localDataSource([
-        { id: 'row-a', name: 'Alpha', quantity: Number.NaN },
+        { id: 'row-a', name: 'Alpha', quantity: -1 },
         { id: 'row-b', name: 'Needle', quantity: 2 },
       ]),
       cellBehaviors: registry.behaviors,
@@ -268,7 +203,7 @@ describe('GridController recovery and view boundaries', () => {
   it('does not let invalid cell values bypass an active column filter', () => {
     const controller = createGridController<Row, string, StandardGridCellTypeSchema>({
       dataSource: localDataSource([
-        { id: 'row-a', name: 'Invalid', quantity: Number.NaN },
+        { id: 'row-a', name: 'Invalid', quantity: -1 },
         { id: 'row-b', name: 'High', quantity: 20 },
         { id: 'row-c', name: 'Low', quantity: 5 },
       ]),
@@ -322,7 +257,7 @@ describe('GridController recovery and view boundaries', () => {
 
     expect(controller.dispatch({ type: 'selection/clear-values' })).toMatchObject({
       accepted: false,
-      reason: 'This operation exceeds the mutation limit.',
+      issue: { code: 'limit-exceeded' },
     })
     expect(setterCalls).toBe(0)
     expect(controller.getSnapshot().draft.rows.map((row) => row.name)).toEqual([
@@ -392,7 +327,7 @@ describe('GridController recovery and view boundaries', () => {
       }],
     })
     expect(result.accepted).toBe(false)
-    expect(result.reason).toBe('Enter a valid number.')
+    expect(result).toMatchObject({ issue: { message: 'Enter a valid number.' } })
     expect(controller.getSnapshot().view.columnFilters).toEqual([])
     expect(controller.getSnapshot().view.visibleRowKeys).toEqual(['row-a'])
     controller.destroy()
@@ -401,34 +336,8 @@ describe('GridController recovery and view boundaries', () => {
 
 function localDataSource(
   rows: readonly Row[],
-  rowCapabilities?: GridDataSource<
-    Row,
-    string,
-    StandardGridCellTypeSchema
-  >['rows'],
-): GridDataSource<Row, string, StandardGridCellTypeSchema> {
-  return {
-    columns: [nameColumn, quantityColumn],
-    getRowKey: (row) => row.id,
-    getSnapshot: () => ({
-      rows,
-      status: 'ready',
-      version: 'v1',
-      scope: { kind: 'complete' },
-    }),
-    subscribe: () => () => undefined,
-    ...(rowCapabilities ? { rows: rowCapabilities } : {}),
-    persistence: {
-      mode: 'manual-save',
-      commit: async (request) => ({
-        operationId: request.operationId,
-        applied: {
-          rows: request.rows,
-          status: 'ready',
-          version: 'v2',
-          scope: { kind: 'complete' },
-        },
-      }),
-    },
-  }
+  rowCapabilities?: GridRowCapabilities<Row>,
+) {
+  const { dataSource } = testGridSource(rows, [nameColumn, quantityColumn])
+  return { ...dataSource, ...(rowCapabilities ? { rows: rowCapabilities } : {}) }
 }

@@ -6,6 +6,7 @@ export default defineConfig({
       entry: {
         index: 'src/vite-entry.ts',
         engine: 'src/engine.ts',
+        protocol: 'src/protocol.ts',
         'locales/zh-CN': 'src/locales/zh-cn.ts',
       },
       fileName: (_format, entryName) => `${entryName}.js`,

@@ -1,3 +1,4 @@
+import { kernelId } from '../kernel/model.js'
 import { describe, expect, it, vi } from 'vitest'
 import { createStandardCellTypeRegistry, type StandardGridCellTypeSchema } from '../cell-types/standard-registry.js'
 import { compileGridColumns } from '../data/runtime-columns.js'
@@ -12,7 +13,7 @@ const column = compileGridColumns<number, StandardGridCellTypeSchema>([{
 const cell = { rowKey: 'row', columnKey: 'value' }
 const resolved = { row: 0, value: 0, column }
 function session() {
-  const result = beginGridEditSession(resolved, cell, 1, 2)
+  const result = beginGridEditSession(resolved, cell, 1, 2, { id: 'edit', entityId: kernelId<'entity'>('row') })
   if (!result.ok) throw new Error(result.issue.message)
   return result.value
 }
@@ -48,7 +49,7 @@ describe('editing domain transitions', () => {
 describe('filter draft transitions', () => {
   it('edits staged conditions without mutating the original session or active query', () => {
     const query = [{ columnKey: 'value', operator: column.behavior.filter!.defaultOperator, value: '1', combine: 'all' as const }]
-    const begun = beginGridFilterSession(column, query, 1)
+    const begun = beginGridFilterSession(column, query, 'filter-1')
     if (!begun.ok) throw new Error(begun.issue.message)
     const changed = changeGridFilterSession(begun.value, { type: 'change', index: 0, value: undefined, operator: undefined, combine: 'any' })
     expect(changed).toMatchObject({ ok: true, value: { combine: 'any', conditions: [{ value: '1' }] } })
@@ -58,7 +59,7 @@ describe('filter draft transitions', () => {
   })
 
   it('preserves filter input when its validator throws', () => {
-    const begun = beginGridFilterSession(column, [], 1)
+    const begun = beginGridFilterSession(column, [], 'filter-1')
     if (!begun.ok) throw new Error(begun.issue.message)
     const badColumn = { ...column, behavior: { ...column.behavior, filter: {
       ...column.behavior.filter!, operators: column.behavior.filter!.operators.map((operator) => ({
@@ -66,7 +67,7 @@ describe('filter draft transitions', () => {
       })),
     } } }
     const result = prepareGridFilterApply(begun.value, badColumn, [])
-    expect(result).toMatchObject({ ok: false, reason: 'Invalid condition', session: { revision: 2, conditions: begun.value.conditions } })
+    expect(result).toMatchObject({ ok: false, issue: { message: 'Invalid condition' }, session: { revision: 2, conditions: begun.value.conditions } })
     expect(begun.value.error).toBeNull()
   })
 })

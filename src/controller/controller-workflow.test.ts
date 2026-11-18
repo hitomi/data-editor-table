@@ -1,47 +1,31 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createStandardCellTypeRegistry, type StandardGridCellTypeSchema } from '../cell-types/standard-registry.js'
-import type { GridDataSource } from '../data/data-source.js'
+import type { GridKernelDataSource as GridDataSource } from '../data/kernel-data-source.js'
+import { testGridSource } from '../../tests/unit/authority.js'
+import { getGridInteractionPort } from './controller-interaction.js'
+import { createGridColumnHelper } from '../cell-types/column-helper.js'
 import type { GridControllerSnapshot, GridRuntimeCellEffect, GridValueResult } from '../model/grid-model.js'
 import { createGridController } from './grid-controller.js'
-import type { GridController, GridDispatchResult, GridEffectResult, GridTransactionContext } from './controller-contracts.js'
+import type { GridController, GridCommandResult, GridEffectResult, GridTransactionContext } from './controller-contracts.js'
 
 type Row = Readonly<{ id: string; name: string; quantity: number }>
 type Snapshot = GridControllerSnapshot<Row, string>
 const registry = createStandardCellTypeRegistry<Row>()
 const cell = { rowKey: 'a', columnKey: 'name' }
 
-function source(): GridDataSource<Row, string, StandardGridCellTypeSchema> {
-  const initial = {
-    rows: [{ id: 'a', name: 'Visible', quantity: 1 }],
-    status: 'ready' as const,
-    version: 'v1',
-    scope: { kind: 'complete' as const },
-  }
-  return {
-    columns: [{
-      key: 'name', label: 'Name', type: 'string', filterable: true,
-      getValue: (row) => row.name,
-      setValue: (row, name) => ({ ...row, name }),
-    }, {
-      key: 'quantity', label: 'Quantity', type: 'number',
-      getValue: (row) => row.quantity,
-      setValue: (row, quantity) => ({ ...row, quantity }),
-    }],
-    getRowKey: (row) => row.id,
-    getSnapshot: () => initial,
-    subscribe: () => () => undefined,
-    persistence: {
-      mode: 'manual-save',
-      commit: async (request) => ({
-        operationId: request.operationId,
-        applied: { ...initial, rows: request.rows, version: 'v2' },
-      }),
-    },
-  }
+const column = createGridColumnHelper<Row>()
+function fixture() {
+  return testGridSource<Row>([{ id: 'a', name: 'Visible', quantity: 1 }], [
+    column.field('name', { label: 'Name', type: 'string', filterable: true }),
+    column.field('quantity', { label: 'Quantity', type: 'number' }),
+  ])
 }
-
-function controller(dataSource = source()) {
-  return createGridController({ dataSource, cellBehaviors: registry.behaviors })
+function source() { return fixture().dataSource }
+function controller(dataSource: GridDataSource<Row, string, StandardGridCellTypeSchema> = source()) {
+  // Tests specializing a subset of the columns also specialize their storage bindings.
+  const present = new Set(dataSource.columns.map(column => column.key))
+  return createGridController({ dataSource: { ...dataSource, model: { ...dataSource.model,
+    columns: dataSource.model.columns.filter(binding => present.has(binding.columnKey)) } }, cellBehaviors: registry.behaviors })
 }
 
 function effectController(run: GridRuntimeCellEffect<Row>['run']) {
@@ -62,9 +46,9 @@ function effectController(run: GridRuntimeCellEffect<Row>['run']) {
 describe('GridController atomic command workflows', () => {
   it.each(['manual-save', 'auto-save', 'immediate'] as const)('saves the latest draft with %s scheduling', async (mode) => {
     vi.useFakeTimers()
-    const dataSource = source()
-    const commit = vi.fn(dataSource.persistence.commit)
-    const grid = controller({ ...dataSource, persistence: { mode, commit } })
+    const { dataSource, server } = fixture()
+    const commit = server.source.submit
+    const grid = controller({ ...dataSource, persistence: { mode, debounceMs: 800 } })
     try {
       grid.dispatch({ type: 'cell/set-value', cell, value: 'First' })
       grid.dispatch({ type: 'cell/set-value', cell, value: 'Latest' })
@@ -72,14 +56,15 @@ describe('GridController atomic command workflows', () => {
       if (mode === 'manual-save') {
         await vi.advanceTimersByTimeAsync(1000)
         expect(commit).not.toHaveBeenCalled()
-        expect(grid.dispatch({ type: 'persistence/save' }).accepted).toBe(true)
+        expect(await grid.save()).toMatchObject({ status: 'confirmed' })
       } else if (mode === 'auto-save') {
         await vi.advanceTimersByTimeAsync(799)
         expect(commit).not.toHaveBeenCalled()
       }
       await vi.runAllTimersAsync()
+      await vi.waitFor(() => expect(grid.getSnapshot().draft.dirtyCells).toEqual([]))
       expect(commit).toHaveBeenCalledTimes(1)
-      expect(commit.mock.calls[0]?.[0].rows[0]?.name).toBe('Latest')
+      expect(commit.mock.calls[0]?.[0].items).toMatchObject([{ kind: 'update', after: { name: 'Latest' } }])
       expect(grid.getSnapshot().draft.dirtyCells).toEqual([])
       expect(grid.getSnapshot().persistence.status).toBe('idle')
     } finally {
@@ -90,9 +75,9 @@ describe('GridController atomic command workflows', () => {
 
   it('cancels a scheduled auto-save when switching to manual mode', async () => {
     vi.useFakeTimers()
-    const dataSource = source()
-    const commit = vi.fn(dataSource.persistence.commit)
-    const grid = controller({ ...dataSource, persistence: { mode: 'auto-save', commit } })
+    const { dataSource, server } = fixture()
+    const commit = server.source.submit
+    const grid = controller({ ...dataSource, persistence: { mode: 'auto-save', debounceMs: 800 } })
     try {
       grid.dispatch({ type: 'cell/set-value', cell, value: 'Pending' })
       grid.dispatch({ type: 'persistence/set-mode', mode: 'manual-save' })
@@ -101,6 +86,7 @@ describe('GridController atomic command workflows', () => {
       expect(grid.getSnapshot().draft.dirtyCells).toHaveLength(1)
       grid.dispatch({ type: 'persistence/set-mode', mode: 'immediate' })
       await vi.runAllTimersAsync()
+      await vi.waitFor(() => expect(grid.getSnapshot().draft.dirtyCells).toEqual([]))
       expect(commit).toHaveBeenCalledTimes(1)
       expect(grid.getSnapshot().draft.dirtyCells).toEqual([])
     } finally {
@@ -110,22 +96,17 @@ describe('GridController atomic command workflows', () => {
   })
 
   it('queues authority published by a setter until the local command has committed', () => {
-    const dataSource = source()
-    let published = dataSource.getSnapshot()
-    let notify = () => {}
+    const { dataSource, server } = fixture()
     let emitted = false
     let callbackRead: Snapshot | undefined
     const grid = controller({
       ...dataSource,
-      getSnapshot: () => published,
-      subscribe: (listener) => { notify = listener; return () => {} },
       columns: [{
         key: 'name', label: 'Name', type: 'string', getValue: (row) => row.name,
         setValue: (row, name) => {
           if (!emitted) {
             emitted = true
-            published = { ...published, version: 'v2', rows: [{ id: 'a', name: 'Visible', quantity: 2 }] }
-            notify()
+            dataSource.publish(server.snapshot([{ id: 'a', name: 'Visible', quantity: 2 }], 2))
             callbackRead = grid.getSnapshot()
           }
           return { ...row, name }
@@ -145,15 +126,16 @@ describe('GridController atomic command workflows', () => {
     grid.destroy()
   })
 
-  it('does not abort an existing effect when cancellation belongs to a failed candidate', async () => {
+  it('denies a host result that tries to cancel a different task', async () => {
     let signal: AbortSignal | undefined
-    let resolve: ((value: GridEffectResult<string, string>) => void) | undefined
+    let resolve: ((value: GridEffectResult) => void) | undefined
     const grid = createGridController<Row, string, StandardGridCellTypeSchema, string>({
       dataSource: source(), cellBehaviors: registry.behaviors,
+      // @ts-expect-error An untyped host returning commands is also rejected at runtime.
       effects: { run: (effect, context) => {
         if (effect === 'long') {
           signal = context.signal
-          return new Promise<GridEffectResult<string, string>>((done) => { resolve = done })
+          return new Promise<GridEffectResult>((done) => { resolve = done })
         }
         return [
           { type: 'controller/cancel-effect', id: 'long' },
@@ -161,34 +143,35 @@ describe('GridController atomic command workflows', () => {
         ]
       } },
     })
-    grid.dispatch({ type: 'controller/run-effect', request: { id: 'long', effect: 'long', owner: { kind: 'controller' } } })
+    grid.dispatch({ type: 'controller/run-effect', request: { id: 'long', effect: 'long', owner: { kind: 'cell', cell } } })
     await Promise.resolve()
     grid.dispatch({ type: 'controller/run-effect', request: { id: 'batch', effect: 'batch', owner: { kind: 'controller' } } })
-    await vi.waitFor(() => expect(grid.getSnapshot().feedback.items[0]?.message).toBe('Discard cancellation'))
+    await vi.waitFor(() => expect(grid.getSnapshot().feedback.items[0]?.message).toContain('no authorized write targets'))
     expect(signal?.aborted).toBe(false)
-    resolve!({ type: 'cell/set-value', cell, value: 'Still active' })
+    resolve!({ kind: 'value', value: 'Still active' })
     await vi.waitFor(() => expect(grid.getSnapshot().draft.rows[0]?.name).toBe('Still active'))
     expect(grid.dispatch({ type: 'controller/run-effect', request: { id: 'batch', effect: 'batch', owner: { kind: 'controller' } } }).accepted).toBe(true)
     grid.destroy()
   })
 
-  it('rolls back persistence control state and its outbox when a later preparation step throws', async () => {
-    const dataSource = source()
-    const commit = vi.fn(dataSource.persistence.commit)
+  it('denies persistence control commands from a controller-owned host result', async () => {
+    const { dataSource, server } = fixture()
+    const commit = server.source.submit
     const grid = createGridController<Row, string, StandardGridCellTypeSchema, string>({
-      dataSource: { ...dataSource, persistence: { ...dataSource.persistence, commit } },
+      dataSource: { ...dataSource, persistence: dataSource.persistence },
       cellBehaviors: registry.behaviors,
+      // @ts-expect-error Task results cannot change persistence mode.
       effects: { run: () => [
-        { type: 'persistence/save' },
+        { type: 'persistence/set-mode', mode: 'immediate' },
         { get type(): 'feedback/clear' { throw new Error('Invalid effect command') } },
       ] },
     })
     grid.dispatch({ type: 'cell/set-value', cell, value: 'Preserved' })
     grid.dispatch({ type: 'controller/run-effect', request: { effect: 'run', owner: { kind: 'controller' } } })
-    await vi.waitFor(() => expect(grid.getSnapshot().feedback.items[0]?.message).toContain('Invalid effect command'))
+    await vi.waitFor(() => expect(grid.getSnapshot().feedback.items[0]?.message).toContain('no authorized write targets'))
     expect(grid.getSnapshot().persistence.status).toBe('idle')
     expect(commit).not.toHaveBeenCalled()
-    expect(grid.dispatch({ type: 'persistence/save' }).payload).toHaveProperty('operationId')
+    expect(await grid.save()).toMatchObject({ status: 'confirmed' })
     await vi.waitFor(() => expect(grid.getSnapshot().persistence.status).toBe('idle'))
     expect(commit).toHaveBeenCalledTimes(1)
     grid.destroy()
@@ -197,18 +180,19 @@ describe('GridController atomic command workflows', () => {
   it('applies a cell effect, closes its editor and schedules saving in one notification', async () => {
     const grid = effectController(async () => ({ ok: true, value: 'Resolved' }))
     grid.dispatch({ type: 'edit/start', cell })
-    const listener = vi.fn()
-    grid.subscribe(listener)
+    await grid.refresh()
+    const observations: Snapshot[] = []
+    grid.subscribe(() => observations.push(grid.getSnapshot()))
     expect(grid.dispatch({ type: 'cell/run-effect', cell, effect: 'resolve', input: null }).accepted).toBe(true)
     await vi.waitFor(() => expect(grid.getSnapshot().edit).toBeNull())
-    expect(listener).toHaveBeenCalledTimes(1)
+    expect(observations.filter(snapshot => snapshot.draft.rows[0]?.name === 'Resolved')).toHaveLength(1)
     expect(grid.getSnapshot().draft.rows[0]?.name).toBe('Resolved')
     expect(grid.getSnapshot().draft.undoStack).toHaveLength(1)
-    expect(grid.getSnapshot().persistence.pendingDraftRevision).toBe(grid.getSnapshot().draft.revision)
+    expect(grid.getSnapshot().draft.savePlan.canSave).toBe(true)
     grid.destroy()
   })
 
-  it('ignores a replaced cell effect even if its Promise resolves later', async () => {
+  it('retains the replaced result without applying it over the latest cell effect', async () => {
     const complete: Array<(result: GridValueResult<unknown>) => void> = []
     const grid = effectController(() => new Promise((resolve) => complete.push(resolve)))
     grid.dispatch({ type: 'cell/run-effect', cell, effect: 'resolve', input: null })
@@ -217,44 +201,37 @@ describe('GridController atomic command workflows', () => {
     await Promise.resolve()
     complete[1]!({ ok: true, value: 'Newest' })
     await vi.waitFor(() => expect(grid.getSnapshot().draft.rows[0]?.name).toBe('Newest'))
-    const base = grid.getSnapshot()
     complete[0]!({ ok: true, value: 'Stale' })
-    await Promise.resolve()
-    await Promise.resolve()
-    expect(grid.getSnapshot()).toBe(base)
+    await vi.waitFor(() => expect(grid.getSnapshot().pendingEffects).toHaveLength(1))
+    expect(grid.getSnapshot().draft.rows[0]?.name).toBe('Newest')
     grid.destroy()
   })
 
-  it('executes external completion commands in order and stops at a rejected command', async () => {
+  it('rejects all proposed host values when one cell fails validation', async () => {
     const grid = createGridController<Row, string, StandardGridCellTypeSchema, string>({
       dataSource: source(), cellBehaviors: registry.behaviors,
-      effects: { run: async () => [
-        { type: 'cell/set-value', cell, value: 'Accepted first' },
-        { type: 'cell/set-value', cell: { ...cell, rowKey: 'missing' }, value: 'Rejected' },
-        { type: 'cell/set-value', cell, value: 'Must not run' },
-      ] },
+      effects: { run: async () => ({ kind: 'values', values: ['Accepted first', { invalid: true }] }) },
     })
-    const listener = vi.fn()
-    grid.subscribe(listener)
-    grid.dispatch({ type: 'controller/run-effect', request: { effect: 'run', owner: { kind: 'controller' } } })
+    const observations: Snapshot[] = []
+    grid.subscribe(() => observations.push(grid.getSnapshot()))
+    grid.dispatch({ type: 'controller/run-effect', request: { effect: 'run', owner: { kind: 'cells', write: [cell, { ...cell, columnKey: 'quantity' }] } } })
     await vi.waitFor(() => expect(grid.getSnapshot().feedback.items).toHaveLength(1))
-    expect(listener).toHaveBeenCalledTimes(1)
-    expect(grid.getSnapshot().draft.rows[0]?.name).toBe('Accepted first')
-    expect(grid.getSnapshot().draft.undoStack).toHaveLength(1)
+    expect(observations.every(snapshot => snapshot.draft.rows[0]?.name === 'Visible')).toBe(true)
+    expect(grid.getSnapshot().pendingEffects).toHaveLength(1)
+    expect(grid.getSnapshot().draft.undoStack).toHaveLength(0)
     grid.destroy()
   })
 
   it('publishes commit acknowledgment, draft replay and persistence settlement in one event', async () => {
     const grid = controller()
     grid.dispatch({ type: 'cell/set-value', cell, value: 'Saved' })
-    grid.dispatch({ type: 'persistence/save' })
-    const base = grid.getSnapshot()
+    const saving = grid.save()
     const observed: Snapshot[] = []
     grid.subscribe(() => observed.push(grid.getSnapshot()))
-    await vi.waitFor(() => expect(grid.getSnapshot().persistence.status).toBe('idle'))
-    expect(observed).toHaveLength(1)
-    expect(observed[0]).toMatchObject({
-      revision: base.revision + 1,
+    expect(await saving).toMatchObject({ status: 'confirmed' })
+    const settled = observed.filter(snapshot => snapshot.persistence.status === 'idle')
+    expect(settled).toHaveLength(1)
+    expect(settled[0]).toMatchObject({
       source: { version: 'v2', rows: [{ name: 'Saved' }] },
       draft: { dirtyCells: [], baselineVersion: 'v2' },
       persistence: { inFlightOperationId: null, pendingDraftRevision: null },
@@ -262,17 +239,19 @@ describe('GridController atomic command workflows', () => {
     grid.destroy()
   })
 
-  it('does not invoke a queued remote write after a subscriber destroys the controller', async () => {
-    const dataSource = source()
-    const commit = vi.fn(dataSource.persistence.commit)
-    const grid = controller({ ...dataSource, persistence: { ...dataSource.persistence, commit } })
-    grid.dispatch({ type: 'cell/set-value', cell, value: 'Never sent' })
+  it('blocks disposal during a save and finishes the accepted write exactly once', async () => {
+    const { dataSource, server } = fixture()
+    const grid = controller(dataSource)
+    grid.dispatch({ type: 'cell/set-value', cell, value: 'Save me' })
+    const closures: string[] = []
     grid.subscribe(() => {
-      if (grid.getSnapshot().persistence.status === 'saving') grid.destroy()
+      if (grid.getSnapshot().persistence.status === 'saving') closures.push(grid.destroy().status)
     })
-    grid.dispatch({ type: 'persistence/save' })
-    await Promise.resolve()
-    expect(commit).not.toHaveBeenCalled()
+    expect(await grid.save()).toMatchObject({ status: 'confirmed' })
+    expect(closures.length).toBeGreaterThan(0)
+    expect(closures.every(status => status === 'blocked')).toBe(true)
+    expect(server.source.submit).toHaveBeenCalledTimes(1)
+    expect(grid.destroy().status).toBe('closed')
   })
 
   it('publishes edited data, filtered view, session closure and save scheduling together', () => {
@@ -285,14 +264,14 @@ describe('GridController atomic command workflows', () => {
     grid.subscribe(() => observations.push(grid.getSnapshot()))
 
     const result = grid.dispatch({ type: 'edit/commit-and-move', direction: 'next' })
-    expect(result).toMatchObject({ accepted: true, revision: base.revision + 1, payload: { committed: true, moved: false } })
+    expect(result).toMatchObject({ accepted: true, revision: base.revision + 1, value: { committed: true, moved: false } })
     expect(observations).toHaveLength(1)
     expect(observations[0]).toMatchObject({
       edit: null,
       draft: { rows: [{ id: 'a', name: 'Hidden' }], undoStack: [{ label: 'Edit cell' }] },
       view: { visibleRowKeys: [] },
       interaction: { activeCell: null },
-      persistence: { pendingDraftRevision: grid.getSnapshot().draft.revision },
+      persistence: { status: 'idle' },
     })
     grid.destroy()
   })
@@ -344,7 +323,7 @@ describe('GridController atomic command workflows', () => {
   it('rejects callback and subscriber reentry without replacing the outer command result', () => {
     const dataSource = source()
     let grid: GridController<Row, string, StandardGridCellTypeSchema> | undefined
-    const attempts: GridDispatchResult[] = []
+    const attempts: GridCommandResult[] = []
     grid = controller({
       ...dataSource,
       columns: [{
@@ -361,7 +340,7 @@ describe('GridController atomic command workflows', () => {
     const result = grid.dispatch({ type: 'cell/set-value', cell, value: 'Outer' })
     expect(result.accepted).toBe(true)
     expect(attempts).toHaveLength(2)
-    expect(attempts.every((attempt) => !attempt.accepted && attempt.reason?.includes('another input'))).toBe(true)
+    expect(attempts.every((attempt) => !attempt.accepted && attempt.issue.code === 'busy')).toBe(true)
     expect(grid.getSnapshot().draft.rows[0]?.name).toBe('Outer')
     expect(grid.getSnapshot().draft.undoStack).toHaveLength(1)
     grid.destroy()
@@ -391,8 +370,8 @@ describe('GridController atomic command workflows', () => {
     const getRowKey = vi.fn(dataSource.getRowKey)
     const grid = controller({ ...dataSource, getRowKey })
     getRowKey.mockClear()
-    grid.dispatch({ type: 'viewport/resized', width: 600, height: 400 })
-    grid.dispatch({ type: 'viewport/scrolled', scrollLeft: 0, scrollTop: 0 })
+    getGridInteractionPort(grid).send({ type: 'viewport/resized', width: 600, height: 400 })
+    getGridInteractionPort(grid).send({ type: 'viewport/scrolled', scrollLeft: 0, scrollTop: 0 })
     expect(getRowKey).not.toHaveBeenCalled()
     grid.destroy()
   })
@@ -425,21 +404,22 @@ describe('GridController atomic command workflows', () => {
     const dataSource = source()
     const nameColumn = dataSource.columns.find((column) => column.type === 'string')!
     const grid = controller(dataSource)
+    expect(await grid.refresh()).toEqual({ status: 'refreshed' })
     const base = grid.getSnapshot()
     expect(grid.applyTransaction((transaction) => {
       transaction.set(nameColumn, 'a', 'Discarded')
       throw new Error('Stop')
-    })).toMatchObject({ accepted: false, issues: [{ code: 'builder-exception' }] })
+    })).toMatchObject({ accepted: false, issues: [{ domainCode: 'builder-exception' }] })
     expect(grid.applyTransaction(async (transaction) => {
       transaction.set(nameColumn, 'a', 'Also discarded')
       await Promise.resolve()
       transaction.set(nameColumn, 'a', 'Too late')
-    })).toMatchObject({ accepted: false, issues: [{ code: 'async-builder' }] })
+    })).toMatchObject({ accepted: false, issues: [{ domainCode: 'async-builder' }] })
     expect(grid.applyTransaction((transaction) => {
       transaction.set(nameColumn, 'a', 'Discarded on preparation failure')
     }, { get label(): string { throw new Error('Invalid label') } })).toMatchObject({
       accepted: false,
-      issues: [{ code: 'transaction-exception', message: 'The grid transaction failed: Invalid label' }],
+      issues: [{ code: 'adapter-error', message: 'Invalid label' }],
     })
     await Promise.resolve()
     expect(grid.getSnapshot()).toBe(base)
@@ -458,28 +438,28 @@ describe('GridController atomic command workflows', () => {
       transaction.createRow()
       transaction.createRow()
     })
-    expect(result).toMatchObject({ accepted: false, issues: [{ code: 'mutation-limit' }] })
+    expect(result).toMatchObject({ accepted: false, issues: [{ code: 'limit-exceeded', domainCode: 'mutation-limit' }] })
     expect(create).toHaveBeenCalledTimes(1)
     expect(grid.getSnapshot()).toBe(base)
     grid.destroy()
   })
 
-  it.each([false, true])('closes the initial read/subscribe gap (synchronous publication: %s)', (emit) => {
-    const dataSource = source()
-    let published = dataSource.getSnapshot()
+  it.each(['before', 'after'])('installs a snapshot published %s registering the subscription', timing => {
+    const { dataSource, server } = fixture()
     const unsubscribe = vi.fn()
     const grid = controller({
       ...dataSource,
-      getSnapshot: () => published,
-      subscribe: (listener) => {
-        published = { ...published, version: 'v2', rows: [{ id: 'a', name: 'Latest', quantity: 2 }] }
-        if (emit) listener()
-        return unsubscribe
+      subscribe(listener) {
+        const latest = server.snapshot([{ id: 'a', name: 'Latest', quantity: 2 }], 2)
+        if (timing === 'before') dataSource.publish(latest)
+        const release = dataSource.subscribe(listener)
+        if (timing === 'after') dataSource.publish(latest)
+        return () => { release(); unsubscribe() }
       },
     })
     expect(grid.getSnapshot().source.version).toBe('v2')
     expect(grid.getSnapshot().draft.rows[0]?.name).toBe('Latest')
-    expect(grid.getSnapshot().revision).toBe(1)
+    expect(grid.getSnapshot().source.rows[0]?.name).toBe('Latest')
     grid.destroy()
     grid.destroy()
     expect(unsubscribe).toHaveBeenCalledTimes(1)

@@ -4,9 +4,9 @@ import type {
   GridRange,
   GridRowKey,
 } from '../model/grid-model.js'
-import { encodeCellIdentity } from '../model/cell-identity.js'
 import { gridRowKeysEqual } from '../model/row-key.js'
-import type { GridCellMutation } from './draft-transactions.js'
+import { gridValueIssue, type GridIssue } from '../model/grid-result.js'
+export type GridCellMutation<RowKey extends GridRowKey> = Readonly<{ cell: GridPoint<RowKey>; value: unknown }>
 import {
   gridFillDirection,
   gridRangeBounds,
@@ -14,12 +14,12 @@ import {
   selectedCells,
 } from '../model/range-geometry.js'
 import { createGridColumnIndex, createGridRowIndex } from './runtime-index.js'
-import { cloneGridRow, invokeGridResult } from './safe-callback.js'
+import { invokeGridResult } from './safe-callback.js'
 import { resolveGridCellValue } from './runtime-cell-resolver.js'
 
 type CommandPlan<Value> =
   | Readonly<{ ok: true; value: Value }>
-  | Readonly<{ ok: false; reason: string }>
+  | Readonly<{ ok: false; issue: GridIssue }>
 
 export function planGridClear<Row, RowKey extends GridRowKey>(options: Readonly<{
   targets: readonly GridPoint<RowKey>[]
@@ -47,11 +47,11 @@ export function planGridClear<Row, RowKey extends GridRowKey>(options: Readonly<
       continue
     }
     const value = invokeGridResult(() => clear(context(row, column)))
-    if (!value.ok) return { ok: false, reason: value.issue.message }
+    if (!value.ok) return { ok: false, issue: gridValueIssue(value.issue) }
     mutations.push({ cell: target, value: value.value })
   }
   if (mutations.length === 0) {
-    return { ok: false, reason: 'The selection contains no clearable cells.' }
+    return { ok: false, issue: { code: 'permission-denied', message: 'The selection contains no clearable cells.' } }
   }
   return {
     ok: true,
@@ -79,7 +79,7 @@ export function planGridFill<Row, RowKey extends GridRowKey>(options: Readonly<{
     columnKeys,
   )
   if (!sourceBounds || !targetBounds) {
-    return { ok: false, reason: 'The fill range is unavailable.' }
+    return { ok: false, issue: { code: 'invalid-input', message: 'The fill range is unavailable.' } }
   }
   const direction = gridFillDirection(sourceBounds, targetBounds)
   if (!direction) return { ok: true, value: Object.freeze([]) }
@@ -105,7 +105,7 @@ export function planGridFill<Row, RowKey extends GridRowKey>(options: Readonly<{
     if (!resolved) {
       return {
         ok: false,
-        reason: 'A fill source contains an invalid cell value.',
+        issue: { code: 'invalid-input', message: 'A fill source contains an invalid cell value.' },
       }
     }
     sourceMatrix.push(resolved)
@@ -118,7 +118,7 @@ export function planGridFill<Row, RowKey extends GridRowKey>(options: Readonly<{
   )) {
     const resolved = resolve(target)
     if (!resolved || !resolved.column.isEditable(resolved.row)) {
-      return { ok: false, reason: 'A fill target is read-only.' }
+      return { ok: false, issue: { code: 'permission-denied', message: 'A fill target is read-only.' } }
     }
     const targetRow = options.visibleRowKeys.findIndex((key) =>
       gridRowKeysEqual(key, target.rowKey),
@@ -134,7 +134,7 @@ export function planGridFill<Row, RowKey extends GridRowKey>(options: Readonly<{
           (targetRow - sourceBounds.minRow) % sourceBounds.rowCount,
     )
     if (sequence.length === 0) {
-      return { ok: false, reason: 'The fill source is empty.' }
+      return { ok: false, issue: { code: 'invalid-input', message: 'The fill source is empty.' } }
     }
     const logicalIndex =
       direction === 'down'
@@ -155,7 +155,7 @@ export function planGridFill<Row, RowKey extends GridRowKey>(options: Readonly<{
       if (!format || !parse) {
         return {
           ok: false,
-          reason: 'The source and target are not fill-compatible.',
+          issue: { code: 'invalid-input', message: 'The source and target are not fill-compatible.' },
         }
       }
       const converted = invokeGridResult(() =>
@@ -164,7 +164,7 @@ export function planGridFill<Row, RowKey extends GridRowKey>(options: Readonly<{
           context(resolved.row, resolved.column),
         ),
       )
-      if (!converted.ok) return { ok: false, reason: converted.issue.message }
+      if (!converted.ok) return { ok: false, issue: gridValueIssue(converted.issue) }
       convertedValues.push(converted.value)
     }
     const repeated =
@@ -185,97 +185,13 @@ export function planGridFill<Row, RowKey extends GridRowKey>(options: Readonly<{
           }),
         )
       : undefined
-    if (custom && !custom.ok) return { ok: false, reason: custom.issue.message }
+    if (custom && !custom.ok) return { ok: false, issue: gridValueIssue(custom.issue) }
     mutations.push({
       cell: target,
       value: custom?.ok ? custom.value : repeated,
     })
   }
   return { ok: true, value: Object.freeze(mutations) }
-}
-
-export function planRestoreRows<Row, RowKey extends GridRowKey>(options: Readonly<{
-  rows: readonly Row[]
-  baselineRows: readonly Row[]
-  rowKeys: readonly RowKey[]
-  getRowKey: (row: Row) => RowKey
-}>) {
-  const chosen = new Set(options.rowKeys)
-  const rows = options.rows.filter((row) => !chosen.has(options.getRowKey(row)))
-  options.baselineRows.forEach((row, baselineIndex) => {
-    if (!chosen.has(options.getRowKey(row))) return
-    rows.splice(Math.min(baselineIndex, rows.length), 0, row)
-  })
-  return Object.freeze(rows)
-}
-
-export function planRestoreCells<Row, RowKey extends GridRowKey>(options: Readonly<{
-  rows: readonly Row[]
-  baselineRows: readonly Row[]
-  targets: readonly GridPoint<RowKey>[]
-  columns: readonly GridCompiledColumn<Row>[]
-  getRowKey: (row: Row) => RowKey
-  cloneRow?: (row: Row) => Row
-}>): CommandPlan<Readonly<{
-  rows: readonly Row[]
-  restored: readonly GridPoint<RowKey>[]
-}>> {
-  const rows = [...options.rows]
-  const rowIndex = createGridRowIndex(rows, options.getRowKey)
-  const baseline = createGridRowIndex(options.baselineRows, options.getRowKey)
-  const columns = createGridColumnIndex(options.columns)
-  const restored = new Map<string, GridPoint<RowKey>>()
-  for (const target of options.targets) {
-    const position = rowIndex.positionByKey.get(target.rowKey)
-    const column = columns.get(target.columnKey)
-    if (
-      position === undefined ||
-      !baseline.byKey.has(target.rowKey) ||
-      !column?.setValue
-    ) continue
-    const row = rows[position] as Row
-    const original = baseline.byKey.get(target.rowKey) as Row
-    try {
-      const cloned = cloneGridRow(row, options.cloneRow)
-      if (!cloned.ok) {
-        return {
-          ok: false,
-          reason: 'This row cannot be cloned safely before editing.',
-        }
-      }
-      const originalValue = resolveGridCellValue(original, column)
-      if (!originalValue.valid) {
-        return {
-          ok: false,
-          reason: 'The authoritative value is invalid and cannot be restored.',
-        }
-      }
-      const next = column.setValue(cloned.value, originalValue.value)
-      if (!gridRowKeysEqual(options.getRowKey(next), target.rowKey)) {
-        return { ok: false, reason: 'A cell setter cannot change its row key.' }
-      }
-      rows[position] = next
-      restored.set(encodeCellIdentity(target), target)
-    } catch (error) {
-      return {
-        ok: false,
-        reason: error instanceof Error ? error.message : String(error),
-      }
-    }
-  }
-  if (restored.size === 0) {
-    return {
-      ok: false,
-      reason: 'The selected cells have no original value to restore.',
-    }
-  }
-  return {
-    ok: true,
-    value: Object.freeze({
-      rows: Object.freeze(rows),
-      restored: Object.freeze([...restored.values()]),
-    }),
-  }
 }
 
 function context<Row>(row: Row, column: GridCompiledColumn<Row>) {

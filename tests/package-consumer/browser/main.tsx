@@ -1,8 +1,10 @@
+import { createRowAuthority } from './row-authority'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
   DataGrid,
   createGridColumnHelper,
+  createFieldGridDocumentModel,
   createRemoteGridDataSource,
   useDataGridBinding,
   type StandardGridCellTypeSchema,
@@ -21,38 +23,21 @@ type Row = Readonly<{ id: number; name: string }>
 
 const column = createGridColumnHelper<Row>()
 
+const columns = [column.field('name', { label: 'Name', type: 'string' })]
+const server = createRowAuthority(`packed-${structureOnly ? 'structure' : 'theme'}`, { id: 1, name: 'Packed row' })
 const dataSource = createRemoteGridDataSource<Row, number, StandardGridCellTypeSchema>({
-  columns: [column.field('name', {
-    label: 'Name',
-    type: 'string',
-  })],
-  getRowKey: (row) => row.id,
-  initialSnapshot: {
-    rows: [{ id: 1, name: 'Packed row' }],
-    status: 'ready',
-    version: 1,
-    scope: { kind: 'complete' },
-  },
-  persistence: {
-    mode: 'manual-save',
-    mutate: async (request) => {
-      return {
-        kind: 'applied',
-        authority: {
-          rows: request.rows,
-          version: Number(request.sourceVersion) + 1,
-        },
-      }
-    },
-  },
+  columns, model: createFieldGridDocumentModel(columns),
+  getRowKey: row => row.id, scope: server.scope, source: server.source,
+  initialAuthority: server.snapshot(), persistence: { mode: 'manual-save' },
 })
 
 function PackedGrid() {
-  const binding = useDataGridBinding({ dataSource, locale: zhCN })
-  if (!binding) return <div role="status">正在初始化表格…</div>
+  const attachment = useDataGridBinding({ dataSource, initial: { locale: zhCN } })
+  if (attachment.status === 'error') return <div role="alert">{attachment.issue.message}</div>
+  if (!attachment.binding) return <div role="status">正在初始化表格…</div>
   return <DataGrid
     ariaLabel="打包产物表格"
-    binding={binding}
+    binding={attachment.binding}
     {...(structureOnly ? { className: 'packed-tailwind-grid' } : {})}
   />
 }

@@ -1,5 +1,5 @@
 import { canonicalEncodedValue, ownEncodedValue } from './document.js'
-import { kernelId, type AuthorityFrontier, type AuthorityVersion, type CompleteAuthority, type Document, type EntityId, type FrozenSubmission,
+import { kernelId, type AuthorityFrontier, type AuthorityVersion, type CompleteAuthority, type Document, type EncodedValue, type EntityId, type FrozenSubmission,
   type ObservationId, type OperationLookup, type PayloadHash, type ScopeIdentity, type ServerIdentity } from './model.js'
 import { ownAuthorityVersion, sameScope, serverIdentityKey, serverKeyIdentity } from './protocol.js'
 import type { SubmissionRef } from './persistence.js'
@@ -110,7 +110,11 @@ export async function hashSubmission(submission: Omit<FrozenSubmission, 'payload
   const payload = ownEncodedValue({ workspaceId: submission.workspaceId, operationId: submission.operationId, scope: submission.scope, schema: submission.schema,
     baseAuthority: submission.baseAuthority, items: submission.items, coverage: submission.coverage, frontier: submission.frontier,
   })
-  const bytes = new TextEncoder().encode(canonicalEncodedValue(payload))
+  return kernelId<'payload-hash'>(await hashEncodedValue(payload))
+}
+
+export async function hashEncodedValue(value: EncodedValue): Promise<string> {
+  const bytes = new TextEncoder().encode(canonicalEncodedValue(value))
   const digest = await crypto.subtle.digest('SHA-256', bytes)
-  return kernelId<'payload-hash'>(`sha256:${Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')}`)
+  return `sha256:${Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')}`
 }

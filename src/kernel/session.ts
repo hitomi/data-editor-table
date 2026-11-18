@@ -1,15 +1,27 @@
-import { encodedValuesEqual, ownEncodedValue, pathsOverlap, resourceValuesEqual } from './document.js'
+import { encodedValuesEqual, isDocument, ownEncodedValue, pathsOverlap, resourceValuesEqual } from './document.js'
 import { appendSessionAction, inputRefKey } from './journal.js'
 import type { EditorLease, FieldRef, InputId, InputRecord, KernelIssue, OwnedInput, PreparedAction, RecoveryId, ResourceRef, Session, SessionId, SessionTarget, ViewId, ViewPredicate } from './model.js'
 import { projectKernel } from './projection.js'
 import { pathContains, resourceAtRows } from './resources.js'
 import type { KernelSchema } from './schema.js'
 import { policyForEntity, type KernelState } from './state.js'
-import { setViewQuery } from './view.js'
+import { setViewQuery, viewQuery } from './view.js'
 
+type SessionOpeningContext = Readonly<{
+  dependencies: Session['dependencies']
+  policy: KernelState['policy']
+  editorGeneration: number
+  queryBase: Session['queryBase']
+}>
+/** Captured before enqueueing. Unrelated durable writes must not invalidate
+ * a queued edit, while changed values, permissions and editor ownership must. */
+export function captureSessionOpeningContext(state: KernelState, target: SessionTarget, reads: readonly ResourceRef[], schema: KernelSchema): SessionOpeningContext {
+  return owned({ dependencies: captureSessionDependencies(state, [...targetResources(target, schema), ...reads], schema),
+    policy: state.policy, editorGeneration: state.editorGeneration, queryBase: queryBase(state, target) })
+}
 type EditorRequest = Readonly<{ lease: EditorLease; inputVersion: number }>
 export type SessionEvent =
-  | Readonly<{ kind: 'session-opened'; revision: number; sessionId: SessionId; inputId: InputId; viewId: ViewId; target: SessionTarget; input: OwnedInput; reads: readonly ResourceRef[]; recoveryId?: RecoveryId }>
+  | Readonly<{ kind: 'session-opened'; revision: number; context?: SessionOpeningContext; sessionId: SessionId; inputId: InputId; viewId: ViewId; target: SessionTarget; input: OwnedInput; reads: readonly ResourceRef[]; recoveryId?: RecoveryId }>
   | Readonly<{ kind: 'session-attached'; sessionId: SessionId; viewId: ViewId }>
   | (EditorRequest & Readonly<{ kind: 'session-detached' }>)
   | (EditorRequest & Readonly<{ kind: 'session-input'; input: OwnedInput; composition: Session['composition'] }>)
@@ -58,8 +70,8 @@ export function captureSessionDependencies(state: KernelState, resources: readon
 
 function queryBase(state: KernelState, target: SessionTarget): Session['queryBase'] {
   if (target.kind !== 'filter') return null
-  if (target.queryVersion !== state.view.version) throw new Error('Filter authoring requires the currently reviewed query version.')
-  return state.view.filters.find(filter => filter.columnId === target.columnId) ?? null
+  if (target.queryVersion !== viewQuery(state, target.viewId).version) throw new Error('Filter authoring requires the currently reviewed query version.')
+  return viewQuery(state, target.viewId).filters.find(filter => filter.columnId === target.columnId) ?? null
 }
 
 /** New text or an explicitly changed authoring context supersedes the current
@@ -79,11 +91,27 @@ export function replaceSessionInput(state: KernelState, session: Session, input:
 function targetResources(target: SessionTarget, schema: KernelSchema): readonly ResourceRef[] {
   if (target.kind !== 'cell' && target.kind !== 'bulk' && target.kind !== 'filter') throw new Error('Unknown session target.')
   if (target.kind === 'filter') {
+    if (target.viewId !== undefined && (typeof target.viewId !== 'string' || !target.viewId)) throw new Error('A filter requires a valid view identity.')
     if (!target.columnId || !Number.isSafeInteger(target.queryVersion) || target.queryVersion < 0) throw new Error('A filter requires a versioned query target.')
     return []
   }
   const targets = fields(target), keys = targets.map(field => JSON.stringify([field.entityId, field.fieldId]))
   if (!targets.length || new Set(keys).size !== keys.length) throw new Error('Session targets must be a nonempty, fixed set of unique fields.')
+  if (target.kind === 'bulk' && target.creations) {
+    const identities = new Set<string>(), proposedKeys = new Set<string>()
+    for (const creation of target.creations) {
+      if (!creation.entityId || identities.has(creation.entityId) || !isDocument(creation.document)
+        || !targets.some(field => field.entityId === creation.entityId)
+        || Object.keys(creation).some(key => !['entityId', 'document', 'proposedKey'].includes(key)))
+        throw new Error('New session rows require unique identities, complete defaults and fixed target fields.')
+      identities.add(creation.entityId)
+      if (creation.proposedKey !== undefined) {
+        const key = JSON.stringify([typeof creation.proposedKey, creation.proposedKey])
+        if (!['string', 'number'].includes(typeof creation.proposedKey) || proposedKeys.has(key)) throw new Error('New session rows require valid, distinct proposed keys.')
+        proposedKeys.add(key)
+      }
+    }
+  }
   return targets.map(field => {
     const binding = schema.fields.find(entry => entry.id === field.fieldId)
     if (!field.entityId || !binding) throw new Error('A session target requires a known field and entity identity.')
@@ -96,11 +124,16 @@ function targetResources(target: SessionTarget, schema: KernelSchema): readonly 
 export function sessionContextIssues(state: KernelState, session: Session, schema: KernelSchema): readonly KernelIssue[] {
   const { projection, rows } = logical(state, schema), issues: KernelIssue[] = []
   const target = session.target
-  if (target.kind === 'filter' && !encodedValuesEqual(owned(state.view.filters.find(filter => filter.columnId === target.columnId) ?? null), owned(session.queryBase)))
+  if (target.kind === 'filter' && !encodedValuesEqual(owned(viewQuery(state, target.viewId).filters.find(filter => filter.columnId === target.columnId) ?? null), owned(session.queryBase)))
     issues.push({ code: 'session-query-changed', message: 'This column filter changed. Review its current query before applying your input.' })
   for (const field of fields(session.target)) {
     const binding = schema.fields.find(entry => entry.id === field.fieldId), policy = policyForEntity(state.policy, field.entityId)
-    if (!rows.has(field.entityId)) issues.push({ code: 'session-target-missing', message: 'The original edit target is unavailable. Retain or recover its input.', ...field })
+    const creation = target.kind === 'bulk' && target.creations?.find(creation => creation.entityId === field.entityId)
+    if (creation && state.entities.some(entity => entity.entityId === creation.entityId))
+      issues.push({ code: 'session-creation-occupied', message: 'A proposed new row identity is already occupied. Retain the input and review its targets.', ...field })
+    else if (creation && !state.policy.create)
+      issues.push({ code: 'session-policy-blocked', message: 'Creating rows is no longer permitted. Retain the input and review its targets.', ...field })
+    else if (!creation && !rows.has(field.entityId)) issues.push({ code: 'session-target-missing', message: 'The original edit target is unavailable. Retain or recover its input.', ...field })
     else if (!binding || binding.readonly || !policy.write || policy.readonlyPaths.some(path => pathsOverlap(path, binding.path)))
       issues.push({ code: 'session-policy-blocked', message: 'The edit target is no longer writable.', ...field })
     else if (projection.rows.find(row => row.entityId === field.entityId)?.issues.length)
@@ -125,8 +158,18 @@ export function assertSessionWrites(session: Session, prepared: PreparedAction, 
   if (session.target.kind === 'filter') throw new Error('Filter input must be applied to a versioned view query, never to data intents.')
   const targets = fields(session.target).map(field => ({ ...field, path: schema.fields.find(entry => entry.id === field.fieldId)!.path }))
   const touched = new Set<number>()
+  const creations = session.target.kind === 'bulk' ? session.target.creations ?? [] : [], created = new Set<string>()
+  if (creations.length && prepared.action.saveAtomicity !== 'transaction') throw new Error('Creating session rows requires one atomic transaction with all existing targets.')
   for (const intent of prepared.intents) {
-    if (intent.cause !== cause || intent.operation.kind !== 'write') throw new Error('Field sessions can only apply prepared field writes.')
+    if (intent.cause !== cause) throw new Error('Session actions must retain their input cause.')
+    if (intent.operation.kind === 'create') {
+      const operation = intent.operation, declared = creations.find(creation => creation.entityId === operation.entityId)
+      if (!declared || created.has(operation.entityId) || !encodedValuesEqual(owned(operation), owned({ kind: 'create', ...declared })))
+        throw new Error('Session creation must exactly match its retained row defaults and identity.')
+      created.add(operation.entityId)
+      continue
+    }
+    if (intent.operation.kind !== 'write') throw new Error('Field sessions can only apply prepared field writes and declared new rows.')
     const operation = intent.operation
     for (const group of operation.groups) for (const patch of group.writes) {
       const index = targets.findIndex(target => target.entityId === operation.entityId && pathContains(target.path, patch.path))
@@ -134,6 +177,7 @@ export function assertSessionWrites(session: Session, prepared: PreparedAction, 
       touched.add(index)
     }
   }
+  if (created.size !== creations.length) throw new Error('Session apply must create every declared new row exactly once.')
   if (touched.size !== targets.length) throw new Error('Bulk apply must include all fixed targets; explicitly confirm a new target set before shrinking it.')
 }
 
@@ -141,7 +185,9 @@ export function reduceSession(state: KernelState, raw: SessionEvent, schema: Ker
   const event = owned(raw)
   switch (event.kind) {
     case 'session-opened': {
-      if (state.session || event.revision !== state.revision || !event.sessionId || state.sessionIds.includes(event.sessionId))
+      const currentContext = event.context === undefined ? event.revision === state.revision
+        : encodedValuesEqual(owned(event.context), owned(captureSessionOpeningContext(state, event.target, event.reads, schema)))
+      if (state.session || !currentContext || !event.sessionId || state.sessionIds.includes(event.sessionId))
         throw new Error('Session open requires current context, a fresh identity and no existing session.')
       assertInput(event.input)
       if (!event.inputId || state.inputs.some(input => input.ref.id === event.inputId)) throw new Error('Session input identity must be fresh.')
@@ -180,7 +226,7 @@ export function reduceSession(state: KernelState, raw: SessionEvent, schema: Ker
     case 'session-reconfirmed': {
       const session = requireEditor(state, event)
       if (event.revision !== state.revision || session.composition !== 'idle') throw new Error('Context confirmation requires the current reviewed revision and completed composition.')
-      const target = session.target.kind === 'filter' ? { ...session.target, queryVersion: state.view.version } : session.target
+      const target = session.target.kind === 'filter' ? { ...session.target, queryVersion: viewQuery(state, session.target.viewId).version } : session.target
       return replaceSessionInput(state, owned({ ...session, target, queryBase: queryBase(state, target),
         dependencies: captureSessionDependencies(state, session.dependencies.map(entry => entry.resource), schema) }), session.rawInput, 'idle')
     }
@@ -201,7 +247,13 @@ export function reduceSession(state: KernelState, raw: SessionEvent, schema: Ker
       const issues = sessionContextIssues(state, session, schema)
       if (issues.length) throw new Error(issues[0]!.message)
       assertSessionWrites(session, event.prepared, schema)
-      return Object.freeze({ ...appendSessionAction(state, event.prepared, schema), session: null })
+      const candidate = appendSessionAction(state, event.prepared, schema)
+      if (session.target.kind === 'bulk' && session.target.creations?.length) {
+        const created = new Set(session.target.creations.map(creation => creation.entityId))
+        const issue = projectKernel(candidate, schema).rows.find(row => created.has(row.entityId) && row.issues.length)?.issues[0]
+        if (issue) throw new Error(issue.message)
+      }
+      return Object.freeze({ ...candidate, session: null })
     }
     case 'session-query-apply': {
       const session = requireEditor(state, event)
@@ -209,16 +261,19 @@ export function reduceSession(state: KernelState, raw: SessionEvent, schema: Ker
       const issues = sessionContextIssues(state, session, schema)
       if (issues.length) throw new Error(issues[0]!.message)
       const columnId = session.target.columnId
-      const filters = state.view.filters.filter(filter => filter.columnId !== columnId)
+      const query = viewQuery(state, session.target.viewId)
+      const scope = session.target.viewId === undefined ? {} : { viewId: session.target.viewId }
+      const filters = query.filters.filter(filter => filter.columnId !== columnId)
       if (event.predicate !== null) filters.push({ columnId, predicate: event.predicate })
-      const candidate = setViewQuery(state, { kind: 'view-query-set', expectedVersion: event.queryVersion, filters, sort: state.view.sort }, schema)
+      const candidate = setViewQuery(state, { kind: 'view-query-set', ...scope, expectedVersion: event.queryVersion, filters, sort: query.sort }, schema)
+      const appliedQueryVersion = viewQuery(candidate, session.target.viewId).version
       const refs = new Set([session.input, ...session.retainedInputs].map(inputRefKey))
       for (const ref of refs) {
         const input = state.inputs.find(input => inputRefKey(input.ref) === ref)
         if (input?.disposition.kind !== 'session' || input.disposition.sessionId !== session.id) throw new Error('The session no longer owns its complete input bundle.')
       }
       return Object.freeze({ ...candidate, session: null, inputs: owned(state.inputs.map(input => refs.has(inputRefKey(input.ref))
-        ? { ...input, disposition: { kind: 'applied-to-view' as const, queryVersion: candidate.view.version } } : input)) })
+        ? { ...input, disposition: { kind: 'applied-to-view' as const, ...scope, queryVersion: appliedQueryVersion } } : input)) })
     }
     case 'session-cancelled': {
       const session = requireSession(state, event.sessionId)

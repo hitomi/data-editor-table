@@ -4,5 +4,4 @@ demo-dist/
 coverage/
 playwright-report/
 test-results/
-kernel-mutation-results/
 *.tsbuildinfo

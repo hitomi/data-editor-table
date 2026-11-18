@@ -80,7 +80,9 @@ test -f "$package_root/dist/index.d.ts"
 test -f "$package_root/dist/index.js"
 test -f "$package_root/dist/engine.d.ts"
 test -f "$package_root/dist/engine.js"
-test -f "$package_root/dist/locales/workspace-zh-cn.d.ts"
+test -f "$package_root/dist/protocol.js"
+test -f "$package_root/dist/protocol.d.ts"
+test -f "$package_root/dist/locales/zh-cn.d.ts"
 test -f "$package_root/dist/locales/zh-CN.js"
 test -f "$package_root/dist/styles.css"
 test -f "$package_root/dist/structure.css"
@@ -97,7 +99,7 @@ node -e '
 ' "$package_root"
 
 node "$repo_root/scripts/verify-headless-bundle.mjs" "$engine_package"
-node --input-type=module -e 'import("node:url").then(({ pathToFileURL }) => import(pathToFileURL(process.argv[1]).href)).then((module) => { if (typeof module.Workspace !== "function" || "createGridController" in module) process.exit(1) })' "$engine_package/dist/engine.js"
+node --input-type=module -e 'import("node:url").then(({ pathToFileURL }) => import(pathToFileURL(process.argv[1]).href)).then((module) => { if (typeof module.createGridController !== "function") process.exit(1) })' "$engine_package/dist/engine.js"
 
 if ! node "$repo_root/scripts/assert-text-absent.mjs" "react-data-grid" "$engine_package/dist/engine.js" "$engine_package/dist/engine.d.ts"; then
   echo 'The v2 engine bundle still references react-data-grid.' >&2
@@ -112,11 +114,4 @@ fi
   cd -- "$react_consumer/browser"
   "$repo_root/node_modules/.bin/vite" build --outDir dist --emptyOutDir
 )
-# Compile the verifier and its TypeScript fixture before running Node. The
-# supported Node range must not depend on experimental TypeScript CLI flags.
-# Verifier dependencies stay separate from the isolated package consumers.
-browser_verifier="$temp_root/browser-verifier"
-"$repo_root/node_modules/.bin/tsc" -p "$repo_root/scripts/tsconfig.package-browser.json" --outDir "$browser_verifier"
-printf '{"type":"module"}\n' > "$browser_verifier/package.json"
-ln -s "$repo_root/node_modules" "$browser_verifier/node_modules"
-node "$browser_verifier/scripts/verify-package-browser.mjs" "$react_consumer/browser/dist"
+node "$repo_root/scripts/verify-package-browser.mjs" "$react_consumer/browser/dist"

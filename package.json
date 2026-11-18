@@ -1,6 +1,6 @@
 {
   "name": "data-editor-table",
-  "version": "0.4.0",
+  "version": "0.3.1",
   "description": "Turnkey business-data bulk editor for React",
   "homepage": "https://hitomi.github.io/data-editor-table/",
   "repository": {
@@ -29,8 +29,12 @@
       "types": "./dist/engine.d.ts",
       "import": "./dist/engine.js"
     },
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "import": "./dist/protocol.js"
+    },
     "./locales/zh-CN": {
-      "types": "./dist/locales/workspace-zh-cn.d.ts",
+      "types": "./dist/locales/zh-cn.d.ts",
       "import": "./dist/locales/zh-CN.js"
     },
     "./styles.css": {
@@ -54,22 +58,20 @@
     "check:boundaries": "bash scripts/check-v2-import-boundary.sh",
     "check:package": "bash scripts/check-package-consumer.sh",
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage",
-    "test:mutations": "node scripts/check-kernel-mutations.mjs",
     "test:browser": "playwright test",
     "lint": "oxlint src --deny-warnings",
-    "prepublishOnly": "pnpm check && pnpm test && pnpm test:mutations && pnpm lint && pnpm demo:build && pnpm test:browser && pnpm check:package"
+    "prepublishOnly": "pnpm check && pnpm test && pnpm lint && pnpm demo:build && pnpm test:browser && pnpm check:package"
   },
   "peerDependencies": {
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@noble/hashes": "2.0.1",
     "@playwright/test": "^1.62.1",
     "@tanstack/react-router": "^1.170.32",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
-    "@vitest/coverage-v8": "4.1.11",
     "oxlint": "^1.78.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

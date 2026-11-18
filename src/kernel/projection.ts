@@ -160,28 +160,35 @@ function createNeutralPrefix(state: KernelState, facts: ProjectionFacts) {
 
 function effectiveRowIntents(state: KernelState, facts: ProjectionFacts, active: readonly RowIntent[], reserved: ReadonlySet<IntentId>) {
   const rows = new Map<EntityId, RowIntent[]>(), neutral = new Set<IntentId>()
+  const restored = new Set(state.journal.intents.filter(intent => intent.operation.kind === 'restore-resolution-row').map(intent => intent.id))
   for (const intent of active) { const row = rows.get(intent.operation.entityId) ?? []; row.push(intent); rows.set(intent.operation.entityId, row) }
   for (const row of rows.values()) {
     if (row.some(intent => reserved.has(intent.id))) continue
-    let prefix: RowIntent[] = [], append = createNeutralPrefix(state, facts)
+    let prefix: RowIntent[] = [], append = createNeutralPrefix(state, facts), requiresReview = false
     for (let index = 0; index < row.length; index++) {
       const intent = row[index]!
-      prefix.push(intent)
+      prefix.push(intent); requiresReview ||= restored.has(intent.id)
       const isNeutral = append(intent)
       if (row[index + 1]?.applicationId === intent.applicationId) continue
-      if (isNeutral) { prefix.forEach(intent => neutral.add(intent.id)); prefix = []; append = createNeutralPrefix(state, facts) }
+      if (isNeutral && !requiresReview) { prefix.forEach(intent => neutral.add(intent.id)); prefix = []; append = createNeutralPrefix(state, facts) }
     }
   }
   return { active: active.filter(intent => !neutral.has(intent.id)), neutral: Object.freeze([...neutral]) }
 }
 
-/** Projection reads owned facts and fixed pure schema rules, never invokes setters/codecs,
- * and never reconstructs intent from visible row differences. */
+// Preparing, validating and publishing an edit each consult the same frozen
+// state. Only an identical state and schema can reuse a completed projection.
+const projections = new WeakMap<KernelState, { schema: KernelSchema; result: KernelProjection }>()
+
 export function projectKernel(state: KernelState, schema: KernelSchema): KernelProjection {
+  const cached = projections.get(state)
+  if (cached?.schema === schema) return cached.result
   assertKernelSchema(state.workspace, schema)
   let indexed: ReturnType<typeof compileSharedStateBases> | undefined
   const facts = () => indexed ??= compileSharedStateBases(state)
-  return evaluatePrefixes(through => projectThrough(state, schema, facts, through))
+  const result = evaluatePrefixes(through => projectThrough(state, schema, facts, through))
+  projections.set(state, { schema, result })
+  return result
 }
 
 /** A historical read can still consume an intermediate local result after its
@@ -353,20 +360,24 @@ function* projectThrough(state: KernelState, schema: KernelSchema, facts: Projec
       before: row.authority, after: row.preview, intentIds: ids, operations: row.intents.map(intent => intent.operation),
     })
     const deleting = last?.operation.kind === 'delete'
-    projected.push({
+    projected.push(Object.freeze({
       entityId: row.entityId, authority: row.authority,
       preview: deleting && row.issues.length ? row.authority : row.preview,
       existence: first?.operation.kind === 'create' ? 'local-create' : deleting ? 'pending-delete' : row.authority === null ? 'remote-deleted' : 'present',
       persistence: row.issues.length ? 'blocked' : row.reserved ? 'submitted' : ids.length ? 'pending' : 'clean',
-      intentIds: ids, retainedInputs: row.intents.flatMap(intent => intent.inputs), issues: row.issues.map((issue, index) => ({ ...issue,
+      // Documents and input references come from immutable kernel facts. Own
+      // computed comparison details once, without copying untouched documents.
+      intentIds: Object.freeze(ids), retainedInputs: Object.freeze(row.intents.flatMap(intent => intent.inputs)),
+      issues: row.issues.length ? ownEncodedValue(row.issues.map((issue, index) => ({ ...issue,
         id: JSON.stringify([state.workspace.scope, authority.observation, state.policy.version, row.entityId, ids, issue.code, index]),
-      })),
-    })
+      }))) as unknown as readonly ProjectedIssue[] : Object.freeze([]),
+    }))
   }
   const order = projectOrder(state, projected, changes, effective.neutral, orderPlan)
   const settledEligible = new Set(order.rows.flatMap(row => row.issues.length ? [] : row.intentIds))
-  return ownEncodedValue({ rows: order.rows, changes: order.changes, order: order.order, orderChange: order.change,
-    neutralIntentIds: [...effective.neutral, ...order.neutral], suggestedSettlements: [...suggestions.filter(proof => settledEligible.has(proof.intentId)), ...order.suggestions] }) as unknown as KernelProjection
+  return Object.freeze({ rows: order.rows, changes: order.changes, order: order.order, orderChange: order.change,
+    neutralIntentIds: Object.freeze([...effective.neutral, ...order.neutral]),
+    suggestedSettlements: Object.freeze([...suggestions.filter(proof => settledEligible.has(proof.intentId)).map(proof => Object.freeze(proof)), ...order.suggestions]) })
 }
 
 /** Compile the transport write set from already-declared operations. Row

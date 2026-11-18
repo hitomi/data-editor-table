@@ -86,7 +86,7 @@ export function planOrder(state: KernelState, neutralRows: readonly IntentId[], 
         if (pending) { pending.baseline = structure(pending.baseline, row); pending.desired = structure(pending.desired, row) }
       }
     }
-    if (pending && active[index + 1]?.applicationId !== intent.applicationId && !pending.intents.some(intent => reserved.has(intent.id)) && same(pending.baseline, pending.desired)) {
+    if (pending && active[index + 1]?.applicationId !== intent.applicationId && !pending.intents.some(intent => reserved.has(intent.id) || intent.operation.kind === 'restore-resolution-order') && same(pending.baseline, pending.desired)) {
       neutral.push(...pending.intents.map(intent => intent.id)); pending = null
     }
   }
@@ -135,7 +135,7 @@ export function projectOrder(state: KernelState, sourceRows: readonly RowProject
     const row = rowOperationForIntent(state, intent)
     return row?.kind === 'create' || row?.kind === 'delete'
   }).map(intent => intent.id))
-  const rows = sourceRows.map(row => ({ ...row, issues: [...row.issues] }))
+  const rows = [...sourceRows]
   if (pending) {
     let changed = true
     while (changed) {
@@ -146,15 +146,16 @@ export function projectOrder(state: KernelState, sourceRows: readonly RowProject
       const transaction = state.journal.actions.filter(action => action.saveAtomicity === 'transaction' && action.intentIds.some(id => orderIds.includes(id)))
       transaction.forEach(action => action.intentIds.forEach(id => needs.add(id)))
       if (!issues.length && [...needs].some(id => blocked.has(id))) { add('dependency-blocked', 'Order requires a blocked structural mutation or transaction member.'); changed = true }
-      for (const row of rows) {
+      for (const [index, row] of rows.entries()) {
         if (row.issues.length || !row.intentIds.length) continue
         const coupled = issues.length && (row.intentIds.some(id => structuralIds.has(id)) || transaction.some(action => action.intentIds.some(id => row.intentIds.includes(id))))
         const dependent = active.some(intent => row.intentIds.includes(intent.id) && expandFrontier(state.journal.frontiers, intent.dependencies).some(id => blocked.has(id)))
         const atomic = state.journal.actions.some(action => action.saveAtomicity === 'transaction' && action.intentIds.some(id => row.intentIds.includes(id)) && action.intentIds.some(id => blocked.has(id)))
         if (coupled || dependent || atomic) {
-          row.issues.push({ id: JSON.stringify([state.workspace.scope, state.revision, row.entityId, 'order-dependency']), code: 'dependency-blocked',
+          const issue = Object.freeze({ id: JSON.stringify([state.workspace.scope, state.revision, row.entityId, 'order-dependency']), code: 'dependency-blocked',
             message: 'This row and its persistent order dependencies must be saved together.', entityId: row.entityId, intentIds: row.intentIds })
-          row.persistence = 'blocked'; changed = true
+          rows[index] = Object.freeze({ ...row, issues: Object.freeze([...row.issues, issue]), persistence: 'blocked' })
+          changed = true
         }
       }
     }
@@ -170,8 +171,9 @@ export function projectOrder(state: KernelState, sourceRows: readonly RowProject
   for (const row of rows) if (visible.delete(row.entityId)) preview.push(row.entityId)
   const change: OrderChange | null = pending && !issues.length && !submitted && (!same(authority, desired) || relatedPending) ? { desired, intentIds: orderIds } : null
   const blockedRows = new Set(rows.filter(row => row.issues.length).map(row => row.entityId))
-  return ownEncodedValue({ rows, changes: sourceChanges.filter(change => !blockedRows.has(change.entityId)), change, neutral, suggestions,
+  const metadata = ownEncodedValue({ changes: sourceChanges.filter(change => !blockedRows.has(change.entityId)), change, neutral, suggestions,
     order: { authority, desired, preview, intentIds: orderIds, issues, persistence: issues.length ? 'blocked' : submitted ? 'submitted' : change ? 'pending' : 'clean' },
-  }) as unknown as Readonly<{ rows: readonly RowProjection[]; changes: readonly RowChange[]; change: OrderChange | null; neutral: readonly IntentId[];
+  }) as unknown as Readonly<{ changes: readonly RowChange[]; change: OrderChange | null; neutral: readonly IntentId[];
     suggestions: readonly IntentSettlement[]; order: OrderProjection }>
+  return Object.freeze({ ...metadata, rows: Object.freeze(rows) })
 }

@@ -1,3 +1,4 @@
+import type { ServerAuthority } from './source.js'
 import { applyDocumentPatches, encodedValuesEqual, ownDocument } from './document.js'
 import type {
   AuthorityFrontier, AuthorityVersion, CompleteAuthority, ExactReceipt, FrozenSubmission,
@@ -62,8 +63,19 @@ export function authorityCoversFrontier(actual: AuthorityVersion, required: Auth
 
 export function joinAuthorityFrontier(...frontiers: readonly AuthorityFrontier[]): AuthorityFrontier {
   const frontier: AuthorityVersion[] = []
-  for (const version of frontiers.flat()) {
-    validateAuthorityVersion(version)
+  for (const incoming of frontiers.flat()) {
+    validateAuthorityVersion(incoming)
+    let version = incoming
+    if (incoming.kind === 'causal') {
+      const index = frontier.findIndex(known => known.kind === 'causal' && known.stamp === incoming.stamp)
+      const known = frontier[index]
+      if (known?.kind === 'causal') {
+        authorityCovers(known, incoming) // also checks the immutable token
+        if (incoming.covers.every(stamp => known.covers.includes(stamp))) continue
+        version = { ...incoming, covers: [...new Set([...known.covers, ...incoming.covers])] }
+        frontier.splice(index, 1)
+      }
+    }
     if (frontier.some(current => authorityCovers(current, version))) continue
     for (let index = frontier.length - 1; index >= 0; index--) {
       if (authorityCovers(version, frontier[index]!)) frontier.splice(index, 1)
@@ -76,6 +88,28 @@ export function joinAuthorityFrontier(...frontiers: readonly AuthorityFrontier[]
 export function ownAuthorityVersion(version: AuthorityVersion): AuthorityVersion {
   validateAuthorityVersion(version)
   return Object.freeze(version.kind === 'ordered' ? { ...version } : { ...version, covers: Object.freeze([...version.covers]) })
+}
+
+export function assertCommitMatchesAuthority(receipt: ExactReceipt, snapshot: ServerAuthority | CompleteAuthority) {
+  // Later snapshots can contain unrelated remote writes. Only an exact commit
+  // version must reproduce the canonical item outputs verbatim.
+  if (!authorityCovers(receipt.committedVersion, snapshot.version) || !authorityCovers(snapshot.version, receipt.committedVersion)) return
+  const entities = 'entities' in snapshot ? snapshot.entities : snapshot.rows
+  const rows = new Map(entities.map(row => [serverIdentityKey(row.identity), row] as const))
+  for (const result of receipt.results) {
+    if (result.kind === 'ordered') {
+      let order: readonly ServerIdentity[]
+      if ('entities' in snapshot) {
+        const identities = new Map(snapshot.entities.map(row => [row.entityId, row.identity]))
+        order = snapshot.order.map(id => identities.get(id)!)
+      } else order = snapshot.order
+      if (!encodedValuesEqual(result.canonicalOrder, order)) throw new Error('The commit-version authority contradicts the exact canonical order.')
+    } else {
+      const row = rows.get(serverIdentityKey(result.identity))
+      if (result.kind === 'deleted' ? Boolean(row) : !row || !encodedValuesEqual(row.document, result.canonical))
+        throw new Error('The commit-version authority contradicts an exact item result.')
+    }
+  }
 }
 
 export function ownCompleteAuthority(snapshot: CompleteAuthority): CompleteAuthority {
@@ -176,10 +210,17 @@ export function validateFrozenSubmission(submission: FrozenSubmission) {
 }
 
 export function validateExactReceipt(submission: FrozenSubmission, receipt: ExactReceipt) {
+  validateReceiptContents(submission, receipt)
+  if (!authorityCovers(receipt.committedVersion, submission.baseAuthority)) throw new Error('A receipt cannot precede its write base.')
+}
+
+/** Validate immutable item facts independently of the evidence establishing
+ * the version relation. A missing causal predecessor can still arrive later. */
+export function validateReceiptContents(submission: FrozenSubmission, receipt: ExactReceipt) {
   validateFrozenSubmission(submission)
   if (!sameScope(submission.scope, receipt.scope) || receipt.operationId !== submission.operationId || receipt.payloadHash !== submission.payloadHash)
     throw new Error('Receipt does not belong to this frozen submission.')
-  if (!authorityCovers(receipt.committedVersion, submission.baseAuthority)) throw new Error('A receipt cannot precede its write base.')
+  validateAuthorityVersion(receipt.committedVersion)
   const items = new Map(submission.items.map(item => [item.id, item] as const))
   const seen = new Set<string>(), keys = new Set<string>()
   for (const result of receipt.results) {

@@ -1,30 +1,19 @@
-# data-editor-table: current Workspace integration
+# data-editor-table
 
-Version 0.4.0 introduces a breaking Workspace API. Release 0.3.1 uses the previous
-API; do not mix its integration examples with the current package.
-The old integration guide is retained at docs/archive/llms-v0.3.1.txt.
+> Integration guide for the React business-data grid. The README and the executable package consumers below track the public interfaces shipped by this repository.
 
-Start with docs/README.md for the document index, README.md for rendering,
-docs/workspace-migration.md for migration, and docs/workspace-api.md for API navigation.
-The public exports are src/index.ts (React) and src/engine.ts (headless).
-The current demo source is under demo/src; GitHub Pages hosts its production build.
+## Start here
 
-## Ownership rules
+- [Quick start](README.md#quick-start) shows the imports, styles, typed columns, document model and a complete React host. Give the viewport a height and keep the data-source instance stable.
+- [Data-source and column contract](README.md#data-source-and-column-contract) describes `createRemoteGridDataSource({ source, scope, model, columns, getRowKey, persistence })`. The host implements `PersistenceSource` from `data-editor-table/protocol`. Its reads return complete, versioned snapshots with stable row incarnations and explicit order.
+- [Persistence and synchronization](docs/persistence-consistency.md) describes entity-bound operation targets, shared version evidence for snapshots and receipts, and per-table save state. A dispute fences all writers in the physical scope until the host verifies its ledger and calls `resolveDispute`. Attachment starts an authority read. Supply `initialAuthority` to display a complete snapshot already available to the host.
+- [Saving and errors](README.md#saving-and-errors) covers manual, immediate and debounced saves. Await `controller.save()` for the actual outcome. Pass the current descriptor to `controller.recoverSave()` and read the next action after review. Use `selectGridActions(snapshot)` for save, retry and recovery availability and their targets and `controller.refresh()` for an explicit read.
+- [Advanced React integration](README.md#advanced-integration) covers `useDataGridBinding({ dataSource, initial, effects })`. It returns an attachment with a status and a binding. Render the retained binding during a blocked switch so the user can resolve pending work. Manually owned bindings expose a checked `destroy()` result.
+- [Entry points](README.md#entry-points), [custom cell types](README.md#custom-cell-types), [row operations](README.md#row-operations-and-protected-rows) and [messages and theme](README.md#messages-surfaces-and-theme) describe the supported extension interfaces.
 
-- Create and retain a Workspace outside React render; pass it to DataGrid.
-- Keep field IDs, entity lifetime IDs and presentation column IDs distinct.
-- Use the complete versioned PersistenceSource protocol with exact operation
-  receipts and lookup. Do not replace workspace state with a rows prop after save.
-- Retain original input and unresolved operations across view unmounts.
-- Use explicit close, checkpoint and recovery operations. Old recovery formats
-  require retained-work export; they are not automatically converted.
-- Do not use the removed GridController or cell-type registry APIs.
+## Executable examples
 
-## Verification and current limits
-
-Use the commands in README.md. Unit coverage is collected with pnpm test:coverage;
-it does not include browser execution.
-
-The refactor is still undergoing acceptance. Read docs/state-kernel-acceptance.md
-and docs/test-suite-audit.md for verified behavior and remaining gaps.
-Do not infer full design completion or large-dataset performance from test counts.
+- [Typed package consumer](tests/package-consumer/index.ts) uses the published entry points for columns, document models, source adapters and controllers.
+- [React browser consumer](tests/package-consumer/browser/main.tsx) exercises the attachment, a real source, localization and styles in StrictMode.
+- [React-free engine consumer](tests/package-consumer/engine-only.ts) demonstrates the headless entry point.
+- [IndexedDB demo authority](demo/src/demo-source.ts) implements atomic writes, immutable operation results and fenced lookups. [Demo adapter](demo/src/demo-data-source.ts) binds that authority to the grid.

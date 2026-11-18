@@ -1,22 +1,22 @@
 import { assertDispositionShape, type IngressDispositionEvent } from './ingress-disposition.js'
 import { assertDiscardLedger, discardWorkspace, type DiscardEvent } from './discard.js'
-import { configureSchedule, hasSaveableChanges, nextSchedule, scheduleAuthoredWork, scheduleNewlyEligible, settleSchedule, type SaveScheduleEvent } from './save-schedule.js'
+import { configureSchedule, hasSaveableChanges, nextSchedule, runnableSaveSchedule, scheduleAuthoredWork, scheduleNewlyEligible, settleSchedule, type SaveScheduleEvent } from './save-schedule.js'
 import { encodedValuesEqual, ownEncodedValue } from './document.js'
 import { appendPreparedAction, settleProjectionEvidence } from './journal.js'
-import type { CompleteAuthority, ExactReceipt, KernelIssue, NotAppliedProof, PreparedAction } from './model.js'
-import { ownPolicy, type KernelState, type PolicySnapshot } from './state.js'
+import type { AuthorityFrontier, CompleteAuthority, ExactReceipt, KernelIssue, NotAppliedProof, OperationLookup, PreparedAction } from './model.js'
+import { ownPolicy, submissionDispute, type KernelState, type PolicySnapshot } from './state.js'
 import { assertKernelSchema, type KernelSchema } from './schema.js'
-import { acceptExactReceipt, acceptNotApplied, mutationAppliedWithoutReceipt, mutationUncertain, observeAuthority, retryPersistence,
+import { acceptExactReceipt, acceptNotApplied, disputeOperation, resolveOperationDispute, mutationAppliedWithoutReceipt, mutationUncertain, observeAuthority, retryPersistence,
   type KernelEffect, type PersistenceStep, type SubmissionRef } from './persistence.js'
 import { freezePreparedSubmission, type PreparedSubmission } from './submission.js'
 import { appendPreparedRedo, appendPreparedUndo, type PreparedRedo, type PreparedUndo } from './history.js'
-import { appendPreparedResolution, type PreparedResolution } from './resolution.js'
+import { restoreContributions, type RestoreContributionsRequest, appendPreparedResolution, type PreparedResolution } from './resolution.js'
 import { reduceSession, refreshSessionContext, type SessionEvent } from './session.js'
 import { setViewQuery, type ViewEvent } from './view.js'
 import { reconcileTaskOwners, reduceTask, type TaskEffect, type TaskEvent, type TaskStep } from './task.js'
 import { assertRegisteredResources, reduceResource, type ResourceEvent } from './resource-ownership.js'
 import { bindServerAuthority, unboundServerIdentities, type ServerAuthority } from './source.js'
-import { serverIdentityKey } from './protocol.js'
+import { joinAuthorityFrontier, serverIdentityKey } from './protocol.js'
 import type { EntityId, IngressId, ServerIdentity } from './model.js'
 
 export type KernelEvent =
@@ -32,17 +32,20 @@ export type KernelEvent =
   | Readonly<{ kind: 'prepared-action'; prepared: PreparedAction }>
   | Readonly<{ kind: 'prepared-undo'; prepared: PreparedUndo }>
   | Readonly<{ kind: 'prepared-redo'; prepared: PreparedRedo }>
+  | Readonly<{ kind: 'restore-contributions'; request: RestoreContributionsRequest }>
   | Readonly<{ kind: 'prepared-resolution'; prepared: PreparedResolution }>
   | Readonly<{ kind: 'authority-observed'; snapshot: CompleteAuthority }>
   | Readonly<{ kind: 'server-authority-received'; snapshot: ServerAuthority; candidates: readonly Readonly<{ identity: ServerIdentity; entityId: EntityId }>[] }>
-  | Readonly<{ kind: 'read-started'; ticket: string }>
+  | Readonly<{ kind: 'read-started'; ticket: string; required?: AuthorityFrontier }>
   | Readonly<{ kind: 'read-failed'; ticket: string; issue: KernelIssue }>
   | Readonly<{ kind: 'policy-observed'; policy: PolicySnapshot }>
   | Readonly<{ kind: 'save-requested'; ticket: string; scheduleToken?: number }>
   | Readonly<{ kind: 'save-wait-ended'; ticket: string }>
   | Readonly<{ kind: 'freeze-submission'; prepared: PreparedSubmission }>
   | Readonly<{ kind: 'exact-receipt'; receipt: ExactReceipt }>
-  | Readonly<{ kind: 'not-applied'; proof: NotAppliedProof }>
+  | Readonly<{ kind: 'not-applied'; proof: NotAppliedProof; verifiedByScope?: true }>
+  | Readonly<{ kind: 'operation-disputed'; ref: SubmissionRef; disputeId: string; issue: KernelIssue }>
+  | Readonly<{ kind: 'operation-dispute-resolved'; ref: SubmissionRef; disputeId: string; result: Extract<OperationLookup, { kind: 'applied' | 'not-applied' }> }>
   | Readonly<{ kind: 'mutation-uncertain'; ref: SubmissionRef; attempt: number; issue: KernelIssue }>
   | Readonly<{ kind: 'applied-without-receipt'; ref: SubmissionRef; commitToken: string }>
   | Readonly<{ kind: 'retry-persistence' }>
@@ -53,6 +56,9 @@ export type CommandResult = Readonly<{ kind: 'accepted'; revision: number }>
 export type TransitionEffect = KernelEffect | TaskEffect
 export type KernelTransition = Readonly<{ state: KernelState; result: CommandResult; effects: readonly TransitionEffect[] }>
 
+const writeEvents = new Set<KernelEvent['kind']>(['exact-receipt',
+  'not-applied', 'mutation-uncertain', 'applied-without-receipt', 'retry-persistence'])
+
 function unsupportedEvent(_event: never): never { throw new Error('Unknown kernel event.') }
 
 /** Pure, atomic fact transition. Runtime ingress retains unaccepted inputs;
@@ -62,6 +68,8 @@ export function reduceKernel(state: KernelState, event: KernelEvent, schema: Ker
   try {
     assertKernelSchema(state.workspace, schema)
     assertDiscardLedger(state)
+    if (event.kind === 'save-requested' && state.protocolFaults.length) return ignore('Contradictory operation evidence fences new saves in this scope.')
+    if (writeEvents.has(event.kind) && submissionDispute(state)) return ignore('Contradictory evidence fences this operation.')
     let candidate: KernelState
     let effects: readonly TransitionEffect[] = Object.freeze([])
     let persistenceStep: PersistenceStep | undefined
@@ -84,10 +92,11 @@ export function reduceKernel(state: KernelState, event: KernelEvent, schema: Ker
       case 'session-opened': case 'session-attached': case 'session-detached': case 'session-input':
       case 'session-reconfirmed': case 'session-retargeted': case 'session-apply': case 'session-query-apply': case 'session-cancelled':
         candidate = reduceSession(state, event, schema); break
-      case 'view-query-set': candidate = setViewQuery(state, event, schema); break
+      case 'view-query-set': case 'view-search-set': candidate = setViewQuery(state, event, schema); break
       case 'prepared-action': candidate = appendPreparedAction(state, event.prepared, schema); break
       case 'prepared-undo': candidate = appendPreparedUndo(state, event.prepared); break
       case 'prepared-redo': candidate = appendPreparedRedo(state, event.prepared, schema); break
+      case 'restore-contributions': candidate = restoreContributions(state, event.request, schema); break
       case 'prepared-resolution': candidate = appendPreparedResolution(state, event.prepared, schema); break
       case 'authority-observed': persistenceStep = observeAuthority(state, event.snapshot); candidate = persistenceStep.state; break
       case 'server-authority-received': {
@@ -97,12 +106,14 @@ export function reduceKernel(state: KernelState, event: KernelEvent, schema: Ker
         break
       }
       case 'exact-receipt': persistenceStep = acceptExactReceipt(state, event.receipt); candidate = persistenceStep.state; break
-      case 'not-applied': persistenceStep = acceptNotApplied(state, event.proof); candidate = persistenceStep.state; break
+      case 'not-applied': persistenceStep = acceptNotApplied(state, event.proof, event.verifiedByScope); candidate = persistenceStep.state; break
+      case 'operation-disputed': persistenceStep = disputeOperation(state, event.ref, event.disputeId, event.issue); candidate = persistenceStep.state; break
+      case 'operation-dispute-resolved': persistenceStep = resolveOperationDispute(state, event.ref, event.disputeId, event.result); candidate = persistenceStep.state; break
       case 'mutation-uncertain': persistenceStep = mutationUncertain(state, event.ref, event.attempt, event.issue); candidate = persistenceStep.state; break
       case 'applied-without-receipt': persistenceStep = mutationAppliedWithoutReceipt(state, event.ref, event.commitToken); candidate = persistenceStep.state; break
       case 'retry-persistence': persistenceStep = retryPersistence(state); candidate = persistenceStep.state; break
       case 'save-requested': {
-        if (event.scheduleToken !== undefined && (event.scheduleToken !== state.schedule.token || !state.schedule.pending || state.schedule.mode === 'manual'))
+        if (event.scheduleToken !== undefined && event.scheduleToken !== runnableSaveSchedule(state)?.token)
           return ignore('The automatic save timer belongs to an inactive schedule.')
         if (!event.ticket || state.persistence.kind !== 'idle') throw new Error('Only an idle workspace can request a gateway ticket.')
         const schedule = nextSchedule(state.schedule, false)
@@ -122,13 +133,17 @@ export function reduceKernel(state: KernelState, event: KernelEvent, schema: Ker
       }
       case 'freeze-submission': {
         candidate = freezePreparedSubmission(state, event.prepared, schema)
+        // The frozen request includes edits made while preparing it. Only work
+        // authored after this point can arm an automatic follow-up.
+        if (candidate.schedule.pending) candidate = Object.freeze({ ...candidate, schedule: nextSchedule(candidate.schedule, false) })
         if (candidate.persistence.kind !== 'sending') throw new Error('A frozen submission must reserve its outgoing request.')
         effects = Object.freeze([Object.freeze({ kind: 'submit', submission: candidate.persistence.submission, attempt: candidate.persistence.attempt })])
         break
       }
       case 'read-started': {
         if (!event.ticket) throw new Error('A read requires a ticket.')
-        candidate = Object.freeze({ ...state, authority: Object.freeze({ ...state.authority, read: Object.freeze({ kind: 'loading', ticket: event.ticket }) }) })
+        const required = joinAuthorityFrontier(state.authorityFrontier, event.required ?? [])
+        candidate = Object.freeze({ ...state, authorityFrontier: required, authority: Object.freeze({ ...state.authority, read: Object.freeze({ kind: 'loading', ticket: event.ticket, required }) }) })
         break
       }
       case 'read-failed': {
@@ -156,7 +171,7 @@ export function reduceKernel(state: KernelState, event: KernelEvent, schema: Ker
     }
     // Refresh failure changes no data evidence; do not let a presentation/read
     // lifecycle event acquire authority to terminate any input.
-    if (event.kind === 'prepared-action' || event.kind === 'prepared-undo' || event.kind === 'prepared-redo' || event.kind === 'prepared-resolution' || event.kind === 'session-apply' || event.kind === 'authority-observed' || event.kind === 'policy-observed'
+    if (event.kind === 'restore-contributions' || event.kind === 'prepared-action' || event.kind === 'prepared-undo' || event.kind === 'prepared-redo' || event.kind === 'prepared-resolution' || event.kind === 'session-apply' || event.kind === 'authority-observed' || event.kind === 'policy-observed'
       || event.kind === 'server-authority-received' || event.kind === 'exact-receipt' || event.kind === 'not-applied' || event.kind === 'task-completed' || event.kind === 'task-execution-observed' || event.kind === 'task-consume' || event.kind === 'task-reapply') candidate = settleProjectionEvidence(candidate, schema)
     const owners = reconcileTaskOwners(state, candidate, schema, event.kind === 'session-cancelled' ? event.sessionId : null)
     candidate = owners.state

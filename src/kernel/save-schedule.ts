@@ -6,6 +6,17 @@ import type { KernelState } from './state.js'
 export type SaveScheduleOptions = Readonly<Pick<SaveSchedule, 'mode' | 'debounceMs'>>
 export type SaveScheduleEvent = Readonly<{ kind: 'save-schedule-configured'; expectedToken: number; options: SaveScheduleOptions }>
 
+export function canStartSave(state: KernelState) {
+  return state.persistence.kind === 'idle' && !state.protocolFaults.length
+}
+
+/** A timer can be armed and consumed only by this exact generation of
+ * idle work. A reservation or dispute fences it across all entry points. */
+export function runnableSaveSchedule(state: KernelState) {
+  return state.schedule.pending && state.schedule.mode !== 'manual'
+    && canStartSave(state) ? state.schedule : null
+}
+
 export function assertSaveSchedule(schedule: SaveSchedule): void {
   if (!schedule || !['manual', 'immediate', 'debounced'].includes(schedule.mode)
     || !Number.isSafeInteger(schedule.debounceMs) || schedule.debounceMs < 0 || schedule.debounceMs > 2_147_483_647

@@ -19,8 +19,8 @@ export type SubmissionDraft = Readonly<{ revision: number; payload: Omit<FrozenS
  * never authority to replace the planned documents or their exact coverage.
  */
 export function draftSubmission(state: KernelState, identities: Omit<SubmissionIdentities, 'payloadHash'>, schema: KernelSchema): SubmissionDraft {
-  if (state.persistence.kind !== 'idle') throw new Error('A previous scope write is still unresolved.')
-  if (state.protocolFaults.length) throw new Error('Conflicting protocol evidence prevents further writes in this workspace.')
+  if (state.persistence.kind !== 'idle' && state.persistence.kind !== 'waiting-for-gateway') throw new Error('A previous scope write is still unresolved.')
+  if (state.persistence.kind === 'idle' && state.protocolFaults.length) throw new Error('Conflicting protocol evidence prevents further writes in this workspace.')
   if (state.authority.content.kind !== 'complete' || !authorityCoversFrontier(state.authority.content.snapshot.version, state.authorityFrontier))
     throw new Error('The complete authority must cover every observed frontier before saving.')
   if (state.commits.some(fact => fact.submission.operationId === identities.operationId) || state.rejections.some(fact => fact.submission.operationId === identities.operationId))

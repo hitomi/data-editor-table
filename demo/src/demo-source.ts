@@ -1,5 +1,5 @@
 import { canonicalEncodedValue, hashSubmission, kernelId, ownEncodedValue, type Document, type ExactItemResult, type FrozenSubmission,
-  type OperationLookup, type PersistenceSource, type ScopeIdentity, type ServerAuthority, type ServerIdentity, type SubmissionRef } from 'data-editor-table'
+  type OperationLookup, type PersistenceSource, type ScopeIdentity, type ServerAuthority, type ServerIdentity, type SubmissionRef } from 'data-editor-table/protocol'
 
 type Terminal = Extract<OperationLookup, { kind: 'applied' | 'not-applied' }>
 type Root = { format: 1; scope: ScopeIdentity; position: string; rows: ServerAuthority['rows']; outcomes: { operationId: string; hash: string; result: Terminal }[] }
@@ -15,7 +15,7 @@ export type DemoSource = PersistenceSource & Readonly<{
   failNextSave(): void
   changeDocument(identity: ServerIdentity, change: (document: Document) => Document): Promise<void>
 }>
-export async function openDemoSource(scope: ScopeIdentity, initial: readonly Document[], validate: (document: Document) => void, structure: boolean): Promise<DemoSource> {
+export async function openDemoSource(scope: ScopeIdentity, initial: readonly Document[], validate: (document: Document) => void, structure: boolean, canDelete: (document: Document) => boolean): Promise<DemoSource> {
   let failNext = false
   const db = await new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(`${scope.sourceId}:authority`, 1)
@@ -33,8 +33,8 @@ export async function openDemoSource(scope: ScopeIdentity, initial: readonly Doc
       tx.onerror = () => { /* onabort is the terminal result. */ }
       request.onsuccess = () => {
         try {
-          const root: Root = request.result ?? { format: 1, scope, position: '1', rows: initial.map((document, index) => ({
-            identity: { key: `product-${index + 1}`, incarnation: 'initial-v1' }, document: ownEncodedValue(document) as Document })), outcomes: [] }
+          const root: Root = request.result ?? { format: 1, scope, position: '1', rows: initial.map((document) => ({
+            identity: { key: document.id as string | number, incarnation: 'initial-v1' }, document: ownEncodedValue(document) as Document })), outcomes: [] }
           if (root.format !== 1 || encoded(root.scope) !== encoded(scope)) throw new Error('Stored product authority needs migration.')
           result = run(root)
           if (write) store.put(root, 'products')
@@ -99,7 +99,7 @@ export async function openDemoSource(scope: ScopeIdentity, initial: readonly Doc
                   && result.itemId === item.restores!.itemId && encoded(result.identity) === encoded(item.restores!.identity))) throw new Error('Missing deletion restoration proof.')
               }
               validate(item.document)
-              const identity: ServerIdentity = { key: item.proposedKey ?? crypto.randomUUID(), incarnation: crypto.randomUUID() }
+              const identity: ServerIdentity = { key: item.proposedKey ?? item.document.id as string | number, incarnation: crypto.randomUUID() }
               if (rows.some(row => encoded(row.identity.key) === encoded(identity.key))) throw new Error('Product key already exists.')
               rows.push({ identity, document: item.document })
               results.push({ kind: 'created', itemId: item.id, identity, canonical: item.document })
@@ -109,6 +109,7 @@ export async function openDemoSource(scope: ScopeIdentity, initial: readonly Doc
             if (used.has(identity) || index < 0 || encoded(rows[index]!.document) !== encoded(item.before)) throw new Error('Product identity or value changed.')
             used.add(identity)
             if (item.kind === 'delete') {
+              if (!canDelete(rows[index]!.document)) throw new Error('This row is protected from deletion.')
               rows.splice(index, 1)
               results.push({ kind: 'deleted', itemId: item.id, identity: item.identity })
             } else {

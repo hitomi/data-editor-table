@@ -2,7 +2,7 @@ import { ownEncodedValue } from './document.js'
 import { emptyFrontierTable } from './frontier-table.js'
 import type { EntityRegistry } from './entities.js'
 import type {
-  ResourceId, CloseTicket, AuthorityFrontier, AuthorityState, AuthorityVersion, EncodedValue, EntityId, ExactReceipt, FieldRef, FrozenSubmission, InputRecord, IntentJournal, IntentSettlement, KernelIssue, NotAppliedProof, ObservationId,
+  ResourceId, CloseTicket, AuthorityFrontier, AuthorityState, AuthorityVersion, EncodedValue, EntityId, ExactReceipt, FieldRef, FrozenSubmission, InputRecord, IntentJournal, IntentSettlement, KernelIssue, NotAppliedProof, ObservationId, OperationId,
   PersistenceState, PolicyVersion, RecoveryEntry, ResourceRecord, SaveSchedule, Session, SessionId, StoragePath, TaskState, ViewQuery, WorkspaceIdentity,
 } from './model.js'
 
@@ -48,10 +48,15 @@ export type KernelState = Readonly<{
   settlements: readonly IntentSettlement[]
   commits: readonly CommitFact[]
   rejections: readonly Readonly<{ submission: FrozenSubmission; proof: NotAppliedProof }>[]
-  protocolFaults: readonly Readonly<{ issue: KernelIssue; evidence: EncodedValue }>[]
+  protocolFaults: readonly Readonly<{ operationId: OperationId; disputeId?: string; issue: KernelIssue; evidence: EncodedValue }>[]
   persistence: PersistenceState
   schedule: SaveSchedule
 }>
+
+export function submissionDispute(state: KernelState) {
+  const persistence = state.persistence
+  return 'submission' in persistence ? state.protocolFaults.find(fault => fault.operationId === persistence.submission.operationId) : undefined
+}
 
 export function ownPolicy(policy: PolicySnapshot): PolicySnapshot {
   const owned = ownEncodedValue(policy) as unknown as PolicySnapshot

@@ -2,10 +2,10 @@ import { encodedValuesEqual, ownEncodedValue } from './document.js'
 import { createdBindingsForReceipt, reconcileEntityRegistry } from './entities.js'
 import { recordIntentSettlements } from './journal.js'
 import type {
-  AuthorityFrontier, CompleteAuthority, ExactReceipt, FrozenSubmission, IntentSettlement, KernelIssue, NotAppliedProof, OperationId, PayloadHash, ScopeIdentity,
+  AuthorityFrontier, CompleteAuthority, ExactReceipt, FrozenSubmission, IntentSettlement, KernelIssue, NotAppliedProof, OperationId, OperationLookup, PayloadHash, ScopeIdentity,
 } from './model.js'
-import { authorityCovers, authorityCoversFrontier, joinAuthorityFrontier, ownCompleteAuthority, sameScope, serverIdentityKey, validateExactReceipt } from './protocol.js'
-import type { KernelState } from './state.js'
+import { assertCommitMatchesAuthority, authorityCovers, authorityCoversFrontier, joinAuthorityFrontier, ownCompleteAuthority, sameScope, serverIdentityKey, validateExactReceipt } from './protocol.js'
+import { submissionDispute, type KernelState } from './state.js'
 
 export type SubmissionRef = Readonly<{ scope: ScopeIdentity; operationId: OperationId; payloadHash: PayloadHash }>
 export type KernelEffect =
@@ -24,10 +24,37 @@ function currentSubmission(state: KernelState) { return 'submission' in state.pe
 function matches(submission: FrozenSubmission, ref: SubmissionRef) {
   return submission.operationId === ref.operationId && submission.payloadHash === ref.payloadHash && sameScope(submission.scope, ref.scope)
 }
-function protocolFault(state: KernelState, evidence: unknown, error: unknown): PersistenceStep {
+function protocolFault(state: KernelState, operationId: OperationId, evidence: unknown, error: unknown, disputeId?: string): PersistenceStep {
   const owned = ownEncodedValue(evidence), issue = errorIssue(error)
   if (state.protocolFaults.some(fault => encodedValuesEqual(fault.evidence, owned))) return ignore(state, 'Protocol dispute is already retained.')
-  return step(Object.freeze({ ...state, protocolFaults: Object.freeze([...state.protocolFaults, Object.freeze({ evidence: owned, issue })]) }))
+  return step(Object.freeze({ ...state, protocolFaults: Object.freeze([...state.protocolFaults, Object.freeze({ operationId, ...(disputeId ? { disputeId } : {}), evidence: owned, issue })]) }))
+}
+export function disputeOperation(state: KernelState, ref: SubmissionRef, disputeId: string, issue: KernelIssue): PersistenceStep {
+  if (!sameScope(ref.scope, state.workspace.scope)) return ignore(state, 'Protocol dispute belongs to another scope.')
+  if (state.protocolFaults.some(fault => fault.disputeId === disputeId)) return ignore(state, 'Scope dispute is already retained.')
+  const faults = state.protocolFaults.filter(fault => !fault.disputeId || fault.operationId !== ref.operationId)
+  return protocolFault({ ...state, protocolFaults: faults }, ref.operationId, { ref, disputeId, issue }, new Error(issue.message), disputeId)
+}
+
+export function resolveOperationDispute(state: KernelState, ref: SubmissionRef, disputeId: string,
+  result: Extract<OperationLookup, { kind: 'applied' | 'not-applied' }>): PersistenceStep {
+  if (!sameScope(ref.scope, state.workspace.scope) || !state.protocolFaults.some(f => f.disputeId === disputeId && f.operationId === ref.operationId))
+    return ignore(state, 'This dispute is no longer active.')
+  const restored = Object.freeze({ ...state, protocolFaults: Object.freeze(state.protocolFaults.filter(f => f.operationId !== ref.operationId)) })
+  const submission = currentSubmission(restored)
+  if (!submission || !matches(submission, ref)) return step(restored)
+  const fact = restored.commits.find(f => f.submission.operationId === ref.operationId)
+  if (fact) {
+    // The gateway admits only the original canonical outcome for a known commit.
+    const resumed: KernelState = Object.freeze({ ...restored, persistence: Object.freeze({
+      kind: 'committed-awaiting-authority', submission, receipt: fact.receipt, requiredFrontier: restored.authorityFrontier,
+    }) })
+    return reconcileCommit(resumed, submission, fact.receipt)
+  }
+  // The host verified the original frozen request. An earlier application report
+  // alone cannot override its verified definitive rejection.
+  return result.kind === 'applied' ? acceptExactReceipt(restored, result.receipt)
+    : acceptNotApplied(restored, result.proof, true)
 }
 function blockReceipt(state: KernelState, submission: FrozenSubmission, receipt: ExactReceipt, error: unknown): KernelState {
   return Object.freeze({ ...state, persistence: Object.freeze({ kind: 'receipt-blocked', submission, receipt, issue: errorIssue(error) }) })
@@ -35,23 +62,6 @@ function blockReceipt(state: KernelState, submission: FrozenSubmission, receipt:
 
 function snapshotContent(snapshot: CompleteAuthority) {
   return ownEncodedValue({ entities: [...snapshot.entities].sort((a, b) => a.entityId < b.entityId ? -1 : a.entityId > b.entityId ? 1 : 0), order: snapshot.order })
-}
-
-function assertCommitMatchesAuthority(receipt: ExactReceipt, snapshot: CompleteAuthority) {
-  // Later snapshots can contain unrelated remote writes. Only an exact commit
-  // version must reproduce the canonical item outputs verbatim.
-  if (!authorityCovers(receipt.committedVersion, snapshot.version) || !authorityCovers(snapshot.version, receipt.committedVersion)) return
-  const rows = new Map(snapshot.entities.map(row => [serverIdentityKey(row.identity), row] as const))
-  for (const result of receipt.results) {
-    if (result.kind === 'ordered') {
-      const identities = new Map(snapshot.entities.map(row => [row.entityId, row.identity] as const))
-      if (!sameFact(result.canonicalOrder, snapshot.order.map(id => identities.get(id)!))) throw new Error('The commit-version authority contradicts the exact canonical order.')
-    } else {
-      const row = rows.get(serverIdentityKey(result.identity))
-      if (result.kind === 'deleted' ? Boolean(row) : !row || !encodedValuesEqual(row.document, result.canonical))
-        throw new Error('The commit-version authority contradicts an exact item result.')
-    }
-  }
 }
 
 function installAuthority(state: KernelState, snapshot: CompleteAuthority): KernelState {
@@ -74,6 +84,15 @@ function completeCommit(state: KernelState, submission: FrozenSubmission, receip
   }), settled)
 }
 
+function reconcileCommit(state: KernelState, submission: FrozenSubmission, receipt: ExactReceipt): PersistenceStep {
+  const content = state.authority.content
+  if (content.kind === 'complete' && authorityCoversFrontier(content.snapshot.version, state.authorityFrontier)) {
+    try { return step(completeCommit(state, submission, receipt, content.snapshot)) }
+    catch (error) { return step(blockReceipt(state, submission, receipt, error), [readEffect(state)]) }
+  }
+  return step(state, [readEffect(state)])
+}
+
 /** Read facts and write facts converge here, in one atomic transition. There
  * is no fallback that treats a latest row array as the exact write result. */
 export function observeAuthority(state: KernelState, raw: CompleteAuthority): PersistenceStep {
@@ -93,9 +112,17 @@ export function observeAuthority(state: KernelState, raw: CompleteAuthority): Pe
     authorityFrontier: frontier,
     persistence: state.persistence.kind === 'committed-awaiting-authority' ? Object.freeze({ ...state.persistence, requiredFrontier: frontier }) : state.persistence,
   })
-  if (!authorityCoversFrontier(snapshot.version, observed.authorityFrontier)) return step(observed, [readEffect(observed)])
+  if (!authorityCoversFrontier(snapshot.version, frontier)) {
+    // A repeated branch can wake a failed read. An active read only covers
+    // the versions it actually requested, so a newly discovered branch wakes another.
+    const read = state.authority.read
+    const pending = read.kind === 'loading' && frontier.every(version => read.required.some(known => authorityCovers(known, version)))
+    return step(observed, pending ? [] : [readEffect(observed)])
+  }
   const submission = currentSubmission(state), fact = submission ? state.commits.find(fact => fact.submission.operationId === submission.operationId) : undefined
-  if (submission && fact) {
+  // A read started before contradictory evidence arrived can update safe
+  // remote rows. It cannot settle the disputed operation or bind its creation.
+  if (submission && fact && !submissionDispute(state)) {
     try { return step(completeCommit(observed, submission, fact.receipt, snapshot)) }
     catch (error) { return step(blockReceipt(observed, submission, fact.receipt, error), [readEffect(observed)]) }
   }
@@ -105,7 +132,7 @@ export function observeAuthority(state: KernelState, raw: CompleteAuthority): Pe
       // An unknown incarnation might be our creation with an assigned key.
       // No identity/lease for that row is published until an exact receipt can
       // disambiguate it. Remember freshness, then request a covering read again.
-      return step(observed, [{ kind: 'lookup', submission }])
+      return step(observed, submissionDispute(state) ? [] : [{ kind: 'lookup', submission }])
     }
   }
   return step(installAuthority(observed, snapshot))
@@ -119,9 +146,9 @@ export function acceptExactReceipt(state: KernelState, raw: ExactReceipt): Persi
   const prior = state.commits.find(fact => fact.submission.operationId === receipt.operationId)
   if (prior) {
     if (sameFact(prior.receipt, receipt)) return ignore(state, 'Exact commit fact is already retained.')
-    return protocolFault(state, receipt, new Error('One operation identity produced conflicting exact receipts.'))
+    return protocolFault(state, receipt.operationId, receipt, new Error('One operation identity produced conflicting exact receipts.'))
   }
-  if (state.rejections.some(fact => fact.submission.operationId === receipt.operationId)) return protocolFault(state, receipt, new Error('An applied receipt contradicts a definitive not-applied proof.'))
+  if (state.rejections.some(fact => fact.submission.operationId === receipt.operationId)) return protocolFault(state, receipt.operationId, receipt, new Error('An applied receipt contradicts a definitive not-applied proof.'))
   const submission = currentSubmission(state)
   if (!submission || receipt.operationId !== submission.operationId) return ignore(state, 'Receipt does not belong to the current unresolved request.')
   try { validateExactReceipt(submission, receipt) }
@@ -131,24 +158,20 @@ export function acceptExactReceipt(state: KernelState, raw: ExactReceipt): Persi
     commits: Object.freeze([...state.commits, Object.freeze({ submission, receipt })]),
     persistence: Object.freeze({ kind: 'committed-awaiting-authority', submission, receipt, requiredFrontier: required }),
   })
-  if (applied.authority.content.kind === 'complete' && authorityCoversFrontier(applied.authority.content.snapshot.version, required)) {
-    try { return step(completeCommit(applied, submission, receipt, applied.authority.content.snapshot)) }
-    catch (error) { return step(blockReceipt(applied, submission, receipt, error), [readEffect(applied)]) }
-  }
-  return step(applied, [readEffect(applied)])
+  return reconcileCommit(applied, submission, receipt)
 }
 
-export function acceptNotApplied(state: KernelState, raw: NotAppliedProof): PersistenceStep {
+export function acceptNotApplied(state: KernelState, raw: NotAppliedProof, verifiedByScope = false): PersistenceStep {
   if (!sameScope(raw.scope, state.workspace.scope)) return ignore(state, 'Rejection belongs to another scope or epoch.')
   const proof = ownEncodedValue(raw) as unknown as NotAppliedProof
-  if (state.commits.some(fact => fact.submission.operationId === proof.operationId)) return protocolFault(state, proof, new Error('Not-applied evidence contradicts an exact applied result.'))
+  if (state.commits.some(fact => fact.submission.operationId === proof.operationId)) return protocolFault(state, proof.operationId, proof, new Error('Not-applied evidence contradicts an exact applied result.'))
   const previous = state.rejections.find(fact => fact.submission.operationId === proof.operationId)
-  if (previous) return sameFact(previous.proof, proof) ? ignore(state, 'Definitive rejection is already retained.') : protocolFault(state, proof, new Error('One operation identity produced inconsistent rejection proofs.'))
+  if (previous) return sameFact(previous.proof, proof) ? ignore(state, 'Definitive rejection is already retained.') : protocolFault(state, proof.operationId, proof, new Error('One operation identity produced inconsistent rejection proofs.'))
   const submission = currentSubmission(state)
   if (!submission || !matches(submission, proof)) return ignore(state, 'Rejection does not belong to the current request.')
   if (!proof.rejectionToken || !proof.reason.code) throw new Error('A definitive rejection requires a stable server fencing token and reason.')
-  if (state.persistence.kind === 'committed-awaiting-receipt' || state.persistence.kind === 'receipt-blocked')
-    return protocolFault(state, proof, new Error('Not-applied evidence contradicts already reported application evidence.'))
+  if (!verifiedByScope && (state.persistence.kind === 'committed-awaiting-receipt' || state.persistence.kind === 'receipt-blocked'))
+    return protocolFault(state, proof.operationId, proof, new Error('Not-applied evidence contradicts already reported application evidence.'))
   const rejected: KernelState = Object.freeze({ ...state, rejections: Object.freeze([...state.rejections, Object.freeze({ submission, proof })]), persistence: Object.freeze({ kind: 'idle' }) })
   // A read held while a creation's identity was ambiguous is no longer
   // ambiguous after definitive rejection. Complete that read barrier instead
@@ -172,13 +195,13 @@ export function mutationAppliedWithoutReceipt(state: KernelState, ref: Submissio
   if (!commitToken) throw new Error('Application evidence requires a commit token.')
   if (state.persistence.kind === 'receipt-blocked') return ignore(state, 'Retain the original blocked receipt until exact reconciliation succeeds.')
   if (state.persistence.kind === 'committed-awaiting-receipt') return state.persistence.commitToken === commitToken
-    ? ignore(state, 'Application evidence is already retained.') : protocolFault(state, { ref, commitToken }, new Error('One operation identity produced conflicting commit tokens.'))
+    ? ignore(state, 'Application evidence is already retained.') : protocolFault(state, ref.operationId, { ref, commitToken }, new Error('One operation identity produced conflicting commit tokens.'))
   return step(Object.freeze({ ...state, persistence: Object.freeze({ kind: 'committed-awaiting-receipt', submission, commitToken }) }), [{ kind: 'lookup', submission }])
 }
 
 export function retryPersistence(state: KernelState): PersistenceStep {
   const persistence = state.persistence
-  if (persistence.kind === 'outcome-unknown' && !state.protocolFaults.length) {
+  if (persistence.kind === 'outcome-unknown') {
     const attempt = persistence.attempt + 1
     return step(Object.freeze({ ...state, persistence: Object.freeze({ kind: 'sending', submission: persistence.submission, attempt }) }), [{ kind: 'submit', submission: persistence.submission, attempt }])
   }

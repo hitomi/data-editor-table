@@ -1,25 +1,183 @@
-// The headless entry has one state owner and no React dependencies.
-export * from './kernel/workspace.js'
-export * from './kernel/model.js'
-export * from './kernel/schema.js'
-export * from './kernel/prepare.js'
-export { taskInputRecords } from './kernel/task.js'
-export * from './kernel/source.js'
-export * from './kernel/document.js'
-export { openIndexedDbRecovery } from './kernel/indexeddb-recovery.js'
-export { exportIndexedDbRecoveryDatabase } from './kernel/indexeddb-archive.js'
-export { encodeCheckpoint, decodeCheckpoint } from './kernel/checkpoint-transport.js'
-export type { IndexedDbRecoverySession } from './kernel/indexeddb-recovery.js'
-export type { CheckpointTransport } from './kernel/checkpoint-transport.js'
-export type { WorkspaceCheckpoint } from './kernel/checkpoint.js'
-export type { CheckpointToken } from './kernel/checkpoint-store.js'
-export type { KernelState, PolicySnapshot } from './kernel/state.js'
-export type { CommandResult } from './kernel/transition.js'
-export type { KernelProjection } from './kernel/projection.js'
-export type { CloseAssessment, CloseResult, WorkspaceLifecycle } from './kernel/lifecycle.js'
-export type { DurableTaskDefinition } from './kernel/durable-task.js'
-export type { ResolutionRequest } from './kernel/resolution.js'
-export type { SaveScheduleOptions } from './kernel/save-schedule.js'
-export type { SubmissionRef } from './kernel/persistence.js'
-export * from './value-codecs.js'
-export * from './clipboard.js'
+/** React-free business API and view adapter access. Protocol internals have a separate entry. */
+export {
+  createGridController,
+} from './controller/grid-controller.js'
+export type {
+  GridApplyTransactionOptions,
+  GridCloseBlocker,
+  GridCloseResult,
+  GridCloseState,
+  GridCommandResult,
+  GridCommandTarget,
+  GridController,
+  GridControllerOptions,
+  GridEffectInput,
+  GridEffectTarget,
+  GridEffectOwner,
+  GridEffectPort,
+  GridEffectRequest,
+  GridEffectResult,
+  GridEffectStarted,
+  GridIntent,
+  GridIntentValue,
+  GridIssue,
+  GridIssueCode,
+  GridMutationValue,
+  GridRefreshResult,
+  GridRetainedResult,
+  GridSaveRecovery,
+  GridSaveResult,
+  GridTransactionBuilder,
+  GridTransactionCommit,
+  GridTransactionContext,
+  GridTransactionIssue,
+  GridTransactionResult,
+  GridTransactionRowPosition,
+} from './controller/grid-controller.js'
+export {
+  selectGridActions,
+  selectGridCell,
+  selectGridFullySelectedRows,
+  selectGridNaturalRowOrder,
+  selectGridRowDeleteAvailability,
+  selectGridRowDeletePlan,
+  selectGridRowDuplicatePlan,
+  selectGridSavePlan,
+  selectGridSelectionLayer,
+  selectGridSelectionSummary,
+  selectGridToolbar,
+} from './controller/grid-selectors.js'
+export type {
+  GridActionAvailability,
+  GridRowDeleteAvailability,
+} from './controller/grid-selectors.js'
+export {
+  plainGridRowCodec,
+} from './data/grid-document.js'
+export type {
+  GridDocumentColumnBinding,
+  GridDocumentModel,
+} from './data/grid-document.js'
+export {
+  createFieldGridDocumentModel,
+  createGridIdempotencyHeaders,
+  createRemoteGridDataSource,
+} from './data/remote-data-source.js'
+export type {
+  CreateRemoteGridDataSourceOptions,
+  RemoteGridDataSource,
+} from './data/remote-data-source.js'
+export {
+  accessibleGridCellValue,
+  areGridResolvedCellValuesEqual,
+  displayGridCellValue,
+  fallbackGridCellText,
+  resolveGridCellValue,
+} from './data/runtime-cell-resolver.js'
+export type {
+  GridResolvedCellValue,
+} from './data/runtime-cell-resolver.js'
+export type {
+  GridBulkSession,
+  GridCellBehaviorPort,
+  GridColumn,
+  GridColumnFilter,
+  GridColumnLayout,
+  GridCompiledColumn,
+  GridConflict,
+  GridControllerSnapshot,
+  GridDirtyCell,
+  GridEditSession,
+  GridEditStatus,
+  GridFeedbackItem,
+  GridFeedbackState,
+  GridFillGesture,
+  GridFilterSession,
+  GridHitTarget,
+  GridInteractionState,
+  GridLayoutColumn,
+  GridLayoutState,
+  GridPersistenceMode,
+  GridPersistenceState,
+  GridSaveTarget,
+  GridPersistenceStatus,
+  GridPoint,
+  GridPointerModifiers,
+  GridRange,
+  GridReadModel,
+  GridRowKey,
+  GridRuntimeCellAction,
+  GridRuntimeCellActionContext,
+  GridRuntimeCellActionOutcome,
+  GridRuntimeCellBehavior,
+  GridRuntimeCellEffect,
+  GridRuntimeColumnContext,
+  GridRuntimeValueContext,
+  GridSelectionGesture,
+  GridSort,
+  GridSourceState,
+  GridSourceStatus,
+  GridSourceVersion,
+  GridValidationIssue,
+  GridValueResult,
+  GridViewState,
+} from './model/grid-model.js'
+export {
+  encodeCellIdentity,
+} from './model/cell-identity.js'
+export {
+  gridRowKeysEqual,
+} from './model/row-key.js'
+export type {
+  GridBooleanBulkDraft,
+  GridCellActionBehavior,
+  GridCellActionContext,
+  GridCellActionOutcome,
+  GridCellBehavior,
+  GridCellBehaviorProjection,
+  GridCellBulkBehavior,
+  GridCellBulkContext,
+  GridCellColumnContext,
+  GridCellEffectBehavior,
+  GridCellEffectInput,
+  GridCellEffectIntent,
+  GridCellEffectSchema,
+  GridCellEffects,
+  GridCellFillContext,
+  GridCellFillDirection,
+  GridCellFilter,
+  GridCellFilterInput,
+  GridCellFilterOperator,
+  GridCellTypeColumnOptions,
+  GridCellTypeKind,
+  GridCellTypeKindOf,
+  GridCellTypeSchema,
+  GridCellTypeSignature,
+  GridCellTypeValue,
+  GridCellValueContext,
+  GridCellValueIssue,
+  GridChoiceOption,
+  GridChoiceValue,
+  GridColumnForCellTypes,
+  GridDateBulkDraft,
+  GridInputCodec,
+  GridMultiSelectBulkDraft,
+  GridNumberBulkDraft,
+  GridRegisteredRuntimeCellBehavior,
+  GridRuntimeFillContext,
+  GridRuntimeRegisteredValueContext,
+  GridSingleSelectBulkDraft,
+  GridStringBulkDraft,
+} from './cell-types/contracts.js'
+export type {
+  GridIsoDateColumnOptions,
+  GridMultiSelectColumnOptions,
+  GridNumberColumnOptions,
+  GridSingleSelectColumnOptions,
+  GridStringColumnOptions,
+  StandardGridCellTypeSchema,
+} from './cell-types/standard-contracts.js'
+export type { GridRowCapabilities, GridDataSourceSnapshot, GridRowKeyRemap } from './data/data-source.js'
+export type { GridAuthorityDelivery, GridAuthorityReader, GridKernelDataSource as GridDataSource } from './data/kernel-data-source.js'
+export { getGridInteractionPort } from './controller/controller-interaction.js'
+export type { GridInteractionPort, GridInteractionInput, GridInteractionValue, GridKeyboardCommand } from './controller/controller-interaction.js'
